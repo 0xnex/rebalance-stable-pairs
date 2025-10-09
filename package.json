@@ -1,0 +1,21 @@
+{
+  "name": "rebalance-stable-pairs",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@mysten/sui.js": "^0.54.1",
+    "cross-fetch": "^4.1.0",
+    "zod": "^4.1.11"
+  },
+  "scripts": {
+    "test": "bun run test-runner.ts",
+    "test:pool": "bun run test-runner.ts"
+  }
+}
