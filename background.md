@@ -1,6 +1,7 @@
 # Background Notes
 
 ## Project Overview
+
 - **Purpose:** backtest a Sui CLMM (Concentrated Liquidity Market Maker) by replaying archived on-chain events.
 - **Primary entry points:**
   - `src/event_importer.ts` – reads momentum event archive (`../mmt_txs/<poolId>/page_*.json`), replays pool state, and validates swaps.
@@ -20,10 +21,12 @@
 - `src/three_band_grid.ts` – parameter-grid harness that sweeps the three-band configuration space (band count, width, fast/slow cadence, dwell, slippage, action costs, initial balances) and prints the top-performing combinations.
 
 ## Data Locations
+
 - Event JSON pages live at `../mmt_txs/<poolId>/page_XXXX.json` (outside repo root).
 - `importEvents` expects those files and a `poolId`. The `--inDir` option on `src/backtest.ts` can point at this directory if needed.
 
 ## Key Implementation Details
+
 - `event_importer.ts`
   - Correctly interprets `x_for_y`; swap direction determines which token amount is treated as input/output.
   - Before validating each swap, the importer seeds the pool with the event’s `sqrt_price_before`, `liquidity`, and reserves to match on-chain state.
@@ -53,10 +56,11 @@
   - Dynamically loads the strategy factory and prints the engine report as JSON.
 - `event_importer.ts`
   - `importEvents(poolId, until, eventTypes?, { silent, dataDir })` now accepts an optional `dataDir` override so backtests can seed state from custom archives while suppressing console noise with `silent`.
-  
+
 ### Example Backtest Runs
 
 - No-op smoke test:
+
   ```bash
   bun run src/backtest_runner.ts \
     --poolId 0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \
@@ -97,23 +101,24 @@
   ```
   - Recent run collected `18 / 26` pending fees (token A/B) with total cost `0.24` in token B and returned ~0.38 % over 12 days, showing smoother fee accrual but slower capital rotation compared to the three-band aggressive variant.
   - Latest rerun (start 2025-08-21→end 2025-09-10, 1 s step) with `THREEBAND_INITIAL_B=10000000000` (≈$10 000 USDC at 6 decimals), three 0.001 % bands, 30 s/60 s cadence, 60 s dwell/out-of-range guards, `THREEBAND_ACTION_COST_B=0.02`, and `THREEBAND_MIN_PROFIT_B=0.02` delivered +0.698 % net; realised fees `collectedFees0=30863250` / `collectedFees1=41244059` (≈30.86/41.24 USDC) and debited total action cost `0.06` token B.
-- Three-band grid sweep (示例)：支持 `THREEBAND_MIN_OUT_MS`、`THREEBAND_ROTATION_TICK_THRESHOLD`、`THREEBAND_MIN_PROFIT_B` 等成本保护参数
-  ```bash
+- Three-band grid sweep `THREEBAND_MIN_OUT_MS`、`THREEBAND_ROTATION_TICK_THRESHOLD`、`THREEBAND_MIN_PROFIT_B`
   bun run src/three_band_grid.ts \
-    --poolId 0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \
-    --start "2025-08-20T00:00:00Z" \
-    --end "2025-09-01T00:00:00Z" \
-    --rangePercents 0.0008,0.001,0.0012 \
-    --segmentCounts 3,5 \
-    --fastCounts 1,2 \
-    --slowIntervals 60000,300000 \
-    --minDwells 0,120000 \
-    --initialAmountsA 5000 \
-    --initialAmountsB 5000
+   --poolId 0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \
+   --start "2025-08-20T00:00:00Z" \
+   --end "2025-09-01T00:00:00Z" \
+   --rangePercents 0.0008,0.001,0.0012 \
+   --segmentCounts 3,5 \
+   --fastCounts 1,2 \
+   --slowIntervals 60000,300000 \
+   --minDwells 0,120000 \
+   --initialAmountsA 5000 \
+   --initialAmountsB 5000
   ```
   - 脚本会按 cartesian-product 组合逐个回测，输出每组配置的收益率、手续费与成本，并列出 Top N 结果，便于快速定位高收益参数区间。
+  ```
 
 ## Current Validation Status
+
 - With cost guards (min out-of-range duration, dwell time, tick threshold, profit check), the high-cost scenario (0.02 USDC per action, 2025-08-21→2025-09-10) produced +0.7867% over 20 days while recording only 0.006 USDC of action cost. Without guards the same run lost ~59%, highlighting the need to tune the `THREEBAND_*` guard parameters before mainnet deployment.
 
 - Early swaps replay exactly (amount out & fee) after rounding fixes.
@@ -121,12 +126,14 @@
 - `compare_last_swap.ts` can be used to inspect the final swap before the target cutoff and compare to the importer state.
 
 ## Useful Commands
+
 - Install deps: `bun install`
 - Replay to snapshot: `bun run dump_pool_to_2025-08-25.ts`
 - Compare final swap vs. pool replay: `bun run compare_last_swap.ts`
 - Backtest CLI (custom dir): `bun run src/backtest.ts --poolId <POOL> --inDir ../mmt_txs/<POOL>`
 
 ## Next Steps / Open Items
+
 - Implement full tick crossing by tracking per-tick liquidity deltas from positions. This is required to remove large-amount mismatches.
 - Extend `compare_last_swap.ts` to report intermediate diagnostic data once tick state tracking is improved.
 - Consider caching parsed event pages to speed up repeated replays.
