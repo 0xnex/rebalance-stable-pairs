@@ -1,6 +1,6 @@
 /**
- * Enhanced Fee Calculator với độ chính xác cao hơn
- * Sử dụng tick-by-tick calculation và real-time fee growth tracking
+ * Enhanced Fee Calculator with higher precision
+ * Uses tick-by-tick calculation and real-time fee growth tracking
  */
 
 export interface EnhancedFeeMetrics {
@@ -54,7 +54,7 @@ export class EnhancedFeeCalculator {
     ) { }
 
     /**
-     * Tính toán fee với độ chính xác tick-level
+     * Calculate fees with tick-level precision
      */
     calculatePreciseFees(
         positionId: string,
@@ -109,10 +109,10 @@ export class EnhancedFeeCalculator {
     }
 
     /**
-     * Tính toán base fees với algorithm cải tiến
+     * Calculate base fees with improved algorithm
      */
     private calculateBaseFees(position: any): { fee0: bigint; fee1: bigint } {
-        // Sử dụng multiple snapshots thay vì single point calculation
+        // Use multiple snapshots instead of single point calculation
         const snapshots = this.getFeeGrowthSnapshots(position.tickLower, position.tickUpper);
 
         if (snapshots.length < 2) {
@@ -143,7 +143,7 @@ export class EnhancedFeeCalculator {
     }
 
     /**
-     * Tính toán corrections dựa trên tick-level data
+     * Calculate corrections based on tick-level data
      */
     private calculateTickLevelCorrections(position: any): { fee0: bigint; fee1: bigint } {
         const tickLower = position.tickLower;
@@ -167,7 +167,7 @@ export class EnhancedFeeCalculator {
     }
 
     /**
-     * Tính toán time-weighted fees
+     * Calculate time-weighted fees
      */
     private calculateTimeWeightedFees(
         position: any,
@@ -213,7 +213,7 @@ export class EnhancedFeeCalculator {
     }
 
     /**
-     * Tính toán compounded fees từ reinvestment
+     * Calculate compounded fees from reinvestment
      */
     private calculateCompoundedFees(
         position: any,

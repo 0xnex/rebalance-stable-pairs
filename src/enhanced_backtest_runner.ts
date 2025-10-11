@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Enhanced Backtest Runner với improved fee calculation và detailed reporting
+ * Enhanced Backtest Runner with improved fee calculation and detailed reporting
  */
 
 import { parseArgs } from "node:util";

@@ -1,6 +1,6 @@
 /**
  * Vault Snapshot Tracker
- * Theo dõi trạng thái vault trong quá trình backtest với interval 1 phút
+ * Tracks vault state during backtest with 1-minute intervals
  */
 
 import * as fs from 'fs';
@@ -117,7 +117,7 @@ export interface VaultSnapshot {
 export class VaultSnapshotTracker {
     private snapshots: VaultSnapshot[] = [];
     private lastSnapshotTime: number = 0;
-    private readonly snapshotInterval: number = 60 * 1000; // 1 phút
+    private readonly snapshotInterval: number = 60 * 1000; // 1 minute
     private readonly outputDir: string;
     private initialValue: number = 0;
 
@@ -131,7 +131,7 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Đảm bảo thư mục output tồn tại
+     * Ensure output directory exists
      */
     private ensureOutputDir(): void {
         if (!fs.existsSync(this.outputDir)) {
@@ -140,18 +140,18 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Khởi tạo tracking với giá trị ban đầu
+     * Initialize tracking with initial values
      */
     public initialize(startTime: number): void {
         this.lastSnapshotTime = startTime;
         this.initialValue = this.calculateTotalValue();
 
-        // Tạo snapshot đầu tiên
+        // Create initial snapshot
         this.captureSnapshot(startTime, true);
     }
 
     /**
-     * Cập nhật snapshot nếu đã đủ thời gian
+     * Update snapshot if enough time has passed
      */
     public update(currentTime: number): void {
         if (currentTime - this.lastSnapshotTime >= this.snapshotInterval) {
@@ -161,7 +161,7 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Chụp enhanced snapshot với comprehensive analysis
+     * Capture enhanced snapshot with comprehensive analysis
      */
     private captureSnapshot(timestamp: number, isInitial: boolean = false): void {
         const totals = this.positionManager.getTotals();
@@ -293,23 +293,30 @@ export class VaultSnapshotTracker {
      */
     private countActivePositions(): number {
         // Count positions with liquidity > 0
-        // This would need access to individual positions from position manager
-        const totals = this.positionManager.getTotals();
-        return totals.positions; // Simplified - all positions assumed active
+        return this.positionManager.getActivePositions().length;
     }
 
     private countInRangePositions(): number {
         // Count positions that are currently in range
-        // This would need access to individual positions and current tick
         const currentTick = (this.pool as any).currentTick || 0;
-        // Simplified calculation - would need actual position data
-        return Math.floor(this.countActivePositions() * 0.7); // Assume 70% in range
+        const allPositions = this.positionManager.getAllPositions();
+
+        return allPositions.filter(pos =>
+            currentTick >= pos.tickLower && currentTick < pos.tickUpper
+        ).length;
     }
 
     private calculateAverageTickWidth(): number {
         // Calculate average tick width across all positions
-        // This would need access to individual position tick ranges
-        return 2000; // Placeholder - typical tick width
+        const allPositions = this.positionManager.getAllPositions();
+
+        if (allPositions.length === 0) return 0;
+
+        const totalTickWidth = allPositions.reduce((sum, pos) =>
+            sum + (pos.tickUpper - pos.tickLower), 0
+        );
+
+        return totalTickWidth / allPositions.length;
     }
 
     /**
@@ -500,7 +507,7 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Lưu snapshots vào file CSV
+     * Save snapshots to CSV files
      */
     public saveSnapshots(filename?: string): void {
         const baseFilename = filename ? filename.replace('.json', '') : `vault_snapshots_${Date.now()}`;
@@ -512,7 +519,7 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Xuất snapshots ra file CSV
+     * Export snapshots to CSV file
      */
     private saveSnapshotsAsCSV(csvPath: string): void {
         if (this.snapshots.length === 0) return;
@@ -710,14 +717,14 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Lấy tất cả snapshots
+     * Get all snapshots
      */
     public getSnapshots(): VaultSnapshot[] {
         return [...this.snapshots];
     }
 
     /**
-     * Lấy snapshot cuối cùng
+     * Get last snapshot
      */
     public getLatestSnapshot(): VaultSnapshot | null {
         return this.snapshots.length > 0 ? this.snapshots[this.snapshots.length - 1]! : null;
@@ -855,7 +862,7 @@ export class VaultSnapshotTracker {
     }
 
     /**
-     * Xóa tất cả snapshots
+     * Clear all snapshots
      */
     public clearSnapshots(): void {
         this.snapshots = [];

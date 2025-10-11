@@ -1,6 +1,6 @@
 /**
  * Enhanced Report Generator
- * Tạo reports chi tiết theo format yêu cầu
+ * Generate detailed reports according to requested format
  */
 
 import { EnhancedFeeCalculator, EnhancedFeeMetrics } from './enhanced_fee_calculator';

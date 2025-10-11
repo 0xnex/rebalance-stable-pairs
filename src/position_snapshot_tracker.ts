@@ -1,6 +1,6 @@
 /**
  * Position Snapshot Tracker
- * Theo dõi chi tiết từng position trong quá trình backtest với interval 1 phút
+ * Tracks detailed information for each position during backtest with 1-minute intervals
  */
 
 import * as fs from 'fs';
@@ -33,6 +33,8 @@ export interface PositionSnapshot {
         priceB: number;
     };
     fees: {
+        collected0: string;
+        collected1: string;
         owed0: string;
         owed1: string;
         feeGrowthInside0LastX64: string;
@@ -141,7 +143,7 @@ export class PositionSnapshotTracker {
     private positionSnapshots: Map<string, PositionSnapshot[]> = new Map();
     private summarySnapshots: PositionSummarySnapshot[] = [];
     private lastSnapshotTime: number = 0;
-    private readonly snapshotInterval: number = 60 * 1000; // 1 phút
+    private readonly snapshotInterval: number = 60 * 1000; // 1 minute
     private readonly outputDir: string;
     private positionStartTimes: Map<string, number> = new Map();
     private positionInRangeTimes: Map<string, number> = new Map();
@@ -156,7 +158,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Đảm bảo thư mục output tồn tại
+     * Ensure output directory exists
      */
     private ensureOutputDir(): void {
         if (!fs.existsSync(this.outputDir)) {
@@ -165,7 +167,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Khởi tạo tracking
+     * Initialize tracking
      */
     public initialize(startTime: number): void {
         this.lastSnapshotTime = startTime;
@@ -173,7 +175,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Cập nhật snapshot nếu đã đủ thời gian
+     * Update snapshot if enough time has passed
      */
     public update(currentTime: number): void {
         if (currentTime - this.lastSnapshotTime >= this.snapshotInterval) {
@@ -183,7 +185,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Chụp snapshot tại thời điểm hiện tại
+     * Capture snapshot at current time
      */
     private captureSnapshot(timestamp: number, isInitial: boolean = false): void {
         const positions = this.getAllPositions();
@@ -211,14 +213,14 @@ export class PositionSnapshotTracker {
         const summarySnapshot = this.createSummarySnapshot(positionSnapshots, timestamp);
         this.summarySnapshots.push(summarySnapshot);
 
-        // Log snapshot nếu là initial hoặc mỗi 10 phút
+        // Log snapshot if initial or every 10 minutes
         if (isInitial || this.summarySnapshots.length % 10 === 0) {
             console.log(`📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${summarySnapshot.totalPositions} positions, ${summarySnapshot.inRangePositions} in-range, Value=$${summarySnapshot.totalValueUSD.toFixed(2)}`);
         }
     }
 
     /**
-     * Tạo snapshot cho một position với enhanced metrics
+     * Create snapshot for a position with enhanced metrics
      */
     private createPositionSnapshot(position: VirtualPosition, timestamp: number): PositionSnapshot {
         const currentTick = (this.pool as any).currentTick || 0;
@@ -261,6 +263,8 @@ export class PositionSnapshotTracker {
                 priceB
             },
             fees: {
+                collected0: position.tokensOwed0.toString(),
+                collected1: position.tokensOwed1.toString(),
                 owed0: position.tokensOwed0.toString(),
                 owed1: position.tokensOwed1.toString(),
                 feeGrowthInside0LastX64: position.feeGrowthInside0LastX64.toString(),
@@ -306,7 +310,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Tạo enhanced summary snapshot với comprehensive metrics
+     * Create enhanced summary snapshot with comprehensive metrics
      */
     private createSummarySnapshot(positionSnapshots: PositionSnapshot[], timestamp: number): PositionSummarySnapshot {
         const totalPositions = positionSnapshots.length;
@@ -396,8 +400,8 @@ export class PositionSnapshotTracker {
 
     // Helper methods (implementations would be more detailed in real scenario)
     private getAllPositions(): VirtualPosition[] {
-        // Implementation để lấy tất cả positions từ position manager
-        return []; // Placeholder
+        // Get all positions from position manager
+        return this.positionManager.getAllPositions();
     }
 
     private generatePositionId(position: VirtualPosition): string {
@@ -545,7 +549,7 @@ export class PositionSnapshotTracker {
     }
 
     private tickToPrice(tick: number): number {
-        // Implementation để convert tick sang price
+        // Implementation to convert tick to price
         return Math.pow(1.0001, tick); // Placeholder
     }
 
@@ -766,7 +770,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Lưu snapshots vào file CSV
+     * Save snapshots to CSV files
      */
     public saveSnapshots(filename?: string): void {
         const timestamp = Date.now();
@@ -786,7 +790,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Xuất position snapshots ra file CSV
+     * Export position snapshots to CSV file
      */
     private savePositionSnapshotsAsCSV(csvPath: string): void {
         const allSnapshots: PositionSnapshot[] = [];
@@ -924,7 +928,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Xuất summary snapshots ra file CSV
+     * Export summary snapshots to CSV file
      */
     private saveSummarySnapshotsAsCSV(csvPath: string): void {
         if (this.summarySnapshots.length === 0) return;
@@ -1013,7 +1017,7 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Tạo overall summary
+     * Create overall summary
      */
     private generateOverallSummary() {
         if (this.summarySnapshots.length === 0) return null;
@@ -1052,21 +1056,21 @@ export class PositionSnapshotTracker {
     }
 
     /**
-     * Lấy snapshots của một position cụ thể
+     * Get snapshots for a specific position
      */
     public getPositionSnapshots(positionId: string): PositionSnapshot[] {
         return this.positionSnapshots.get(positionId) || [];
     }
 
     /**
-     * Lấy tất cả summary snapshots
+     * Get all summary snapshots
      */
     public getSummarySnapshots(): PositionSummarySnapshot[] {
         return [...this.summarySnapshots];
     }
 
     /**
-     * Xóa tất cả snapshots
+     * Clear all snapshots
      */
     public clearSnapshots(): void {
         this.positionSnapshots.clear();
@@ -1074,5 +1078,60 @@ export class PositionSnapshotTracker {
         this.positionStartTimes.clear();
         this.positionInRangeTimes.clear();
         this.lastSnapshotTime = 0;
+    }
+
+    // ===== MISSING PRICE CALCULATION METHODS =====
+
+    /**
+     * Get current price from pool
+     */
+    private getCurrentPrice(): number {
+        const pool = this.pool as any;
+        if (pool.sqrtPriceX64) {
+            // Convert sqrt price X64 to actual price
+            const sqrtPrice = Number(pool.sqrtPriceX64) / (2 ** 64);
+            return sqrtPrice * sqrtPrice;
+        }
+
+        // Fallback: calculate from current tick
+        const currentTick = pool.currentTick || 0;
+        return Math.pow(1.0001, currentTick);
+    }
+
+    /**
+     * Convert tick to price
+     */
+    private tickToPrice(tick: number): number {
+        return Math.pow(1.0001, tick);
+    }
+
+    /**
+     * Get price position relative to range
+     */
+    private getPricePosition(position: VirtualPosition): 'below' | 'in_range' | 'above' {
+        const currentTick = (this.pool as any).currentTick || 0;
+
+        if (currentTick < position.tickLower) {
+            return 'below';
+        } else if (currentTick >= position.tickUpper) {
+            return 'above';
+        } else {
+            return 'in_range';
+        }
+    }
+
+    /**
+     * Get distance from position range
+     */
+    private getDistanceFromRange(position: VirtualPosition): number {
+        const currentTick = (this.pool as any).currentTick || 0;
+
+        if (currentTick < position.tickLower) {
+            return position.tickLower - currentTick;
+        } else if (currentTick >= position.tickUpper) {
+            return currentTick - position.tickUpper;
+        } else {
+            return 0; // In range
+        }
     }
 }
