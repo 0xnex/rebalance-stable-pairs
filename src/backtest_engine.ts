@@ -11,6 +11,8 @@ import {
   processRemoveLiquidityEvent,
 } from "./event_importer";
 import { VirtualPositionManager } from "./virtual_position_mgr";
+import { VaultSnapshotTracker } from "./vault_snapshot_tracker";
+import { PositionSnapshotTracker } from "./position_snapshot_tracker";
 
 export type BacktestEventKind =
   | "swap"
@@ -176,6 +178,8 @@ export class BacktestEngine {
   private readonly stepMs: number;
   private readonly logger?: Partial<Console>;
   private readonly metricsIntervalMs: number;
+  private vaultTracker?: VaultSnapshotTracker;
+  private positionTracker?: PositionSnapshotTracker;
 
   constructor(private readonly config: BacktestConfig) {
     if (config.endTime <= config.startTime) {
@@ -211,6 +215,10 @@ export class BacktestEngine {
       this.metricsIntervalMs
     );
 
+    // Initialize snapshot trackers
+    this.vaultTracker = new VaultSnapshotTracker(manager, pool, './snapshots');
+    this.positionTracker = new PositionSnapshotTracker(manager, pool, './snapshots');
+
     const events = this.loadEvents(
       dataDir,
       poolId,
@@ -232,6 +240,10 @@ export class BacktestEngine {
 
     await strategy.onInit({ ...ctxBase, timestamp: startTime, stepIndex: 0 });
     performance.record(startTime, true);
+
+    // Initialize snapshot tracking
+    this.vaultTracker.initialize(startTime);
+    this.positionTracker.initialize(startTime);
 
     let stepIndex = 0;
     let timestamp = startTime;
@@ -262,6 +274,10 @@ export class BacktestEngine {
       manager.updateAllPositionFees();
       performance.record(timestamp);
 
+      // Update snapshot trackers
+      this.vaultTracker?.update(timestamp);
+      this.positionTracker?.update(timestamp);
+
       stepIndex += 1;
       timestamp = startTime + stepIndex * stepMs;
       if (stepIndex > totalSteps) break;
@@ -271,6 +287,13 @@ export class BacktestEngine {
     if (strategy.onFinish) {
       await strategy.onFinish({ ...ctxBase, timestamp: endTime, stepIndex });
     }
+
+    // Save snapshot reports
+    const reportTimestamp = Date.now();
+    this.vaultTracker?.saveSnapshots(`vault_${poolId}_${reportTimestamp}.json`);
+    this.positionTracker?.saveSnapshots(`position_${poolId}_${reportTimestamp}.json`);
+
+    this.logger?.log?.(`📊 Snapshot reports saved to ./snapshots/`);
 
     return {
       poolId,
@@ -346,33 +369,33 @@ export class BacktestEngine {
         const parsed = JSON.parse(content);
         const data = parsed.data ?? [];
         for (const tx of data) {
-        const ts = Number(tx.timestampMs);
-        if (!Number.isFinite(ts)) continue;
-        if (ts > endTime) break outer;
+          const ts = Number(tx.timestampMs);
+          if (!Number.isFinite(ts)) continue;
+          if (ts > endTime) break outer;
 
-        for (const ev of tx.events as MomentumEvent[]) {
-          const type = ev.type;
-          const json = ev.parsedJson;
-          if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase()) {
-            continue;
-          }
+          for (const ev of tx.events as MomentumEvent[]) {
+            const type = ev.type;
+            const json = ev.parsedJson;
+            if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase()) {
+              continue;
+            }
 
-          if (processedEvents < skipCount) {
+            if (processedEvents < skipCount) {
+              processedEvents += 1;
+              continue;
+            }
+
             processedEvents += 1;
-            continue;
-          }
 
-          processedEvents += 1;
+            if (ts < startTime) {
+              continue;
+            }
 
-          if (ts < startTime) {
-            continue;
-          }
+            const kind = this.mapEventKind(type);
+            if (!kind) continue;
 
-          const kind = this.mapEventKind(type);
-          if (!kind) continue;
-
-          events.push({
-            kind,
+            events.push({
+              kind,
               timestamp: ts,
               txDigest: tx.digest,
               eventSeq: Number(ev.id.eventSeq ?? 0),

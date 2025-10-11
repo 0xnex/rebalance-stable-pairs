@@ -16,6 +16,10 @@
   },
   "scripts": {
     "test": "bun run test-runner.ts",
-    "test:pool": "bun run test-runner.ts"
+    "test:pool": "bun run test-runner.ts",
+    "backtest": "bun run src/backtest_runner.ts",
+    "backtest:enhanced": "bun run src/enhanced_backtest_runner.ts",
+    "backtest:report": "bun run src/enhanced_backtest_runner.ts --format table",
+    "backtest:json": "bun run src/enhanced_backtest_runner.ts --format json"
   }
 }
