@@ -64,6 +64,17 @@ export class VirtualPositionManager {
   private totalCostTokenA = 0;
   private totalCostTokenB = 0;
 
+  // Virtual-only ticks (doesn't modify pool state)
+  private virtualTicks = new Map<
+    number,
+    {
+      liquidityNet: bigint;
+      liquidityGross: bigint;
+      feeGrowthOutside0X64: bigint;
+      feeGrowthOutside1X64: bigint;
+    }
+  >();
+
   private static readonly Q64 = 1n << 64n;
 
   constructor(private readonly pool: PoolPositionContext) {}
@@ -73,6 +84,89 @@ export class VirtualPositionManager {
     this.initialAmountB = amountB;
     this.cashAmountA = amountA;
     this.cashAmountB = amountB;
+  }
+
+  /**
+   * Get tick data without modifying pool state
+   * Checks pool ticks first (real data), then virtual ticks (simulated data)
+   */
+  private getTickData(tick: number):
+    | {
+        liquidityNet: bigint;
+        liquidityGross: bigint;
+        feeGrowthOutside0X64: bigint;
+        feeGrowthOutside1X64: bigint;
+      }
+    | undefined {
+    // First check if the pool has this tick (from real on-chain events)
+    const poolTick = this.pool.ticks.get(tick);
+    if (poolTick) {
+      return poolTick;
+    }
+    // Otherwise check our virtual ticks
+    return this.virtualTicks.get(tick);
+  }
+
+  /**
+   * Calculate fee growth inside a position range
+   * Works with both pool ticks and virtual ticks without modifying pool state
+   */
+  private calculateFeeGrowthInside(
+    tickLower: number,
+    tickUpper: number,
+    tokenIndex: 0 | 1
+  ): bigint {
+    // Try pool's calculation first (it will handle ticks that exist in the pool)
+    const poolResult = this.pool.calculateFeeGrowthInside(
+      tickLower,
+      tickUpper,
+      tokenIndex
+    );
+
+    // If pool returned a value (ticks exist), use it
+    if (poolResult !== 0n) {
+      return poolResult;
+    }
+
+    // Otherwise, calculate using virtual ticks and global fee growth
+    const tickLowerData = this.getTickData(tickLower);
+    const tickUpperData = this.getTickData(tickUpper);
+
+    if (!tickLowerData || !tickUpperData) {
+      // If no tick data at all, assume all global fees apply
+      const globalFeeGrowth =
+        tokenIndex === 0
+          ? (this.pool as any).feeGrowthGlobal0X64
+          : (this.pool as any).feeGrowthGlobal1X64;
+      return globalFeeGrowth || 0n;
+    }
+
+    const globalFeeGrowth =
+      tokenIndex === 0
+        ? (this.pool as any).feeGrowthGlobal0X64 || 0n
+        : (this.pool as any).feeGrowthGlobal1X64 || 0n;
+
+    const feeGrowthOutsideLower =
+      tokenIndex === 0
+        ? tickLowerData.feeGrowthOutside0X64
+        : tickLowerData.feeGrowthOutside1X64;
+    const feeGrowthOutsideUpper =
+      tokenIndex === 0
+        ? tickUpperData.feeGrowthOutside0X64
+        : tickUpperData.feeGrowthOutside1X64;
+
+    // Calculate fee growth inside the range
+    let feeGrowthInside: bigint;
+    if (this.pool.tickCurrent < tickLower) {
+      feeGrowthInside = feeGrowthOutsideLower - feeGrowthOutsideUpper;
+    } else if (this.pool.tickCurrent >= tickUpper) {
+      feeGrowthInside = feeGrowthOutsideUpper - feeGrowthOutsideLower;
+    } else {
+      feeGrowthInside =
+        globalFeeGrowth - feeGrowthOutsideLower - feeGrowthOutsideUpper;
+    }
+
+    return feeGrowthInside;
   }
 
   /**
@@ -557,17 +651,18 @@ export class VirtualPositionManager {
     );
 
     // Ensure tick data exists for the position range
-    // We'll manually initialize tick data since Pool doesn't expose addLiquidity
-    if (!this.pool.ticks.has(tickLower)) {
-      this.pool.ticks.set(tickLower, {
+    // Initialize virtual tick data (doesn't modify pool state)
+    // Only create virtual ticks if they don't exist in the pool
+    if (!this.pool.ticks.has(tickLower) && !this.virtualTicks.has(tickLower)) {
+      this.virtualTicks.set(tickLower, {
         liquidityNet: 0n,
         liquidityGross: 0n,
         feeGrowthOutside0X64: 0n,
         feeGrowthOutside1X64: 0n,
       });
     }
-    if (!this.pool.ticks.has(tickUpper)) {
-      this.pool.ticks.set(tickUpper, {
+    if (!this.pool.ticks.has(tickUpper) && !this.virtualTicks.has(tickUpper)) {
+      this.virtualTicks.set(tickUpper, {
         liquidityNet: 0n,
         liquidityGross: 0n,
         feeGrowthOutside0X64: 0n,
@@ -575,12 +670,12 @@ export class VirtualPositionManager {
       });
     }
 
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       1
@@ -667,12 +762,12 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return { fee0: 0n, fee1: 0n };
 
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
@@ -704,12 +799,12 @@ export class VirtualPositionManager {
     position.tokensOwed0 = fees.fee0;
     position.tokensOwed1 = fees.fee1;
 
-    position.feeGrowthInside0LastX64 = this.pool.calculateFeeGrowthInside(
+    position.feeGrowthInside0LastX64 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    position.feeGrowthInside1LastX64 = this.pool.calculateFeeGrowthInside(
+    position.feeGrowthInside1LastX64 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
@@ -1412,12 +1507,12 @@ export class VirtualPositionManager {
     this.cashAmountB += fees.fee1;
     this.totalFeesCollected0 += fees.fee0;
     this.totalFeesCollected1 += fees.fee1;
-    position.feeGrowthInside0LastX64 = this.pool.calculateFeeGrowthInside(
+    position.feeGrowthInside0LastX64 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    position.feeGrowthInside1LastX64 = this.pool.calculateFeeGrowthInside(
+    position.feeGrowthInside1LastX64 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1

@@ -113,9 +113,6 @@
    --minDwells 0,120000 \
    --initialAmountsA 5000 \
    --initialAmountsB 5000
-  ```
-  - 脚本会按 cartesian-product 组合逐个回测，输出每组配置的收益率、手续费与成本，并列出 Top N 结果，便于快速定位高收益参数区间。
-  ```
 
 ## Current Validation Status
 
@@ -132,8 +129,79 @@
 - Compare final swap vs. pool replay: `bun run compare_last_swap.ts`
 - Backtest CLI (custom dir): `bun run src/backtest.ts --poolId <POOL> --inDir ../mmt_txs/<POOL>`
 
-## Next Steps / Open Items
+## Three-Band Rebalancer Parameters
 
-- Implement full tick crossing by tracking per-tick liquidity deltas from positions. This is required to remove large-amount mismatches.
-- Extend `compare_last_swap.ts` to report intermediate diagnostic data once tick state tracking is improved.
-- Consider caching parsed event pages to speed up repeated replays.
+### Core Parameters
+
+| Parameter                 | Value       | Unit                        | Description                                                             |
+| ------------------------- | ----------- | --------------------------- | ----------------------------------------------------------------------- |
+| `THREEBAND_INITIAL_A`     | 0           | **atomic units**            | Initial balance of token A (e.g., 0 USDT)                               |
+| `THREEBAND_INITIAL_B`     | 10000000000 | **atomic units**            | Initial balance of token B (10,000,000,000 = 10,000 USDC at 6 decimals) |
+| `THREEBAND_RANGE_PERCENT` | 0.0001      | percentage (0.01% = 0.0001) | Half-width of each band as percentage. Total band width = 2× this value |
+| `THREEBAND_SEGMENT_COUNT` | 3           | count                       | Total number of contiguous bands                                        |
+
+### Interval Parameters
+
+| Parameter                    | Value  | Unit         | Description                                                |
+| ---------------------------- | ------ | ------------ | ---------------------------------------------------------- |
+| `THREEBAND_FAST_INTERVAL_MS` | 30000  | milliseconds | Check interval for fast segments (30 seconds)              |
+| `THREEBAND_SLOW_INTERVAL_MS` | 300000 | milliseconds | Check interval for slow segments (5 minutes)               |
+| `THREEBAND_FAST_COUNT`       | 2      | count        | Number of bands closest to current price treated as "fast" |
+
+**Fast vs Slow Segments:**
+
+- Fast segments: The N bands closest to current price, checked every `FAST_INTERVAL_MS`
+- Slow segments: Remaining bands farther from price, checked every `SLOW_INTERVAL_MS`
+- Higher interval = longer wait = less frequent checks
+- Example with 3 total bands and 2 fast: bands nearest price check every 30s, farthest band checks every 5min
+
+### Guard Parameters
+
+| Parameter                           | Value | Unit              | Description                                                                   |
+| ----------------------------------- | ----- | ----------------- | ----------------------------------------------------------------------------- |
+| `THREEBAND_MIN_DWELL_MS`            | 60000 | milliseconds      | Minimum time a segment must stay active before rotation (60 seconds)          |
+| `THREEBAND_MIN_OUT_MS`              | 60000 | milliseconds      | Minimum time price must be out of range before allowing rotation (60 seconds) |
+| `THREEBAND_ROTATION_TICK_THRESHOLD` | 0     | ticks             | Minimum tick distance from boundary before rotation allowed                   |
+| `THREEBAND_MIN_PROFIT_B`            | 0.001 | **decimal units** | Minimum profit in token B (e.g., 0.001 USDC) required to justify rotation     |
+
+### Cost Parameters
+
+| Parameter                 | Value | Unit              | Description                                                                 |
+| ------------------------- | ----- | ----------------- | --------------------------------------------------------------------------- |
+| `THREEBAND_ACTION_COST_A` | 0     | **decimal units** | Cost per action in token A (e.g., 0 USDT)                                   |
+| `THREEBAND_ACTION_COST_B` | 0.02  | **decimal units** | Cost per action in token B (e.g., 0.02 USDC, NOT atomic units like INITIAL) |
+
+### Price Range Calculation
+
+For `THREEBAND_RANGE_PERCENT = 0.0001`:
+
+- **Input value**: 0.0001
+- **Half-width**: 0.0001% (divide by 100 → 0.000001 fraction)
+- **Total band width**: 0.0002% (±0.0001%)
+- **Price range per band**: currentPrice × (1 ± 0.000001)
+
+Example at price = 1.0:
+
+- Lower bound: 1.0 × 0.999999 = 0.999999
+- Upper bound: 1.0 × 1.000001 = 1.000001
+- Total width: 0.000002 or 0.0002%
+
+### Typical Configuration for Stablecoin Pools
+
+```bash
+THREEBAND_INITIAL_A=0 \
+THREEBAND_INITIAL_B=10000000000 \
+THREEBAND_ACTION_COST_A=0 \
+THREEBAND_ACTION_COST_B=0.02 \
+THREEBAND_MIN_PROFIT_B=0.001 \
+THREEBAND_RANGE_PERCENT=0.0001 \
+THREEBAND_SEGMENT_COUNT=3 \
+THREEBAND_FAST_COUNT=2 \
+THREEBAND_FAST_INTERVAL_MS=30000 \
+THREEBAND_SLOW_INTERVAL_MS=300000 \
+THREEBAND_MIN_DWELL_MS=60000 \
+THREEBAND_MIN_OUT_MS=60000 \
+THREEBAND_ROTATION_TICK_THRESHOLD=0
+```
+
+This configuration creates 3 ultra-tight bands (0.0002% each) perfect for stable pairs like USDC/USDT that trade within ±0.05% of parity.
