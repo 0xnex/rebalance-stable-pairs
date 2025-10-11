@@ -3,4 +3,5 @@ bun run backtest:json \
     --start "2025-08-20T00:00:00Z" \
     --end "2025-08-30T00:00:00Z" \
     --strategy ./src/strategies/three_band_rebalancer_backtest.ts \
-    --output test_csv_snapshots.json
+    --output test_csv_snapshots.json \
+    --investment 100000

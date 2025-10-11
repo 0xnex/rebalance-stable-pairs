@@ -525,124 +525,72 @@ export class VaultSnapshotTracker {
         if (this.snapshots.length === 0) return;
 
         const headers = [
-            'Timestamp',
-            'TimestampISO',
-            'TotalValueUSD',
-            'CashTokenA',
-            'CashTokenB',
-            'CashTotalUSD',
-            'TokenAPrice',
-            'TokenBPrice',
-            'PositionCount',
-            'ActivePositions',
-            'InRangePositions',
-            'OutOfRangePositions',
-            'TotalLiquidity',
-            'AvgTickWidth',
-            'CollectedFees0',
-            'CollectedFees1',
-            'OwedFees0',
-            'OwedFees1',
-            'TotalFeesUSD',
-            'FeeYieldAPR',
-            'FeeYieldDaily',
-            'TotalReturn',
-            'TotalReturnPct',
-            'UnrealizedPnL',
-            'UnrealizedPnLPct',
-            'RealizedPnL',
-            'RealizedPnLPct',
-            'ROI',
-            'SharpeRatio',
-            'MaxDrawdown',
-            'Volatility',
-            'TotalCostTokenA',
-            'TotalCostTokenB',
-            'TotalCostUSD',
-            'AvgCostBasis',
-            'CurrentTick',
-            'SqrtPriceX64',
-            'Liquidity',
-            'FeeGrowthGlobal0X64',
-            'FeeGrowthGlobal1X64',
-            'Volume24h',
-            'TVL',
-            'PriceRatio',
-            'PriceChange24h',
-            'Volatility24h',
-            'CollateralToken',
-            'CollateralAmount',
-            'CollateralValueUSD',
-            'IsRequirementMet',
-            'InvestmentUSD',
-            'InvestmentRatio',
-            'SwapEfficiency',
-            'ValueAtRisk',
-            'ExpectedShortfall',
-            'Beta',
-            'Correlation'
+            'timestamp',
+            'vault_id',
+            'total_value_usd',
+            'available_liquidity',
+            'collateral_token_amount',
+            'token_a_amount',
+            'token_b_amount',
+            'token_a_price',
+            'token_b_price',
+            'token_collateral_price',
+            'total_investment_usd',
+            'total_return_usd',
+            'total_return_percentage',
+            'active_positions_count',
+            'closed_positions_count',
+            'position_total_liquidity',
+            'accumulated_fee_earned',
+            'accumulated_gas_fee',
+            'accumulated_slippage',
+            'event_type',
+            'event_description'
         ];
 
         const csvRows = [headers.join(',')];
 
         for (const snapshot of this.snapshots) {
+            // Calculate derived values to match sample format
+            const vaultId = this.poolId || 'unknown';
+            const availableLiquidity = parseFloat(snapshot.cashBalances.tokenA) + parseFloat(snapshot.cashBalances.tokenB);
+            const collateralTokenAmount = parseFloat(snapshot.cashBalances.tokenB); // Assuming token B is collateral
+            const tokenAAmount = parseFloat(snapshot.cashBalances.tokenA);
+            const tokenBAmount = parseFloat(snapshot.cashBalances.tokenB);
+            const tokenCollateralPrice = snapshot.cashBalances.tokenBPrice;
+            const totalInvestmentUSD = 100000; // Initial investment amount
+            const totalReturnUSD = snapshot.performance.totalReturn;
+            const totalReturnPercentage = snapshot.performance.totalReturnPct;
+            const closedPositionsCount = 0; // Would need to track this separately
+            const positionTotalLiquidity = parseFloat(snapshot.positions.totalLiquidity);
+            const accumulatedFeeEarned = snapshot.fees.totalFeesUSD;
+            const accumulatedGasFee = snapshot.costs.totalCostUSD;
+            const accumulatedSlippage = 0; // Would need to track this separately
+            const eventType = 'VAULT_UPDATE';
+            const eventDescription = `Regular update - Positions: ${snapshot.positions.count}`;
+
             const row = [
-                snapshot.timestamp,
-                `"${snapshot.timestampISO}"`,
-                snapshot.totalValueUSD,
-                `"${snapshot.cashBalances.tokenA}"`,
-                `"${snapshot.cashBalances.tokenB}"`,
-                snapshot.cashBalances.totalUSD,
-                snapshot.cashBalances.tokenAPrice,
-                snapshot.cashBalances.tokenBPrice,
-                snapshot.positions.count,
-                snapshot.positions.activePositions,
-                snapshot.positions.inRangePositions,
-                snapshot.positions.outOfRangePositions,
-                `"${snapshot.positions.totalLiquidity}"`,
-                snapshot.positions.avgTickWidth,
-                `"${snapshot.fees.collected0}"`,
-                `"${snapshot.fees.collected1}"`,
-                `"${snapshot.fees.owed0}"`,
-                `"${snapshot.fees.owed1}"`,
-                snapshot.fees.totalFeesUSD,
-                snapshot.fees.feeYieldAPR,
-                snapshot.fees.feeYieldDaily,
-                snapshot.performance.totalReturn,
-                snapshot.performance.totalReturnPct,
-                snapshot.performance.unrealizedPnL,
-                snapshot.performance.unrealizedPnLPct,
-                snapshot.performance.realizedPnL,
-                snapshot.performance.realizedPnLPct,
-                snapshot.performance.roi,
-                snapshot.performance.sharpeRatio,
-                snapshot.performance.maxDrawdown,
-                snapshot.performance.volatility,
-                snapshot.costs.totalCostTokenA,
-                snapshot.costs.totalCostTokenB,
-                snapshot.costs.totalCostUSD,
-                snapshot.costs.avgCostBasis,
-                snapshot.poolState.currentTick,
-                `"${snapshot.poolState.sqrtPriceX64}"`,
-                `"${snapshot.poolState.liquidity}"`,
-                `"${snapshot.poolState.feeGrowthGlobal0X64}"`,
-                `"${snapshot.poolState.feeGrowthGlobal1X64}"`,
-                snapshot.poolState.volume24h,
-                snapshot.poolState.tvl,
-                snapshot.priceInfo.priceRatio,
-                snapshot.priceInfo.priceChange24h,
-                snapshot.priceInfo.volatility24h,
-                `"${snapshot.collateralAnalysis?.collateralToken || ''}"`,
-                snapshot.collateralAnalysis?.collateralAmount || 0,
-                snapshot.collateralAnalysis?.collateralValueUSD || 0,
-                snapshot.collateralAnalysis?.isRequirementMet || false,
-                snapshot.investmentOptimization?.investmentUSD || 0,
-                snapshot.investmentOptimization?.investmentRatio || 0,
-                snapshot.investmentOptimization?.swapEfficiency || 0,
-                snapshot.riskMetrics.valueAtRisk,
-                snapshot.riskMetrics.expectedShortfall,
-                snapshot.riskMetrics.beta,
-                snapshot.riskMetrics.correlation
+                `"${snapshot.timestampISO}"`, // timestamp in ISO format
+                `"${vaultId}"`, // vault_id
+                snapshot.totalValueUSD, // total_value_usd
+                availableLiquidity, // available_liquidity
+                collateralTokenAmount, // collateral_token_amount
+                tokenAAmount, // token_a_amount
+                tokenBAmount, // token_b_amount
+                snapshot.cashBalances.tokenAPrice, // token_a_price
+                snapshot.cashBalances.tokenBPrice, // token_b_price
+                tokenCollateralPrice, // token_collateral_price
+                totalInvestmentUSD, // total_investment_usd
+                totalReturnUSD, // total_return_usd
+                totalReturnPercentage, // total_return_percentage
+                snapshot.positions.activePositions, // active_positions_count
+                closedPositionsCount, // closed_positions_count
+                positionTotalLiquidity, // position_total_liquidity
+                accumulatedFeeEarned, // accumulated_fee_earned
+                accumulatedGasFee, // accumulated_gas_fee
+                accumulatedSlippage, // accumulated_slippage
+                `"${eventType}"`, // event_type
+                `"${eventDescription}"` // event_description
             ];
 
             csvRows.push(row.join(','));

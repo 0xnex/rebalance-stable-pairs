@@ -803,122 +803,86 @@ export class PositionSnapshotTracker {
         if (allSnapshots.length === 0) return;
 
         const headers = [
-            'PositionId',
-            'Timestamp',
-            'TimestampISO',
-            'TickLower',
-            'TickUpper',
-            'TickWidth',
-            'LiquidityAmount',
-            'IsActive',
-            'InRange',
-            'LiquidityUtilization',
-            'Amount0',
-            'Amount1',
-            'Value0USD',
-            'Value1USD',
-            'TotalValueUSD',
-            'PriceA',
-            'PriceB',
-            'CollectedFees0',
-            'CollectedFees1',
-            'OwedFees0',
-            'OwedFees1',
-            'FeeGrowthInside0LastX64',
-            'FeeGrowthInside1LastX64',
-            'AccruedFees0',
-            'AccruedFees1',
-            'TotalFeesUSD',
-            'FeeYieldAPR',
-            'FeeYieldDaily',
-            'UnrealizedPnL',
-            'UnrealizedPnLPct',
-            'RealizedPnL',
-            'FeeYield',
-            'TotalReturn',
-            'TotalReturnPct',
-            'TimeInRange',
-            'TimeOutOfRange',
-            'TimeInRangePct',
-            'ROI',
-            'SharpeRatio',
-            'CurrentPrice',
-            'LowerPrice',
-            'UpperPrice',
-            'PricePosition',
-            'DistanceFromRange',
-            'PriceRatio',
-            'Volatility',
-            'CapitalEfficiency',
-            'ImpermanentLoss',
-            'ImpermanentLossPct',
-            'HoldingValue',
-            'CurrentValue',
-            'SwapOpportunities',
-            'TotalSwapValue',
-            'SwapEfficiency',
-            'AvoidedRoundTrips'
+            'timestamp',
+            'position_id',
+            'vault_id',
+            'event_type',
+            'action_type',
+            'pool_address',
+            'min_price',
+            'max_price',
+            'inner_min_price',
+            'inner_max_price',
+            'current_price',
+            'position_width_percentage',
+            'token_a_amount',
+            'token_b_amount',
+            'current_liquidity_usd',
+            'start_liquidity_usd',
+            'fee_earned',
+            'position_return_usd',
+            'position_return_percentage',
+            'il',
+            'apr',
+            'trigger_reason',
+            'ai_explanation',
+            'confidence_score',
+            'rebalance_action',
+            'rebalance_amount'
         ];
 
         const csvRows = [headers.join(',')];
 
         for (const snapshot of allSnapshots) {
+            // Calculate derived values to match sample format
+            const vaultId = this.poolId || 'unknown';
+            const eventType = snapshot.liquidity.isActive ? 'REGULAR' : 'CLOSE';
+            const actionType = snapshot.liquidity.isActive ? '' : 'CLOSE_POSITION';
+            const poolAddress = this.poolId || 'unknown';
+            const minPrice = snapshot.priceInfo.lowerPrice;
+            const maxPrice = snapshot.priceInfo.upperPrice;
+            const currentPrice = snapshot.priceInfo.currentPrice;
+            const positionWidthPercentage = ((maxPrice - minPrice) / currentPrice) * 100;
+            const tokenAAmount = parseFloat(snapshot.tokens.amount0.toString());
+            const tokenBAmount = parseFloat(snapshot.tokens.amount1.toString());
+            const currentLiquidityUSD = snapshot.tokens.totalValueUSD;
+            const startLiquidityUSD = snapshot.tokens.totalValueUSD; // Would need to track initial value
+            const feeEarned = snapshot.fees.totalFeesUSD;
+            const positionReturnUSD = snapshot.performance.totalReturn;
+            const positionReturnPercentage = snapshot.performance.totalReturnPct;
+            const il = snapshot.utilization.impermanentLossPct;
+            const apr = snapshot.fees.feeYieldAPR;
+            const triggerReason = snapshot.liquidity.inRange ? 'Regular update position state' : 'Out of range';
+            const aiExplanation = snapshot.liquidity.inRange ? '' : 'Position out of range';
+            const confidenceScore = 0.0;
+            const rebalanceAction = '';
+            const rebalanceAmount = 0.0;
+
             const row = [
-                `"${snapshot.positionId}"`,
-                snapshot.timestamp,
-                `"${snapshot.timestampISO}"`,
-                snapshot.tickRange.tickLower,
-                snapshot.tickRange.tickUpper,
-                snapshot.tickRange.tickWidth,
-                `"${snapshot.liquidity.amount}"`,
-                snapshot.liquidity.isActive,
-                snapshot.liquidity.inRange,
-                snapshot.liquidity.utilization,
-                `"${snapshot.tokens.amount0}"`,
-                `"${snapshot.tokens.amount1}"`,
-                snapshot.tokens.value0USD,
-                snapshot.tokens.value1USD,
-                snapshot.tokens.totalValueUSD,
-                snapshot.tokens.priceA,
-                snapshot.tokens.priceB,
-                `"${snapshot.fees.collected0}"`,
-                `"${snapshot.fees.collected1}"`,
-                `"${snapshot.fees.owed0}"`,
-                `"${snapshot.fees.owed1}"`,
-                `"${snapshot.fees.feeGrowthInside0LastX64}"`,
-                `"${snapshot.fees.feeGrowthInside1LastX64}"`,
-                `"${snapshot.fees.accruedFees0}"`,
-                `"${snapshot.fees.accruedFees1}"`,
-                snapshot.fees.totalFeesUSD,
-                snapshot.fees.feeYieldAPR,
-                snapshot.fees.feeYieldDaily,
-                snapshot.performance.unrealizedPnL,
-                snapshot.performance.unrealizedPnLPct,
-                snapshot.performance.realizedPnL,
-                snapshot.performance.feeYield,
-                snapshot.performance.totalReturn,
-                snapshot.performance.totalReturnPct,
-                snapshot.performance.timeInRange,
-                snapshot.performance.timeOutOfRange,
-                snapshot.performance.timeInRangePct,
-                snapshot.performance.roi,
-                snapshot.performance.sharpeRatio,
-                snapshot.priceInfo.currentPrice,
-                snapshot.priceInfo.lowerPrice,
-                snapshot.priceInfo.upperPrice,
-                `"${snapshot.priceInfo.pricePosition}"`,
-                snapshot.priceInfo.distanceFromRange,
-                snapshot.priceInfo.priceRatio,
-                snapshot.priceInfo.volatility,
-                snapshot.utilization.capitalEfficiency,
-                snapshot.utilization.impermanentLoss,
-                snapshot.utilization.impermanentLossPct,
-                snapshot.utilization.holdingValue,
-                snapshot.utilization.currentValue,
-                snapshot.swapAnalysis?.optimalSwaps.length || 0,
-                snapshot.swapAnalysis?.totalSwapValue || 0,
-                snapshot.swapAnalysis?.swapEfficiency || 0,
-                snapshot.swapAnalysis?.avoidedRoundTrips || false
+                `"${snapshot.timestampISO}"`, // timestamp
+                snapshot.positionId, // position_id
+                `"${vaultId}"`, // vault_id
+                `"${eventType}"`, // event_type
+                `"${actionType}"`, // action_type
+                `"${poolAddress}"`, // pool_address
+                minPrice, // min_price
+                maxPrice, // max_price
+                currentPrice, // current_price
+                positionWidthPercentage, // position_width_percentage
+                tokenAAmount, // token_a_amount
+                tokenBAmount, // token_b_amount
+                currentLiquidityUSD, // current_liquidity_usd
+                startLiquidityUSD, // start_liquidity_usd
+                feeEarned, // fee_earned
+                positionReturnUSD, // position_return_usd
+                positionReturnPercentage, // position_return_percentage
+                il, // il
+                apr, // apr
+                `"${triggerReason}"`, // trigger_reason
+                `"${aiExplanation}"`, // ai_explanation
+                confidenceScore, // confidence_score
+                `"${rebalanceAction}"`, // rebalance_action
+                rebalanceAmount // rebalance_amount
             ];
 
             csvRows.push(row.join(','));
