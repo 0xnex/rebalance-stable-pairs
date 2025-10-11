@@ -139,3 +139,6 @@ out
 # dumps/
 # *.json
 # backtest*.sh
+
+mmt_txs/*
+snapshots/*

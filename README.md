@@ -2,6 +2,8 @@
 
 To install dependencies:
 
+source /home/harris/.bashrc 
+
 ```bash
 bun install
 ```
