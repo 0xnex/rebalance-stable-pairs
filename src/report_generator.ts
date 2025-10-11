@@ -229,10 +229,16 @@ export class ReportGenerator {
         const collectedFees0 = parseFloat(totals.collectedFees0);
         const collectedFees1 = parseFloat(totals.collectedFees1);
 
-        // Calculate final value (no division - values are already correct)
-        const finalValue = currentValueA + currentValueB + feesOwed0 + feesOwed1 + collectedFees0 + collectedFees1;
-        const totalFees = feesOwed0 + feesOwed1 + collectedFees0 + collectedFees1;
+        // Use backtest finalValue if available, otherwise calculate manually
+        let finalValue: number;
+        if (this.backtest && this.backtest.performance && this.backtest.performance.finalValue) {
+            finalValue = this.backtest.performance.finalValue;
+        } else {
+            // Fallback to manual calculation
+            finalValue = currentValueA + currentValueB + feesOwed0 + feesOwed1 + collectedFees0 + collectedFees1;
+        }
 
+        const totalFees = feesOwed0 + feesOwed1 + collectedFees0 + collectedFees1;
         const netProfit = finalValue - actualInitialInvestment;
         const netProfitPercentage = actualInitialInvestment > 0 ? (netProfit / actualInitialInvestment) * 100 : 0;
         const returnPercentage = netProfitPercentage;
@@ -451,17 +457,25 @@ Validation Score: ${formatPercentage(report.validationScore * 100)}
     private calculateHighestProfit(startTime: number, endTime: number, initialInvestment: number): number {
         // Use backtest performance data if available
         if (this.backtest && this.backtest.performance) {
-            return this.backtest.performance.highestValue || initialInvestment;
+            const highestValue = this.backtest.performance.highestValue || initialInvestment;
+            // Use the same baseline as netProfit calculation
+            const totals = this.positionManager.getTotals();
+            const actualInitialInvestment = parseFloat(totals.initialAmountA) + parseFloat(totals.initialAmountB);
+            return highestValue - actualInitialInvestment; // Return profit using consistent baseline
         }
-        return initialInvestment * 1.05; // Fallback mock value
+        return initialInvestment * 0.05; // Fallback mock profit (5%)
     }
 
     private calculateLowestProfit(startTime: number, endTime: number, initialInvestment: number): number {
         // Use backtest performance data if available
         if (this.backtest && this.backtest.performance) {
-            return this.backtest.performance.lowestValue || initialInvestment;
+            const lowestValue = this.backtest.performance.lowestValue || initialInvestment;
+            // Use the same baseline as netProfit calculation
+            const totals = this.positionManager.getTotals();
+            const actualInitialInvestment = parseFloat(totals.initialAmountA) + parseFloat(totals.initialAmountB);
+            return lowestValue - actualInitialInvestment; // Return profit using consistent baseline
         }
-        return initialInvestment * 0.98; // Fallback mock value
+        return initialInvestment * -0.02; // Fallback mock loss (-2%)
     }
 
     private calculateAveragePriceRange(): number {
