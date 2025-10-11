@@ -184,10 +184,7 @@ async function importEvents(
 
           if (handled) {
             processedSeedEvents += 1;
-            if (
-              seedLimit !== undefined &&
-              processedSeedEvents >= seedLimit
-            ) {
+            if (seedLimit !== undefined && processedSeedEvents >= seedLimit) {
               return pool;
             }
           }

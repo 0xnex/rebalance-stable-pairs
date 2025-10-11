@@ -570,6 +570,11 @@ export class ThreeBandRebalancerStrategy {
       return true;
     }
 
+    // Collect fees from all positions to get accurate fee totals
+    for (const segment of this.segments) {
+      this.manager.collectFees(segment.id);
+    }
+
     const totals = this.manager.getTotals();
     const deltaA =
       Number(totals.collectedFees0 - this.lastRotationFeesTokenA) / 1_000_000;

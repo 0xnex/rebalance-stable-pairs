@@ -29,14 +29,14 @@ The Three-Band strategy is a concentrated liquidity market making approach desig
 
 ### Initialization / Deployment
 
-- Split working capital into three contiguous micro-bands (≈±0.0008–0.001% around spot) so their tick ranges touch without gaps
+- Split working capital into three contiguous micro-bands (≈±0.001% half-width, 0.002% total width per band) so their tick ranges touch without gaps
 - Open each band via `addLiquidityWithSwap` with a bootstrap slippage allowance to balance single-sided inventories if needed
 - Track every band's `lastMoved` timestamp to support dwell protections later
 
-### Monitoring Loop (30s fast / 60s slow)
+### Monitoring Loop (30s fast / 5min slow)
 
 - Define a fast set containing the closest `fastSegmentCount` bands (typically 1–2); inspect them every `fastIntervalMs` (30s)
-- All remaining bands form the slow set, inspected every `slowIntervalMs` (60s)
+- All remaining bands form the slow set, inspected every `slowIntervalMs` (5 minutes = 300s)
 - Skip inspections if the relevant interval has not elapsed
 - Before a band moves, enforce the `minSegmentDwellMs` guard so it must stay in place for the configured duration (0–120s) before rotating again
 
@@ -207,7 +207,7 @@ feeCompoundingThresholdPercent: 1.0;
 const config = {
   // Core parameters
   segmentCount: 3,
-  segmentRangePercent: 0.001, // 0.1% width
+  segmentRangePercent: 0.001, // 0.001% half-width (0.002% total width per band)
 
   // Time controls
   fastIntervalMs: 30_000, // 30 seconds
@@ -361,15 +361,15 @@ The tested enhancements might work better in:
 
 ### Core Parameters
 
-| Parameter                 | Default | Description                        |
-| ------------------------- | ------- | ---------------------------------- |
-| `segmentCount`            | 3       | Number of bands (3-5 recommended)  |
-| `segmentRangePercent`     | 0.001   | Band width (0.1%)                  |
-| `fastIntervalMs`          | 30000   | Fast check interval (30s)          |
-| `slowIntervalMs`          | 300000  | Slow check interval (5min)         |
-| `minSegmentDwellMs`       | 120000  | Min time before re-rotation (2min) |
-| `actionCostTokenB`        | 0.02    | Cost per operation                 |
-| `minRotationProfitTokenB` | 0.05    | Min profit to rotate               |
+| Parameter                 | Default | Description                            |
+| ------------------------- | ------- | -------------------------------------- |
+| `segmentCount`            | 3       | Number of bands (3-5 recommended)      |
+| `segmentRangePercent`     | 0.001   | Band half-width (0.001%, total 0.002%) |
+| `fastIntervalMs`          | 30000   | Fast check interval (30s)              |
+| `slowIntervalMs`          | 300000  | Slow check interval (5min)             |
+| `minSegmentDwellMs`       | 120000  | Min time before re-rotation (2min)     |
+| `actionCostTokenB`        | 0.02    | Cost per operation                     |
+| `minRotationProfitTokenB` | 0.05    | Min profit to rotate                   |
 
 ### Enhancement Parameters (Use with Caution)
 
@@ -455,7 +455,7 @@ The Three-Band strategy performs best in its **simple, baseline configuration**:
 
 - [ ] Use baseline configuration (all enhancements disabled)
 - [ ] Set appropriate action costs for your pool
-- [ ] Adjust band width for your volatility (0.0008-0.001%)
+- [ ] Adjust band half-width for your volatility (0.0001-0.001% as half-width parameter)
 - [ ] Start with 3 bands
 - [ ] Run backtest to validate
 - [ ] Monitor rotation frequency
