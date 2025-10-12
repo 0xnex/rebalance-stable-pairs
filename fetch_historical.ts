@@ -28,12 +28,12 @@ async function fetchHistorical() {
         if (files.length > 0) {
             console.log(`📁 Found ${files.length} existing files`);
 
-            // Đọc file đầu tiên để tìm timestamp cũ nhất
-            const firstFile = path.join(existingDataDir, files[0]);
+            // Đọc file cuối cùng để tìm timestamp cũ nhất
+            const firstFile = path.join(existingDataDir, files[files.length - 1]);
             const firstContent = JSON.parse(fs.readFileSync(firstFile, 'utf-8'));
 
             if (firstContent.data && firstContent.data.length > 0) {
-                // Tìm timestamp nhỏ nhất trong file đầu tiên
+                // Tìm timestamp nhỏ nhất trong file cuối cùng
                 const timestamps = firstContent.data.map((tx: any) => parseInt(tx.timestampMs));
                 oldestTimestamp = Math.min(...timestamps);
 
