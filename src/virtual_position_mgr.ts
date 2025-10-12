@@ -1043,17 +1043,6 @@ export class VirtualPositionManager {
   }
 
   /**
-   * Get positions that are currently in range (active)
-   */
-  getActivePositions(): VirtualPosition[] {
-    return Array.from(this.positions.values()).filter(
-      (position) =>
-        this.pool.tickCurrent >= position.tickLower &&
-        this.pool.tickCurrent < position.tickUpper
-    );
-  }
-
-  /**
    * Get positions that are currently out of range (inactive)
    */
   getInactivePositions(): VirtualPosition[] {
@@ -1789,7 +1778,7 @@ export class VirtualPositionManager {
   /**
    * Get active positions (with liquidity > 0)
    */
-  getActivePositions0(): VirtualPosition[] {
+  getActivePositions(): VirtualPosition[] {
     return Array.from(this.positions.values()).filter(
       (pos) => pos.liquidity > 0n
     );

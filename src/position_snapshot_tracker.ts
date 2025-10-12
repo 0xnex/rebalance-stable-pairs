@@ -153,19 +153,9 @@ export class PositionSnapshotTracker {
   private summarySnapshots: PositionSummarySnapshot[] = [];
   private lastSnapshotTime: number = 0;
   private readonly snapshotInterval: number = 60 * 1000; // 1 minute
-
-  // CSV streaming
-  private csvOutputDir: string | null = null;
-  private positionCsvPath: string | null = null;
-  private summaryCsvPath: string | null = null;
-  private csvHeadersWritten: { position: boolean; summary: boolean } = {
-    position: false,
-    summary: false,
-  };
   private readonly outputDir: string;
   private positionStartTimes: Map<string, number> = new Map();
   private positionInRangeTimes: Map<string, number> = new Map();
-  private positionRangeStatus: Map<string, boolean> = new Map(); // Track previous in-range status
 
   constructor(
     private readonly positionManager: VirtualPositionManager,
@@ -183,97 +173,6 @@ export class PositionSnapshotTracker {
     if (!fs.existsSync(this.outputDir)) {
       fs.mkdirSync(this.outputDir, { recursive: true });
     }
-  }
-
-  /**
-   * Enable CSV streaming (write rows as they're captured instead of buffering in memory)
-   */
-  public enableCsvStreaming(poolId: string): void {
-    const timestamp = Date.now();
-    this.csvOutputDir = this.outputDir;
-    this.positionCsvPath = path.join(
-      this.csvOutputDir,
-      `positions_${poolId}_${timestamp}.csv`
-    );
-    this.summaryCsvPath = path.join(
-      this.csvOutputDir,
-      `summary_${poolId}_${timestamp}.csv`
-    );
-
-    // Write position CSV headers
-    const positionHeaders = [
-      "timestamp",
-      "position_id",
-      "vault_id",
-      "event_type",
-      "action_type",
-      "pool_address",
-      "min_price",
-      "max_price",
-      "current_price",
-      "position_width_percentage",
-      "token_a_amount",
-      "token_b_amount",
-      "current_liquidity_usd",
-      "start_liquidity_usd",
-      "fee_earned",
-      "position_return_usd",
-      "position_return_percentage",
-      "il",
-      "apr",
-      "trigger_reason",
-      "ai_explanation",
-      "confidence_score",
-      "rebalance_action",
-      "rebalance_amount",
-    ].join(",");
-    fs.writeFileSync(this.positionCsvPath, positionHeaders + "\n", "utf-8");
-    this.csvHeadersWritten.position = true;
-
-    // Write summary CSV headers
-    // Note: "Quote" values are in TokenB (quote currency) terms, not USD
-    const summaryHeaders = [
-      "Timestamp",
-      "TimestampISO",
-      "TotalPositions",
-      "ActivePositions",
-      "InRangePositions",
-      "OutOfRangePositions",
-      "TotalLiquidity",
-      "TotalValueQuote",
-      "TotalFeesQuote",
-      "AverageTickWidth",
-      "PositionsBelow",
-      "PositionsInRange",
-      "PositionsAbove",
-      "AvgUnrealizedPnL",
-      "AvgUnrealizedPnLPct",
-      "AvgRealizedPnL",
-      "AvgFeeYield",
-      "AvgFeeYieldAPR",
-      "AvgTimeInRange",
-      "AvgTimeInRangePct",
-      "TotalImpermanentLoss",
-      "TotalImpermanentLossPct",
-      "AvgROI",
-      "AvgSharpeRatio",
-      "TotalReturn",
-      "TotalReturnPct",
-      "PortfolioVolatility",
-      "MaxDrawdown",
-      "ValueAtRisk",
-      "ExpectedShortfall",
-      "TotalSwapOpportunities",
-      "TotalSwapValue",
-      "AvgSwapEfficiency",
-      "RoundTripsAvoided",
-    ].join(",");
-    fs.writeFileSync(this.summaryCsvPath, summaryHeaders + "\n", "utf-8");
-    this.csvHeadersWritten.summary = true;
-
-    console.log(`✅ CSV streaming enabled:`);
-    console.log(`   Positions: ${this.positionCsvPath}`);
-    console.log(`   Summary: ${this.summaryCsvPath}`);
   }
 
   /**
@@ -306,22 +205,14 @@ export class PositionSnapshotTracker {
       const snapshot = this.createPositionSnapshot(position, timestamp);
       positionSnapshots.push(snapshot);
 
-      // Store in position history (only if not streaming or if needed for analysis)
+      // Store in position history
       const positionId = snapshot.positionId;
       if (!this.positionSnapshots.has(positionId)) {
         this.positionSnapshots.set(positionId, []);
         this.positionStartTimes.set(positionId, timestamp);
         this.positionInRangeTimes.set(positionId, 0);
       }
-
-      // If CSV streaming is enabled, write immediately and don't buffer in memory
-      if (this.positionCsvPath && this.csvHeadersWritten.position) {
-        this.writePositionCsvRow(snapshot);
-        // Don't store in memory to save RAM
-      } else {
-        // Store in memory for later export
-        this.positionSnapshots.get(positionId)!.push(snapshot);
-      }
+      this.positionSnapshots.get(positionId)!.push(snapshot);
 
       // Update time tracking
       this.updateTimeTracking(positionId, snapshot, timestamp);
@@ -332,119 +223,18 @@ export class PositionSnapshotTracker {
       positionSnapshots,
       timestamp
     );
+    this.summarySnapshots.push(summarySnapshot);
 
-    // If CSV streaming is enabled, write summary row immediately
-    if (this.summaryCsvPath && this.csvHeadersWritten.summary) {
-      this.writeSummaryCsvRow(summarySnapshot);
-      // Don't buffer in memory
-    } else {
-      this.summarySnapshots.push(summarySnapshot);
+    // Log snapshot if initial or every 10 minutes
+    if (isInitial || this.summarySnapshots.length % 10 === 0) {
+      console.log(
+        `📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${
+          summarySnapshot.totalPositions
+        } positions, ${
+          summarySnapshot.inRangePositions
+        } in-range, Value=$${summarySnapshot.totalValueUSD.toFixed(2)}`
+      );
     }
-
-    // Log snapshot every minute with detailed position info
-    if (isInitial || this.summarySnapshots.length % 1 === 0) {
-      this.logPositionStatus(summarySnapshot, positionSnapshots);
-    }
-  }
-
-  /**
-   * Log detailed position status with price ranges and market price
-   */
-  private logPositionStatus(
-    summary: PositionSummarySnapshot,
-    positions: PositionSnapshot[]
-  ): void {
-    const currentPrice = this.getCurrentPrice();
-    const inRangeCount = positions.filter((p) => p.liquidity.inRange).length;
-    const activeCount = positions.filter((p) => p.liquidity.isActive).length;
-
-    // Calculate total fees this tick
-    const totalFeesThisTick = positions.reduce(
-      (sum, pos) => sum + pos.fees.totalFeesUSD,
-      0
-    );
-
-    console.log(
-      `\n📊 Position Status [${
-        summary.timestampISO
-      }] | Market Price: ${currentPrice.toFixed(8)}`
-    );
-    console.log(`═`.repeat(80));
-    console.log(
-      `   Total: ${summary.totalPositions} | Active: ${activeCount} | In-Range: ${inRangeCount} 🟢 | Out: ${summary.outOfRangePositions} ⚪`
-    );
-    console.log(
-      `   Value: ${summary.totalValueUSD.toFixed(
-        2
-      )} Token B | Fees This Tick: ${totalFeesThisTick.toFixed(
-        4
-      )} Token B | Total Fees: ${summary.totalFeesUSD.toFixed(2)} Token B`
-    );
-
-    if (positions.length > 0) {
-      console.log(`\n   Position Details:`);
-      for (let i = 0; i < positions.length; i++) {
-        const pos = positions[i];
-        if (!pos) continue; // Skip if position is undefined
-
-        const status = pos.liquidity.inRange
-          ? "🟢 IN-RANGE"
-          : pos.priceInfo.pricePosition === "below"
-          ? "⬇️  BELOW"
-          : "⬆️  ABOVE";
-        const statusColor = pos.liquidity.inRange ? "✅" : "❌";
-
-        // Calculate fee details
-        const decimalsA = parseInt(process.env.TOKEN_A_DECIMALS || "9");
-        const decimalsB = parseInt(process.env.TOKEN_B_DECIMALS || "9");
-
-        const feesEarned0 =
-          Number(pos.fees.accruedFees0) / Math.pow(10, decimalsA);
-        const feesEarned1 =
-          Number(pos.fees.accruedFees1) / Math.pow(10, decimalsB);
-        const totalFeesQuote = pos.fees.totalFeesUSD;
-        const feeAPR = pos.fees.feeYieldAPR;
-
-        console.log(`   ${i + 1}. ${status} | ID: ${pos.positionId}`);
-        console.log(
-          `      Price Range: [${pos.priceInfo.lowerPrice.toFixed(
-            8
-          )} - ${pos.priceInfo.upperPrice.toFixed(8)}]`
-        );
-        console.log(
-          `      Mid: ${(
-            (pos.priceInfo.lowerPrice + pos.priceInfo.upperPrice) /
-            2
-          ).toFixed(8)} | Width: ${(
-            ((pos.priceInfo.upperPrice - pos.priceInfo.lowerPrice) /
-              currentPrice) *
-            100
-          ).toFixed(4)}%`
-        );
-        console.log(
-          `      Distance: ${Math.abs(pos.priceInfo.distanceFromRange).toFixed(
-            0
-          )} ticks | ${statusColor} ${
-            pos.liquidity.inRange ? "Earning fees" : "Not earning"
-          }`
-        );
-
-        // Add fee information
-        console.log(
-          `      💰 Fees: ${totalFeesQuote.toFixed(
-            4
-          )} Token B (Token A: ${feesEarned0.toFixed(
-            6
-          )}, Token B: ${feesEarned1.toFixed(6)}) | APR: ${feeAPR.toFixed(2)}%`
-        );
-
-        // Alert on range changes
-        if (!pos.liquidity.inRange) {
-          console.log(`      ⚠️  Position out of range - consider rebalancing`);
-        }
-      }
-    }
-    console.log(`${"─".repeat(80)}\n`);
   }
 
   /**
@@ -735,34 +525,22 @@ export class PositionSnapshotTracker {
   }
 
   private calculateTokenValue(amount: bigint, token: "A" | "B"): number {
-    // Convert everything to Token B terms (quote currency)
-    // Get decimals from environment or use default
-    const decimals =
-      token === "A"
-        ? parseInt(process.env.TOKEN_A_DECIMALS || "9")
-        : parseInt(process.env.TOKEN_B_DECIMALS || "9");
-
-    const normalizedAmount = Number(amount) / Math.pow(10, decimals);
-
-    if (token === "B") {
-      // Token B is the quote currency, no conversion needed
-      return normalizedAmount;
-    } else {
-      // Token A: convert to Token B equivalent using pool price
-      const poolPrice = this.getCurrentPrice(); // How much Token B per 1 Token A
-      return normalizedAmount * poolPrice;
-    }
+    const price = this.calculateTokenPrice(token);
+    const normalizedAmount = Number(amount) / 1e6; // Assuming 6 decimals
+    return normalizedAmount * price;
   }
 
   private calculateTokenPrice(token: "A" | "B"): number {
-    // Return price in Token B terms
-    // Token B is the quote currency (e.g., USDC, USDT)
+    // Enhanced price calculation from pool state
+    const currentTick = (this.pool as any).tickCurrent || 0;
+    const basePrice = Math.pow(1.0001, currentTick);
 
-    if (token === "B") {
-      return 1.0; // Token B quoted in itself = 1
+    if (token === "A") {
+      // Token A (e.g., SUI) price calculation
+      return basePrice;
     } else {
-      // Token A quoted in Token B
-      return this.getCurrentPrice(); // Pool price = how much Token B per Token A
+      // Token B (e.g., USDC) price - typically stable
+      return 1.0;
     }
   }
 
@@ -1137,7 +915,6 @@ export class PositionSnapshotTracker {
     snapshot: PositionSnapshot,
     timestamp: number
   ): void {
-    // Update in-range time
     if (snapshot.liquidity.inRange) {
       const currentInRangeTime = this.positionInRangeTimes.get(positionId) || 0;
       this.positionInRangeTimes.set(
@@ -1145,48 +922,6 @@ export class PositionSnapshotTracker {
         currentInRangeTime + this.snapshotInterval
       );
     }
-
-    // Check for range status changes
-    const previousStatus = this.positionRangeStatus.get(positionId);
-    const currentStatus = snapshot.liquidity.inRange;
-
-    if (previousStatus !== undefined && previousStatus !== currentStatus) {
-      // Status changed!
-      const currentPrice = this.getCurrentPrice();
-      if (currentStatus) {
-        console.log(
-          `\n🎉 Position ${positionId} ENTERED RANGE at price ${currentPrice.toFixed(
-            8
-          )}`
-        );
-        console.log(
-          `   Range: [${snapshot.priceInfo.lowerPrice.toFixed(
-            8
-          )} - ${snapshot.priceInfo.upperPrice.toFixed(8)}]`
-        );
-        console.log(`   ✅ Now earning fees!\n`);
-      } else {
-        console.log(
-          `\n⚠️  Position ${positionId} EXITED RANGE at price ${currentPrice.toFixed(
-            8
-          )}`
-        );
-        console.log(
-          `   Range: [${snapshot.priceInfo.lowerPrice.toFixed(
-            8
-          )} - ${snapshot.priceInfo.upperPrice.toFixed(8)}]`
-        );
-        console.log(
-          `   Price is ${
-            snapshot.priceInfo.pricePosition === "below" ? "BELOW" : "ABOVE"
-          } range`
-        );
-        console.log(`   ❌ No longer earning fees - consider rebalancing!\n`);
-      }
-    }
-
-    // Update status
-    this.positionRangeStatus.set(positionId, currentStatus);
   }
 
   /**
@@ -1212,128 +947,9 @@ export class PositionSnapshotTracker {
   }
 
   /**
-   * Write a single position snapshot row to CSV (for streaming)
-   */
-  private writePositionCsvRow(snapshot: PositionSnapshot): void {
-    if (!this.positionCsvPath) return;
-
-    const vaultId = "default_vault";
-    const eventType = "position_update";
-    const actionType = snapshot.liquidity.inRange ? "active" : "inactive";
-    const poolAddress = "pool_address";
-    const minPrice = snapshot.priceInfo.lowerPrice;
-    const maxPrice = snapshot.priceInfo.upperPrice;
-    const currentPrice = snapshot.priceInfo.currentPrice;
-    const positionWidthPercentage =
-      ((snapshot.priceInfo.upperPrice - snapshot.priceInfo.lowerPrice) /
-        snapshot.priceInfo.currentPrice) *
-      100;
-    const tokenAAmount = Number(snapshot.tokens.amount0) / 1e9;
-    const tokenBAmount = Number(snapshot.tokens.amount1) / 1e9;
-    const currentLiquidityUSD = snapshot.tokens.totalValueUSD;
-    const startLiquidityUSD = currentLiquidityUSD; // Simplified
-    const feeEarned = snapshot.fees.totalFeesUSD;
-    const positionReturnUSD = snapshot.performance.totalReturn;
-    const positionReturnPercentage = snapshot.performance.totalReturnPct;
-    const il = snapshot.utilization.impermanentLossPct;
-    const apr = snapshot.fees.feeYieldAPR;
-    const triggerReason = snapshot.liquidity.inRange
-      ? "Regular update position state"
-      : "Out of range";
-    const aiExplanation = snapshot.liquidity.inRange
-      ? ""
-      : "Position out of range";
-    const confidenceScore = 0.0;
-    const rebalanceAction = "";
-    const rebalanceAmount = 0.0;
-
-    const row = [
-      `"${snapshot.timestampISO}"`,
-      snapshot.positionId,
-      `"${vaultId}"`,
-      `"${eventType}"`,
-      `"${actionType}"`,
-      `"${poolAddress}"`,
-      minPrice,
-      maxPrice,
-      currentPrice,
-      positionWidthPercentage,
-      tokenAAmount,
-      tokenBAmount,
-      currentLiquidityUSD,
-      startLiquidityUSD,
-      feeEarned,
-      positionReturnUSD,
-      positionReturnPercentage,
-      il,
-      apr,
-      `"${triggerReason}"`,
-      `"${aiExplanation}"`,
-      confidenceScore,
-      `"${rebalanceAction}"`,
-      rebalanceAmount,
-    ].join(",");
-
-    fs.appendFileSync(this.positionCsvPath, row + "\n", "utf-8");
-  }
-
-  /**
-   * Write a single summary snapshot row to CSV (for streaming)
-   */
-  private writeSummaryCsvRow(snapshot: PositionSummarySnapshot): void {
-    if (!this.summaryCsvPath) return;
-
-    const row = [
-      snapshot.timestamp,
-      `"${snapshot.timestampISO}"`,
-      snapshot.totalPositions,
-      snapshot.activePositions,
-      snapshot.inRangePositions,
-      snapshot.outOfRangePositions,
-      `"${snapshot.totalLiquidity}"`,
-      snapshot.totalValueUSD,
-      snapshot.totalFeesUSD,
-      snapshot.averageTickWidth,
-      snapshot.positionDistribution.below,
-      snapshot.positionDistribution.inRange,
-      snapshot.positionDistribution.above,
-      snapshot.performanceMetrics.avgUnrealizedPnL,
-      snapshot.performanceMetrics.avgUnrealizedPnLPct,
-      snapshot.performanceMetrics.avgRealizedPnL,
-      snapshot.performanceMetrics.avgFeeYield,
-      snapshot.performanceMetrics.avgFeeYieldAPR,
-      snapshot.performanceMetrics.avgTimeInRange,
-      snapshot.performanceMetrics.avgTimeInRangePct,
-      snapshot.performanceMetrics.totalImpermanentLoss,
-      snapshot.performanceMetrics.totalImpermanentLossPct,
-      snapshot.performanceMetrics.avgROI,
-      snapshot.performanceMetrics.avgSharpeRatio,
-      snapshot.performanceMetrics.totalReturn,
-      snapshot.performanceMetrics.totalReturnPct,
-      snapshot.riskMetrics.portfolioVolatility,
-      snapshot.riskMetrics.maxDrawdown,
-      snapshot.riskMetrics.valueAtRisk,
-      snapshot.riskMetrics.expectedShortfall,
-      snapshot.optimizationAnalysis.totalSwapOpportunities,
-      snapshot.optimizationAnalysis.totalSwapValue,
-      snapshot.optimizationAnalysis.avgSwapEfficiency,
-      snapshot.optimizationAnalysis.roundTripsAvoided,
-    ].join(",");
-
-    fs.appendFileSync(this.summaryCsvPath, row + "\n", "utf-8");
-  }
-
-  /**
-   * Export position snapshots to CSV file (legacy - only used when not streaming)
+   * Export position snapshots to CSV file
    */
   private savePositionSnapshotsAsCSV(csvPath: string): void {
-    if (this.positionCsvPath) {
-      console.log(
-        `   Skipping position CSV save - data was streamed to ${this.positionCsvPath}`
-      );
-      return;
-    }
-
     const allSnapshots: PositionSnapshot[] = [];
 
     // Flatten all position snapshots
@@ -1376,10 +992,10 @@ export class PositionSnapshotTracker {
 
     for (const snapshot of allSnapshots) {
       // Calculate derived values to match sample format
-      const vaultId = "default_vault";
+      const vaultId = "unknown";
       const eventType = snapshot.liquidity.isActive ? "REGULAR" : "CLOSE";
       const actionType = snapshot.liquidity.isActive ? "" : "CLOSE_POSITION";
-      const poolAddress = "pool_address";
+      const poolAddress = "unknown";
       const minPrice = snapshot.priceInfo.lowerPrice;
       const maxPrice = snapshot.priceInfo.upperPrice;
       const currentPrice = snapshot.priceInfo.currentPrice;
@@ -1438,16 +1054,9 @@ export class PositionSnapshotTracker {
   }
 
   /**
-   * Export summary snapshots to CSV file (legacy - only used when not streaming)
+   * Export summary snapshots to CSV file
    */
   private saveSummarySnapshotsAsCSV(csvPath: string): void {
-    if (this.summaryCsvPath) {
-      console.log(
-        `   Skipping summary CSV save - data was streamed to ${this.summaryCsvPath}`
-      );
-      return;
-    }
-
     if (this.summarySnapshots.length === 0) return;
 
     const headers = [
@@ -1630,9 +1239,6 @@ export class PositionSnapshotTracker {
     this.summarySnapshots = [];
     this.positionStartTimes.clear();
     this.positionInRangeTimes.clear();
-    this.positionRangeStatus.clear();
     this.lastSnapshotTime = 0;
   }
-
-  // ===== MISSING PRICE CALCULATION METHODS =====
 }

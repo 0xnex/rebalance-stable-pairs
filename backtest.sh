@@ -22,9 +22,5 @@ THREEBAND_ROTATION_TICK_THRESHOLD=0 \
     --step 1000 \
     --format csv \
     --strategy ./src/strategies/three_band_rebalancer_backtest.ts \
-    --dataDir ../mmt_txs \
-    --tokenAName USDC \
-    --tokenADecimals 9 \
-    --tokenBName USDT \
-    --tokenBDecimals 9 \
-    > three_band_rebalancer_backtest.log 2>&1
+    --dataDir ../mmt_txs > three_band_rebalancer_backtest.log 2>&1
+    
