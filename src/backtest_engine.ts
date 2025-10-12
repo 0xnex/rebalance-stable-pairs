@@ -13,6 +13,7 @@ import {
 import { VirtualPositionManager } from "./virtual_position_mgr";
 import { VaultSnapshotTracker } from "./vault_snapshot_tracker";
 import { PositionSnapshotTracker } from "./position_snapshot_tracker";
+import { rawEventService } from "./services/raw_event_service";
 
 export type BacktestEventKind =
   | "swap"
@@ -247,6 +248,8 @@ export class BacktestEngine {
       silent: true,
       dataDir,
       seedEventCount: poolSeedEventCount,
+      startTime,
+      endTime,
     });
 
     const strategy = this.config.strategyFactory(pool);
@@ -270,7 +273,7 @@ export class BacktestEngine {
     this.positionTracker.enableCsvStreaming(poolId);
 
     // Stream events instead of loading all into memory
-    const eventIterator = this.streamEvents(
+    const eventIterator = await this.streamEvents(
       dataDir,
       poolId,
       startTime,
@@ -305,14 +308,14 @@ export class BacktestEngine {
 
     // Buffer for events (memory-efficient: only holds future events)
     let eventBuffer: BacktestMomentumEvent[] = [];
-    const iterator = eventIterator[Symbol.iterator]();
-    let nextEvent = iterator.next();
+    // const iterator = eventIterator[Symbol.iterator]();
+    let nextEvent = await eventIterator.next();
 
     while (timestamp <= endTime) {
       // Load events from stream into buffer up to current timestamp
       while (!nextEvent.done && nextEvent.value.timestamp <= timestamp) {
         eventBuffer.push(nextEvent.value);
-        nextEvent = iterator.next();
+        nextEvent = await eventIterator.next();
       }
 
       // Process events in current window
@@ -457,13 +460,25 @@ export class BacktestEngine {
     }
   }
 
-  private *streamEvents(
+  private async *streamEvents(
     dir: string,
     poolId: string,
     startTime: number,
     endTime: number,
     skipEventCount?: number
-  ): Generator<BacktestMomentumEvent> {
+  ): AsyncGenerator<BacktestMomentumEvent> {
+    // If dir is empty, use database
+    if (!dir) {
+      yield* this.streamEventsFromDatabase(
+        poolId,
+        startTime,
+        endTime,
+        skipEventCount
+      );
+      return;
+    }
+
+    // Otherwise, read from filesystem
     if (!fs.existsSync(dir)) {
       throw new Error(`Data directory ${dir} not found`);
     }
@@ -559,6 +574,61 @@ export class BacktestEngine {
 
       // Clear memory after processing each file
       eventsFromFile.length = 0;
+    }
+  }
+
+  private async *streamEventsFromDatabase(
+    poolId: string,
+    startTime: number,
+    endTime: number,
+    skipEventCount?: number
+  ): AsyncGenerator<BacktestMomentumEvent> {
+    // NOTE: This function is a generator, but DB access is async, so in real code you may want to use an async generator.
+    // For now, we assume synchronous access for illustration, or you can refactor to async if needed.
+
+    let offset = 0;
+    const limit = 100;
+    let processedEvents = 0;
+    while (true) {
+      const rawEvents = await rawEventService.getEvents({
+        poolAddress: poolId,
+        startTime,
+        endTime,
+        limit,
+        offset,
+      });
+      if (!rawEvents || !rawEvents.length) break;
+
+      for (const tx of rawEvents) {
+        const ts = Number(tx.timestamp_ms);
+        if (!Number.isFinite(ts) || ts > endTime) continue;
+        if (processedEvents < (skipEventCount ?? 0)) {
+          processedEvents++;
+          continue;
+        }
+        processedEvents++;
+        if (ts < startTime) continue;
+        // If tx.data.events exists (array), treat as multiple events
+        if (Array.isArray(tx.data?.events)) {
+          for (const ev of tx.data.events) {
+            const type = ev.type;
+            const json = ev.parsedJson;
+            if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase())
+              continue;
+            const kind = this.mapEventKind(type);
+            if (!kind) continue;
+            yield {
+              kind,
+              timestamp: ts,
+              txDigest: ev.txDigest,
+              eventSeq: Number(ev.id?.eventSeq ?? 0),
+              raw: json,
+            };
+          }
+        }
+      }
+      offset += rawEvents.length;
+      if (rawEvents.length < limit) break;
     }
   }
 

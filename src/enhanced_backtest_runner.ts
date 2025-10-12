@@ -61,7 +61,7 @@ async function main() {
       start: { type: "string" },
       end: { type: "string" },
       step: { type: "string" },
-      dataDir: { type: "string" },
+      dataDir: { type: "string" }, // Query database if not provided
       strategy: { type: "string" },
       investment: { type: "string" },
       pair: { type: "string" },
@@ -104,9 +104,7 @@ async function main() {
     startTime,
     endTime,
     stepMs,
-    dataDir: dataDir
-      ? path.resolve(process.cwd(), dataDir)
-      : path.resolve(__dirname, "../mmt_txs", poolId),
+    dataDir: dataDir ? path.resolve(process.cwd(), dataDir) : "",
     strategyPath: path.isAbsolute(strategyPath)
       ? strategyPath
       : path.join(process.cwd(), strategyPath),
