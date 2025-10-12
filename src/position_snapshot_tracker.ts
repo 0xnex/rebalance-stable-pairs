@@ -526,8 +526,10 @@ export class PositionSnapshotTracker {
 
   private calculateTokenValue(amount: bigint, token: "A" | "B"): number {
     const price = this.calculateTokenPrice(token);
-    const normalizedAmount = Number(amount) / 1e6; // Assuming 6 decimals
-    return normalizedAmount * price;
+    // Use raw amount without decimal normalization
+    // Caller should handle decimals if needed
+    const rawAmount = Number(amount);
+    return rawAmount * price;
   }
 
   private calculateTokenPrice(token: "A" | "B"): number {
