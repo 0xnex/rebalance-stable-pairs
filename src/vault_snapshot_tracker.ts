@@ -285,8 +285,7 @@ export class VaultSnapshotTracker {
         )} | Return: ${snapshot.performance.totalReturnPct.toFixed(2)}%`
       );
       console.log(
-        `   📊 Positions: ${
-          snapshot.positions.count
+        `   📊 Positions: ${snapshot.positions.count
         } (${inRangePositions} in-range) | Fees: $${totalFeesUSD.toFixed(2)}`
       );
       console.log(
@@ -592,6 +591,16 @@ export class VaultSnapshotTracker {
    * Save snapshots to CSV files
    */
   public saveSnapshots(filename?: string): void {
+    if (this.csvStreamEnabled) {
+      console.log(`📊 Vault snapshots already streamed to: ${this.csvFilePath}`);
+      return;
+    }
+
+    if (this.snapshots.length === 0) {
+      console.log(`⚠️  No vault snapshots to save (empty snapshots array)`);
+      return;
+    }
+
     const baseFilename = filename
       ? filename.replace(".json", "")
       : `vault_snapshots_${Date.now()}`;
