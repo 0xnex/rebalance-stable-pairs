@@ -312,25 +312,48 @@ export class ThreeBandRebalancerStrategy {
       const weight =
         originalIndex >= 0 ? weights[originalIndex] : 1.0 / descriptors.length;
 
-      const segment = this.openSegment(
-        descriptor.lower,
-        descriptor.upper,
-        now,
-        weight,
-        initialCapitalA,
-        initialCapitalB
-      );
-      opened.push(segment);
+      try {
+        const segment = this.openSegment(
+          descriptor.lower,
+          descriptor.upper,
+          now,
+          weight,
+          initialCapitalA,
+          initialCapitalB
+        );
+        opened.push(segment);
+      } catch (error) {
+        // Log but continue - allows partial deployment if some positions fail
+        console.warn(
+          `[three-band] Failed to open position [${descriptor.lower},${
+            descriptor.upper
+          }]: ${error instanceof Error ? error.message : String(error)}`
+        );
+        // Continue trying to open other positions
+      }
     }
 
     this.segments = opened.sort((a, b) => a.tickLower - b.tickLower);
     this.segmentWidth = width;
 
+    // Check if we opened at least one position
+    if (opened.length === 0) {
+      return {
+        action: "none",
+        message: `Failed to open any positions - slippage too high or insufficient capital`,
+      };
+    }
+
+    const successMessage =
+      opened.length < segmentCount
+        ? `Seeded ${opened.length}/${segmentCount} bands (some failed due to slippage/capital)`
+        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
+            6
+          )} (width: ${rangePercent.toFixed(4)}%)`;
+
     return {
       action: "create",
-      message: `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
-        6
-      )} (width: ${rangePercent.toFixed(4)}%)`,
+      message: successMessage,
       segments: this.getSegments(),
     };
   }
