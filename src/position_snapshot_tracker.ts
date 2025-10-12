@@ -158,6 +158,7 @@ export class PositionSnapshotTracker {
   private positionInRangeTimes: Map<string, number> = new Map();
   private csvStreamEnabled: boolean = false;
   private csvFilePath: string | null = null;
+  private detailedCsvFilePath: string | null = null;
   private snapshotCount: number = 0;
 
   constructor(
@@ -184,9 +185,14 @@ export class PositionSnapshotTracker {
   public initialize(startTime: number): void {
     this.lastSnapshotTime = startTime;
 
-    // Write CSV header if streaming enabled
-    if (this.csvStreamEnabled && this.csvFilePath) {
-      this.writeCsvHeader();
+    // Write CSV headers if streaming enabled
+    if (this.csvStreamEnabled) {
+      if (this.csvFilePath) {
+        this.writeCsvHeader();
+      }
+      if (this.detailedCsvFilePath) {
+        this.writeDetailedCsvHeader();
+      }
     }
 
     this.captureSnapshot(startTime, true);
@@ -239,6 +245,7 @@ export class PositionSnapshotTracker {
     // Stream to CSV or store in memory
     if (this.csvStreamEnabled) {
       this.appendToCsv(summarySnapshot);
+      this.appendDetailedToCsv(positionSnapshots);
       this.snapshotCount++;
     } else {
       this.summarySnapshots.push(summarySnapshot);
@@ -250,10 +257,8 @@ export class PositionSnapshotTracker {
       : this.summarySnapshots.length;
     if (isInitial || snapshotCount % 10 === 0) {
       console.log(
-        `📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${
-          summarySnapshot.totalPositions
-        } positions, ${
-          summarySnapshot.inRangePositions
+        `📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${summarySnapshot.totalPositions
+        } positions, ${summarySnapshot.inRangePositions
         } in-range, Value=$${summarySnapshot.totalValueUSD.toFixed(2)}`
       );
     }
@@ -428,7 +433,7 @@ export class PositionSnapshotTracker {
     const avgSwapEfficiency =
       swapAnalyses.length > 0
         ? swapAnalyses.reduce((sum, s) => sum + s.swapEfficiency, 0) /
-          swapAnalyses.length
+        swapAnalyses.length
         : 0;
     const roundTripsAvoided = swapAnalyses.filter(
       (s) => s.avoidedRoundTrips
@@ -449,9 +454,9 @@ export class PositionSnapshotTracker {
       averageTickWidth:
         totalPositions > 0
           ? positionSnapshots.reduce(
-              (sum, p) => sum + p.tickRange.tickWidth,
-              0
-            ) / totalPositions
+            (sum, p) => sum + p.tickRange.tickWidth,
+            0
+          ) / totalPositions
           : 0,
       positionDistribution: {
         below: belowRange,
@@ -464,39 +469,39 @@ export class PositionSnapshotTracker {
         avgUnrealizedPnLPct:
           totalPositions > 0
             ? positionSnapshots.reduce(
-                (sum, p) => sum + p.performance.unrealizedPnLPct,
-                0
-              ) / totalPositions
+              (sum, p) => sum + p.performance.unrealizedPnLPct,
+              0
+            ) / totalPositions
             : 0,
         avgRealizedPnL:
           totalPositions > 0 ? totalRealizedPnL / totalPositions : 0,
         avgFeeYield:
           totalPositions > 0
             ? positionSnapshots.reduce(
-                (sum, p) => sum + p.performance.feeYield,
-                0
-              ) / totalPositions
+              (sum, p) => sum + p.performance.feeYield,
+              0
+            ) / totalPositions
             : 0,
         avgFeeYieldAPR:
           totalPositions > 0
             ? positionSnapshots.reduce(
-                (sum, p) => sum + p.fees.feeYieldAPR,
-                0
-              ) / totalPositions
+              (sum, p) => sum + p.fees.feeYieldAPR,
+              0
+            ) / totalPositions
             : 0,
         avgTimeInRange:
           totalPositions > 0
             ? positionSnapshots.reduce(
-                (sum, p) => sum + p.performance.timeInRange,
-                0
-              ) / totalPositions
+              (sum, p) => sum + p.performance.timeInRange,
+              0
+            ) / totalPositions
             : 0,
         avgTimeInRangePct:
           totalPositions > 0
             ? positionSnapshots.reduce(
-                (sum, p) => sum + p.performance.timeInRangePct,
-                0
-              ) / totalPositions
+              (sum, p) => sum + p.performance.timeInRangePct,
+              0
+            ) / totalPositions
             : 0,
         totalImpermanentLoss,
         totalImpermanentLossPct:
@@ -506,14 +511,14 @@ export class PositionSnapshotTracker {
         avgROI:
           totalPositions > 0
             ? positionSnapshots.reduce((sum, p) => sum + p.performance.roi, 0) /
-              totalPositions
+            totalPositions
             : 0,
         avgSharpeRatio:
           totalPositions > 0
             ? positionSnapshots.reduce(
-                (sum, p) => sum + p.performance.sharpeRatio,
-                0
-              ) / totalPositions
+              (sum, p) => sum + p.performance.sharpeRatio,
+              0
+            ) / totalPositions
             : 0,
         totalReturn,
         totalReturnPct:
@@ -952,22 +957,44 @@ export class PositionSnapshotTracker {
    * Save snapshots to CSV files
    */
   public saveSnapshots(filename?: string): void {
+    if (this.csvStreamEnabled) {
+      console.log(`📊 Position snapshots already streamed to:`);
+      console.log(`   Summary: ${this.csvFilePath}`);
+      console.log(`   Details: ${this.detailedCsvFilePath}`);
+      return;
+    }
+
     const timestamp = Date.now();
     const baseFilename = filename
       ? filename.replace(".json", "")
       : `position_snapshots_${timestamp}`;
 
-    // Save position details (CSV)
-    const positionCsvFile = `${baseFilename}_positions.csv`;
-    const positionCsvPath = path.join(this.outputDir, positionCsvFile);
-    this.savePositionSnapshotsAsCSV(positionCsvPath);
-    console.log(`📊 Position snapshots (CSV) saved to: ${positionCsvPath}`);
+    // Check if we have any position snapshots to save
+    const allSnapshots: PositionSnapshot[] = [];
+    for (const [positionId, snapshots] of this.positionSnapshots) {
+      allSnapshots.push(...snapshots);
+    }
 
-    // Save summary (CSV)
-    const summaryCsvFile = `${baseFilename}_summary.csv`;
-    const summaryCsvPath = path.join(this.outputDir, summaryCsvFile);
-    this.saveSummarySnapshotsAsCSV(summaryCsvPath);
-    console.log(`📊 Position summary (CSV) saved to: ${summaryCsvPath}`);
+    if (allSnapshots.length === 0 && this.summarySnapshots.length === 0) {
+      console.log(`⚠️  No position snapshots to save (empty snapshots arrays)`);
+      return;
+    }
+
+    // Save position details (CSV) if we have position snapshots
+    if (allSnapshots.length > 0) {
+      const positionCsvFile = `${baseFilename}_positions.csv`;
+      const positionCsvPath = path.join(this.outputDir, positionCsvFile);
+      this.savePositionSnapshotsAsCSV(positionCsvPath);
+      console.log(`📊 Position snapshots (CSV) saved to: ${positionCsvPath}`);
+    }
+
+    // Save summary (CSV) if we have summary snapshots
+    if (this.summarySnapshots.length > 0) {
+      const summaryCsvFile = `${baseFilename}_summary.csv`;
+      const summaryCsvPath = path.join(this.outputDir, summaryCsvFile);
+      this.saveSummarySnapshotsAsCSV(summaryCsvPath);
+      console.log(`📊 Position summary (CSV) saved to: ${summaryCsvPath}`);
+    }
   }
 
   /**
@@ -992,8 +1019,6 @@ export class PositionSnapshotTracker {
       "pool_address",
       "min_price",
       "max_price",
-      "inner_min_price",
-      "inner_max_price",
       "current_price",
       "position_width_percentage",
       "token_a_amount",
@@ -1261,13 +1286,61 @@ export class PositionSnapshotTracker {
   public enableCsvStreaming(poolId: string): void {
     this.csvStreamEnabled = true;
     const timestamp = Date.now();
+
+    // Summary CSV file
     this.csvFilePath = path.join(
       this.outputDir,
       `position_summary_${poolId}_${timestamp}.csv`
     );
-    console.log(
-      `📊 CSV streaming enabled for position tracker: ${this.csvFilePath}`
+
+    // Detailed positions CSV file
+    this.detailedCsvFilePath = path.join(
+      this.outputDir,
+      `position_details_${poolId}_${timestamp}.csv`
     );
+
+    console.log(
+      `📊 CSV streaming enabled for position tracker:`
+    );
+    console.log(`   Summary: ${this.csvFilePath}`);
+    console.log(`   Details: ${this.detailedCsvFilePath}`);
+  }
+
+  /**
+   * Write CSV header for detailed positions
+   */
+  private writeDetailedCsvHeader(): void {
+    if (!this.detailedCsvFilePath) return;
+
+    const header = [
+      "timestamp",
+      "timestampISO",
+      "position_id",
+      "vault_id",
+      "event_type",
+      "action_type",
+      "pool_address",
+      "min_price",
+      "max_price",
+      "current_price",
+      "position_width_percentage",
+      "token_a_amount",
+      "token_b_amount",
+      "current_liquidity_usd",
+      "start_liquidity_usd",
+      "fee_earned",
+      "position_return_usd",
+      "position_return_percentage",
+      "il",
+      "apr",
+      "trigger_reason",
+      "ai_explanation",
+      "confidence_score",
+      "rebalance_action",
+      "rebalance_amount",
+    ].join(",");
+
+    fs.writeFileSync(this.detailedCsvFilePath, header + "\n", "utf-8");
   }
 
   /**
@@ -1362,6 +1435,79 @@ export class PositionSnapshotTracker {
       ].join(",") + "\n";
 
     fs.appendFileSync(this.csvFilePath, row);
+  }
+
+  /**
+   * Append detailed position snapshots to CSV file
+   */
+  private appendDetailedToCsv(positionSnapshots: PositionSnapshot[]): void {
+    if (!this.detailedCsvFilePath || positionSnapshots.length === 0) return;
+
+    const rows: string[] = [];
+
+    for (const snapshot of positionSnapshots) {
+      // Calculate derived values to match the expected format
+      const vaultId = "unknown";
+      const eventType = snapshot.liquidity.isActive ? "REGULAR" : "CLOSE";
+      const actionType = snapshot.liquidity.isActive ? "" : "CLOSE_POSITION";
+      const poolAddress = "unknown";
+      const minPrice = snapshot.priceInfo.lowerPrice;
+      const maxPrice = snapshot.priceInfo.upperPrice;
+      const currentPrice = snapshot.priceInfo.currentPrice;
+      const positionWidthPercentage = ((maxPrice - minPrice) / currentPrice) * 100;
+      const tokenAAmount = parseFloat(snapshot.tokens.amount0.toString());
+      const tokenBAmount = parseFloat(snapshot.tokens.amount1.toString());
+      const currentLiquidityUSD = snapshot.tokens.totalValueUSD;
+      const startLiquidityUSD = snapshot.tokens.totalValueUSD; // Would need to track initial value
+      const feeEarned = snapshot.fees.totalFeesUSD;
+      const positionReturnUSD = snapshot.performance.totalReturn;
+      const positionReturnPercentage = snapshot.performance.totalReturnPct;
+      const il = snapshot.utilization.impermanentLossPct;
+      const apr = snapshot.fees.feeYieldAPR;
+      const triggerReason = snapshot.liquidity.inRange
+        ? "Regular update position state"
+        : "Out of range";
+      const aiExplanation = snapshot.liquidity.inRange
+        ? ""
+        : "Position out of range";
+      const confidenceScore = 0.0;
+      const rebalanceAction = "";
+      const rebalanceAmount = 0.0;
+
+      const row = [
+        snapshot.timestamp,
+        `"${snapshot.timestampISO}"`,
+        snapshot.positionId,
+        `"${vaultId}"`,
+        `"${eventType}"`,
+        `"${actionType}"`,
+        `"${poolAddress}"`,
+        minPrice,
+        maxPrice,
+        currentPrice,
+        positionWidthPercentage,
+        tokenAAmount,
+        tokenBAmount,
+        currentLiquidityUSD,
+        startLiquidityUSD,
+        feeEarned,
+        positionReturnUSD,
+        positionReturnPercentage,
+        il,
+        apr,
+        `"${triggerReason}"`,
+        `"${aiExplanation}"`,
+        confidenceScore,
+        `"${rebalanceAction}"`,
+        rebalanceAmount,
+      ].join(",");
+
+      rows.push(row);
+    }
+
+    if (rows.length > 0) {
+      fs.appendFileSync(this.detailedCsvFilePath, rows.join("\n") + "\n", "utf-8");
+    }
   }
 
   /**
