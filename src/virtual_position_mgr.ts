@@ -92,11 +92,11 @@ export class VirtualPositionManager {
    */
   private getTickData(tick: number):
     | {
-      liquidityNet: bigint;
-      liquidityGross: bigint;
-      feeGrowthOutside0X64: bigint;
-      feeGrowthOutside1X64: bigint;
-    }
+        liquidityNet: bigint;
+        liquidityGross: bigint;
+        feeGrowthOutside0X64: bigint;
+        feeGrowthOutside1X64: bigint;
+      }
     | undefined {
     // First check if the pool has this tick (from real on-chain events)
     const poolTick = this.pool.ticks.get(tick);
@@ -752,10 +752,6 @@ export class VirtualPositionManager {
 
   getPosition(positionId: string): VirtualPosition | undefined {
     return this.positions.get(positionId);
-  }
-
-  getAllPositions(): VirtualPosition[] {
-    return Array.from(this.positions.values());
   }
 
   calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
@@ -1793,8 +1789,10 @@ export class VirtualPositionManager {
   /**
    * Get active positions (with liquidity > 0)
    */
-  getActivePositions(): VirtualPosition[] {
-    return Array.from(this.positions.values()).filter(pos => pos.liquidity > 0n);
+  getActivePositions0(): VirtualPosition[] {
+    return Array.from(this.positions.values()).filter(
+      (pos) => pos.liquidity > 0n
+    );
   }
 
   /**

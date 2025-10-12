@@ -61,6 +61,21 @@ export type StrategyContext = {
   logger?: Partial<Console>;
 };
 
+export type PositionInfo = {
+  id: string;
+  tickLower: number;
+  tickUpper: number;
+  priceLower: number;
+  priceUpper: number;
+  midPrice: number;
+  widthPercent: number;
+  isActive: boolean;
+  liquidity: string;
+  amountA: string;
+  amountB: string;
+  distanceFromCurrentPercent: number;
+};
+
 export type BacktestReport = {
   poolId: string;
   startTime: number;
@@ -71,6 +86,12 @@ export type BacktestReport = {
   strategyId: string;
   totals: ReturnType<VirtualPositionManager["getTotals"]>;
   performance: PerformanceSummary;
+  finalState: {
+    currentPrice: number;
+    currentTick: number;
+    liquidity: string;
+    openPositions: PositionInfo[];
+  };
 };
 
 type PerformanceSample = {
@@ -160,8 +181,12 @@ class PerformanceTracker {
 
     const amountA = Number(totals.amountA ?? 0n);
     const amountB = Number(totals.amountB ?? 0n);
-    const cashA = Number((totals as any).cashAmountA ?? totals.initialAmountA ?? 0n);
-    const cashB = Number((totals as any).cashAmountB ?? totals.initialAmountB ?? 0n);
+    const cashA = Number(
+      (totals as any).cashAmountA ?? totals.initialAmountA ?? 0n
+    );
+    const cashB = Number(
+      (totals as any).cashAmountB ?? totals.initialAmountB ?? 0n
+    );
     const fees0 = Number(totals.feesOwed0 ?? 0n);
     const fees1 = Number(totals.feesOwed1 ?? 0n);
     const costA = (totals as any).totalCostTokenA ?? 0;
@@ -191,8 +216,14 @@ export class BacktestEngine {
   }
 
   async run(): Promise<BacktestReport | undefined> {
-    const { poolId, startTime, endTime, dataDir, poolSeedEndTime, poolSeedEventCount } =
-      this.config;
+    const {
+      poolId,
+      startTime,
+      endTime,
+      dataDir,
+      poolSeedEndTime,
+      poolSeedEventCount,
+    } = this.config;
     const seedEndTime = poolSeedEndTime || startTime;
 
     this.logger?.log?.(
@@ -216,8 +247,16 @@ export class BacktestEngine {
     );
 
     // Initialize snapshot trackers
-    this.vaultTracker = new VaultSnapshotTracker(manager, pool, './snapshots');
-    this.positionTracker = new PositionSnapshotTracker(manager, pool, './snapshots');
+    this.vaultTracker = new VaultSnapshotTracker(manager, pool, "./snapshots");
+    this.positionTracker = new PositionSnapshotTracker(
+      manager,
+      pool,
+      "./snapshots"
+    );
+
+    // Enable CSV streaming to avoid memory buildup for large backtests
+    this.vaultTracker.enableCsvStreaming(poolId);
+    this.positionTracker.enableCsvStreaming(poolId);
 
     const events = this.loadEvents(
       dataDir,
@@ -291,9 +330,14 @@ export class BacktestEngine {
     // Save snapshot reports
     const reportTimestamp = Date.now();
     this.vaultTracker?.saveSnapshots(`vault_${poolId}_${reportTimestamp}.json`);
-    this.positionTracker?.saveSnapshots(`position_${poolId}_${reportTimestamp}.json`);
+    this.positionTracker?.saveSnapshots(
+      `position_${poolId}_${reportTimestamp}.json`
+    );
 
     this.logger?.log?.(`📊 Snapshot reports saved to ./snapshots/`);
+
+    // Collect final position information
+    const openPositions = this.collectPositionInfo(pool, manager);
 
     return {
       poolId,
@@ -305,7 +349,56 @@ export class BacktestEngine {
       strategyId: strategy.id,
       totals: manager.getTotals(),
       performance: performance.summary(),
+      finalState: {
+        currentPrice: pool.price,
+        currentTick: pool.tickCurrent,
+        liquidity: pool.liquidity.toString(),
+        openPositions,
+      },
     };
+  }
+
+  private collectPositionInfo(
+    pool: Pool,
+    manager: VirtualPositionManager
+  ): PositionInfo[] {
+    const positions = manager.getAllPositions();
+    const Q64 = 1n << 64n;
+
+    return positions.map((pos) => {
+      // Convert ticks to prices
+      const sqrtLower =
+        Number(pool.tickToSqrtPrice(pos.tickLower)) / Number(Q64);
+      const sqrtUpper =
+        Number(pool.tickToSqrtPrice(pos.tickUpper)) / Number(Q64);
+      const priceLower = sqrtLower * sqrtLower;
+      const priceUpper = sqrtUpper * sqrtUpper;
+      const midPrice = (priceLower + priceUpper) / 2;
+      const widthPercent = ((priceUpper - priceLower) / midPrice) * 100;
+
+      // Check if position is active (current tick is in range)
+      const isActive =
+        pool.tickCurrent >= pos.tickLower && pool.tickCurrent < pos.tickUpper;
+
+      // Calculate distance from current price
+      const distanceFromCurrentPercent =
+        ((midPrice - pool.price) / pool.price) * 100;
+
+      return {
+        id: pos.id,
+        tickLower: pos.tickLower,
+        tickUpper: pos.tickUpper,
+        priceLower,
+        priceUpper,
+        midPrice,
+        widthPercent,
+        isActive,
+        liquidity: pos.liquidity.toString(),
+        amountA: pos.amountA.toString(),
+        amountB: pos.amountB.toString(),
+        distanceFromCurrentPercent,
+      };
+    });
   }
 
   private applyEvent(pool: Pool, event: BacktestMomentumEvent) {

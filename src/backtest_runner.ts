@@ -13,7 +13,18 @@ type StrategyFactory = (pool: Pool) => BacktestStrategy;
 
 async function main() {
   const {
-    values: { poolId, start, end, step, dataDir, strategy: strategyPath },
+    values: {
+      poolId,
+      start,
+      end,
+      step,
+      dataDir,
+      strategy: strategyPath,
+      tokenAName,
+      tokenADecimals,
+      tokenBName,
+      tokenBDecimals,
+    },
   } = parseArgs({
     options: {
       poolId: { type: "string" },
@@ -22,6 +33,10 @@ async function main() {
       step: { type: "string" },
       dataDir: { type: "string" },
       strategy: { type: "string" },
+      tokenAName: { type: "string" },
+      tokenADecimals: { type: "string" },
+      tokenBName: { type: "string" },
+      tokenBDecimals: { type: "string" },
     },
   });
 
@@ -61,6 +76,29 @@ async function main() {
   const inferredDataDir = dataDir
     ? path.resolve(process.cwd(), dataDir)
     : path.resolve(__dirname, "../mmt_txs", poolId);
+
+  // Parse token metadata with defaults
+  const tokenMetadata = {
+    tokenAName: tokenAName || "TokenA",
+    tokenADecimals: tokenADecimals ? parseInt(tokenADecimals) : 9,
+    tokenBName: tokenBName || "TokenB",
+    tokenBDecimals: tokenBDecimals ? parseInt(tokenBDecimals) : 9,
+  };
+
+  // Set as environment variables so trackers can access them
+  process.env.TOKEN_A_NAME = tokenMetadata.tokenAName;
+  process.env.TOKEN_A_DECIMALS = tokenMetadata.tokenADecimals.toString();
+  process.env.TOKEN_B_NAME = tokenMetadata.tokenBName;
+  process.env.TOKEN_B_DECIMALS = tokenMetadata.tokenBDecimals.toString();
+
+  console.log(`\n💱 Token Configuration:`);
+  console.log(
+    `   Token A: ${tokenMetadata.tokenAName} (${tokenMetadata.tokenADecimals} decimals)`
+  );
+  console.log(
+    `   Token B: ${tokenMetadata.tokenBName} (${tokenMetadata.tokenBDecimals} decimals)`
+  );
+  console.log(`   Quote Currency: ${tokenMetadata.tokenBName}\n`);
 
   const engine = new BacktestEngine({
     poolId,

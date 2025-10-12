@@ -1,3 +1,7 @@
+# Token amounts and costs are denominated in their respective tokens
+# Token A = base token (lower address)
+# Token B = quote token (higher address)
+# All costs (ACTION_COST_B, MIN_PROFIT_B) are in Token B (quote currency)
 THREEBAND_INITIAL_A=0 \
 THREEBAND_INITIAL_B=10000000000 \
 THREEBAND_ACTION_COST_A=0 \
@@ -11,10 +15,16 @@ THREEBAND_SLOW_INTERVAL_MS=300000 \
 THREEBAND_MIN_DWELL_MS=60000 \
 THREEBAND_MIN_OUT_MS=60000 \
 THREEBAND_ROTATION_TICK_THRESHOLD=0 \
-  bun run src/backtest_runner.ts \
+  bun run src/enhanced_backtest_runner.ts \
     --poolId 0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \
     --start "2025-08-20T00:00:00Z" \
     --end "2025-09-10T00:00:00Z" \
     --step 1000 \
+    --format csv \
     --strategy ./src/strategies/three_band_rebalancer_backtest.ts \
-    --dataDir ../mmt_txs > three_band_rebalancer_backtest.log 2>&1
+    --dataDir ../mmt_txs \
+    --tokenAName USDC \
+    --tokenADecimals 9 \
+    --tokenBName USDT \
+    --tokenBDecimals 9 \
+    > three_band_rebalancer_backtest.log 2>&1

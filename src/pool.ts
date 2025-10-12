@@ -1,15 +1,6 @@
-/**
- * Pool class for CLMM (Concentrated Liquidity Market Maker) operations
- *
- * Two types of functions:
- * 1. APPLY functions - Actually change pool state (replay events)
- *    - applySwap, applyAddLiquidity, applyRemoveLiquidity
- *    - Use for simulating real transactions and state updates
- *
- * 2. ESTIMATE functions - Work with virtual positions (no state changes)
- *    - estimateOpenPosition, estimateClosePosition, estimateCollectFee
- *    - Use for backtesting and strategy planning
- */
+const Q64 = 1n << 64n;
+const Base = 1.0001;
+
 class Pool {
   reserveA: bigint;
   reserveB: bigint;
@@ -50,24 +41,23 @@ class Pool {
     this.feeGrowthGlobal0X64 = 0n;
     this.feeGrowthGlobal1X64 = 0n;
   }
-
   get price(): number {
     // Convert Q64.64 sqrtPrice to actual price
     // sqrtPriceX64 is sqrt(price) * 2^64
-    const sqrtPrice = Number(this.sqrtPriceX64) / 2 ** 64;
+    const sqrtPrice = Number(this.sqrtPriceX64) / Number(Q64);
     return sqrtPrice * sqrtPrice;
   }
 
   // Convert tick to sqrtPrice (Q64.64)
   tickToSqrtPrice(tick: number): bigint {
-    const sqrtPrice = Math.sqrt(1.0001 ** tick);
-    return BigInt(Math.floor(sqrtPrice * 2 ** 64));
+    const sqrtPrice = Math.sqrt(Base ** tick);
+    return BigInt(Math.floor(sqrtPrice * Number(Q64)));
   }
 
   // Convert sqrtPrice (Q64.64) to tick
   sqrtPriceToTick(sqrtPrice: bigint): number {
-    const price = Number(sqrtPrice) / 2 ** 64;
-    return Math.floor(Math.log(price * price) / Math.log(1.0001));
+    const price = Number(sqrtPrice) / Number(Q64);
+    return Math.floor((2 * Math.log(price)) / Math.log(Base));
   }
 
   // Get active liquidity at current tick
@@ -467,6 +457,17 @@ class Pool {
     return { fee0, fee1 };
   }
 
+  // Helper: Handle BigInt subtraction with wrap-around (for Q64.64 fixed-point)
+  private submod(a: bigint, b: bigint): bigint {
+    // For Q64.64 values, handle wrap-around at 2^256
+    const diff = a - b;
+    if (diff < 0n) {
+      // Wrap around: this handles the case where fee growth has wrapped
+      return diff + 2n ** 256n;
+    }
+    return diff;
+  }
+
   // Calculate fee growth inside a tick range
   calculateFeeGrowthInside(
     tickLower: number,
@@ -493,14 +494,24 @@ class Pool {
         : tickUpperData.feeGrowthOutside1X64;
 
     // Calculate fee growth inside the range
+    // Use submod to handle BigInt wrap-around correctly
     let feeGrowthInside: bigint;
     if (this.tickCurrent < tickLower) {
-      feeGrowthInside = feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      // Current price below range
+      feeGrowthInside = this.submod(
+        feeGrowthOutsideLower,
+        feeGrowthOutsideUpper
+      );
     } else if (this.tickCurrent >= tickUpper) {
-      feeGrowthInside = feeGrowthOutsideUpper - feeGrowthOutsideLower;
+      // Current price above range
+      feeGrowthInside = this.submod(
+        feeGrowthOutsideUpper,
+        feeGrowthOutsideLower
+      );
     } else {
-      feeGrowthInside =
-        globalFeeGrowth - feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      // Current price inside range
+      const temp = this.submod(globalFeeGrowth, feeGrowthOutsideLower);
+      feeGrowthInside = this.submod(temp, feeGrowthOutsideUpper);
     }
 
     return feeGrowthInside;
@@ -722,11 +733,11 @@ class Pool {
 
     let effectivePrice: number;
     if (zeroForOne) {
-      // Price is tokenB/tokenA, so amountOut/amountIn
+      // Swapping A for B: price = B/A (how much B you get per A)
       effectivePrice = Number(amountOut) / Number(amountIn);
     } else {
-      // Price is tokenA/tokenB, so amountOut/amountIn
-      effectivePrice = Number(amountOut) / Number(amountIn);
+      // Swapping B for A: need to invert (price = A/B)
+      effectivePrice = Number(amountIn) / Number(amountOut);
     }
 
     // Calculate price impact as percentage
