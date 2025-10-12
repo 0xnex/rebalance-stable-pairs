@@ -1232,6 +1232,15 @@ export class PositionSnapshotTracker {
   }
 
   /**
+   * Enable CSV streaming (stub for compatibility)
+   */
+  public enableCsvStreaming(poolId: string): void {
+    // This is a stub method for compatibility with backtest_engine
+    // CSV streaming is handled in saveSnapshots() method
+    console.log(`CSV streaming enabled for position tracker (pool: ${poolId})`);
+  }
+
+  /**
    * Clear all snapshots
    */
   public clearSnapshots(): void {
