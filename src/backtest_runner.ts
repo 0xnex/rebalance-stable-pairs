@@ -31,7 +31,7 @@ async function main() {
       start: { type: "string" },
       end: { type: "string" },
       step: { type: "string" },
-      dataDir: { type: "string" },
+      dataDir: { type: "string" }, // Query database if not provided
       strategy: { type: "string" },
       tokenAName: { type: "string" },
       tokenADecimals: { type: "string" },
@@ -73,9 +73,7 @@ async function main() {
     );
   }
 
-  const inferredDataDir = dataDir
-    ? path.resolve(process.cwd(), dataDir)
-    : path.resolve(__dirname, "../mmt_txs", poolId);
+  const inferredDataDir = dataDir ? path.resolve(process.cwd(), dataDir) : "";
 
   // Parse token metadata with defaults
   const tokenMetadata = {
