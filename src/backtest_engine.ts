@@ -119,6 +119,7 @@ class PerformanceTracker {
   private maxDrawdownPct = 0;
   private lastSampleTs: number | null = null;
   private readonly samples: PerformanceSample[] = [];
+  private readonly maxSamples = 10000; // Limit memory usage
 
   constructor(
     private readonly pool: Pool,
@@ -151,6 +152,16 @@ class PerformanceTracker {
     ) {
       this.samples.push({ timestamp, value });
       this.lastSampleTs = timestamp;
+
+      // Keep only most recent samples to limit memory (keep first, last, and recent)
+      if (this.samples.length > this.maxSamples) {
+        const toKeep = Math.floor(this.maxSamples * 0.8);
+        const first = this.samples[0];
+        const recent = this.samples.slice(-toKeep);
+        this.samples.length = 0;
+        if (first) this.samples.push(first);
+        this.samples.push(...recent);
+      }
     }
   }
 
@@ -258,15 +269,17 @@ export class BacktestEngine {
     this.vaultTracker.enableCsvStreaming(poolId);
     this.positionTracker.enableCsvStreaming(poolId);
 
-    const events = this.loadEvents(
+    // Stream events instead of loading all into memory
+    const eventIterator = this.streamEvents(
       dataDir,
       poolId,
       startTime,
       endTime,
       poolSeedEventCount
     );
+
     this.logger?.log?.(
-      `[backtest] loaded ${events.length} events between ${new Date(
+      `[backtest] streaming events between ${new Date(
         startTime
       ).toISOString()} and ${new Date(endTime).toISOString()}`
     );
@@ -286,28 +299,38 @@ export class BacktestEngine {
 
     let stepIndex = 0;
     let timestamp = startTime;
-    let eventPtr = 0;
+    let eventsProcessed = 0;
     const stepMs = this.stepMs;
     const totalSteps = Math.ceil((endTime - startTime) / stepMs);
 
+    // Buffer for events (memory-efficient: only holds future events)
+    let eventBuffer: BacktestMomentumEvent[] = [];
+    const iterator = eventIterator[Symbol.iterator]();
+    let nextEvent = iterator.next();
+
     while (timestamp <= endTime) {
-      // Process events up to this timestamp window
-      while (
-        eventPtr < events.length &&
-        events[eventPtr]?.timestamp !== undefined &&
-        events[eventPtr]!.timestamp <= timestamp
-      ) {
-        const ev = events[eventPtr];
-        if (ev) {
-          this.applyEvent(pool, ev);
-          manager.updateAllPositionFees();
-          if (strategy.onEvent) {
-            await strategy.onEvent({ ...ctxBase, timestamp, stepIndex }, ev);
-            performance.record(timestamp);
-          }
-        }
-        eventPtr += 1;
+      // Load events from stream into buffer up to current timestamp
+      while (!nextEvent.done && nextEvent.value.timestamp <= timestamp) {
+        eventBuffer.push(nextEvent.value);
+        nextEvent = iterator.next();
       }
+
+      // Process events in current window
+      let i = 0;
+      while (i < eventBuffer.length && eventBuffer[i]!.timestamp <= timestamp) {
+        const ev = eventBuffer[i]!;
+        this.applyEvent(pool, ev);
+        manager.updateAllPositionFees();
+        if (strategy.onEvent) {
+          await strategy.onEvent({ ...ctxBase, timestamp, stepIndex }, ev);
+          performance.record(timestamp);
+        }
+        eventsProcessed++;
+        i++;
+      }
+
+      // Remove processed events from buffer (memory optimization)
+      eventBuffer.splice(0, i);
 
       await strategy.onTick({ ...ctxBase, timestamp, stepIndex });
       manager.updateAllPositionFees();
@@ -316,6 +339,20 @@ export class BacktestEngine {
       // Update snapshot trackers
       this.vaultTracker?.update(timestamp);
       this.positionTracker?.update(timestamp);
+
+      // Periodic cleanup (every 1000 steps)
+      if (stepIndex % 1000 === 0) {
+        // Force garbage collection hint
+        if (global.gc) {
+          global.gc();
+        }
+        this.logger?.log?.(
+          `[backtest] Progress: ${stepIndex}/${totalSteps} steps (${(
+            (stepIndex / totalSteps) *
+            100
+          ).toFixed(1)}%) | Buffer: ${eventBuffer.length} events`
+        );
+      }
 
       stepIndex += 1;
       timestamp = startTime + stepIndex * stepMs;
@@ -344,7 +381,7 @@ export class BacktestEngine {
       startTime,
       endTime,
       stepMs,
-      eventsProcessed: eventPtr,
+      eventsProcessed,
       ticks: stepIndex,
       strategyId: strategy.id,
       totals: manager.getTotals(),
@@ -420,13 +457,13 @@ export class BacktestEngine {
     }
   }
 
-  private loadEvents(
+  private *streamEvents(
     dir: string,
     poolId: string,
     startTime: number,
     endTime: number,
     skipEventCount?: number
-  ): BacktestMomentumEvent[] {
+  ): Generator<BacktestMomentumEvent> {
     if (!fs.existsSync(dir)) {
       throw new Error(`Data directory ${dir} not found`);
     }
@@ -451,65 +488,87 @@ export class BacktestEngine {
       .filter((file) => file.endsWith(".json"))
       .sort();
 
-    const events: BacktestMomentumEvent[] = [];
     const skipCount = skipEventCount ?? 0;
     let processedEvents = 0;
 
-    outer: for (const file of files) {
+    // Process files one at a time, yielding events immediately
+    for (const file of files) {
       const full = path.join(workingDir, file);
+      let content: string;
+      let parsed: any;
+
       try {
-        const content = fs.readFileSync(full, "utf8");
-        const parsed = JSON.parse(content);
-        const data = parsed.data ?? [];
-        for (const tx of data) {
-          const ts = Number(tx.timestampMs);
-          if (!Number.isFinite(ts)) continue;
-          if (ts > endTime) break outer;
-
-          for (const ev of tx.events as MomentumEvent[]) {
-            const type = ev.type;
-            const json = ev.parsedJson;
-            if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase()) {
-              continue;
-            }
-
-            if (processedEvents < skipCount) {
-              processedEvents += 1;
-              continue;
-            }
-
-            processedEvents += 1;
-
-            if (ts < startTime) {
-              continue;
-            }
-
-            const kind = this.mapEventKind(type);
-            if (!kind) continue;
-
-            events.push({
-              kind,
-              timestamp: ts,
-              txDigest: tx.digest,
-              eventSeq: Number(ev.id.eventSeq ?? 0),
-              raw: json,
-            });
-          }
-        }
+        content = fs.readFileSync(full, "utf8");
+        parsed = JSON.parse(content);
       } catch (err) {
         this.logger?.warn?.(`failed to parse ${full}: ${err}`);
         continue;
       }
+
+      const data = parsed.data ?? [];
+      const eventsFromFile: BacktestMomentumEvent[] = [];
+
+      for (const tx of data) {
+        const ts = Number(tx.timestampMs);
+        if (!Number.isFinite(ts)) continue;
+        if (ts > endTime) {
+          // Yield remaining events and stop
+          eventsFromFile.sort(this.compareEvents);
+          for (const ev of eventsFromFile) {
+            yield ev;
+          }
+          return;
+        }
+
+        for (const ev of tx.events as MomentumEvent[]) {
+          const type = ev.type;
+          const json = ev.parsedJson;
+          if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase()) {
+            continue;
+          }
+
+          if (processedEvents < skipCount) {
+            processedEvents += 1;
+            continue;
+          }
+
+          processedEvents += 1;
+
+          if (ts < startTime) {
+            continue;
+          }
+
+          const kind = this.mapEventKind(type);
+          if (!kind) continue;
+
+          eventsFromFile.push({
+            kind,
+            timestamp: ts,
+            txDigest: tx.digest,
+            eventSeq: Number(ev.id.eventSeq ?? 0),
+            raw: json,
+          });
+        }
+      }
+
+      // Sort and yield events from this file
+      eventsFromFile.sort(this.compareEvents);
+      for (const ev of eventsFromFile) {
+        yield ev;
+      }
+
+      // Clear memory after processing each file
+      eventsFromFile.length = 0;
     }
+  }
 
-    events.sort((a, b) => {
-      if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
-      if (a.txDigest !== b.txDigest)
-        return a.txDigest.localeCompare(b.txDigest);
-      return a.eventSeq - b.eventSeq;
-    });
-
-    return events;
+  private compareEvents(
+    a: BacktestMomentumEvent,
+    b: BacktestMomentumEvent
+  ): number {
+    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    if (a.txDigest !== b.txDigest) return a.txDigest.localeCompare(b.txDigest);
+    return a.eventSeq - b.eventSeq;
   }
 
   private mapEventKind(type: string): BacktestEventKind | null {

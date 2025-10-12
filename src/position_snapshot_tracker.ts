@@ -156,6 +156,9 @@ export class PositionSnapshotTracker {
   private readonly outputDir: string;
   private positionStartTimes: Map<string, number> = new Map();
   private positionInRangeTimes: Map<string, number> = new Map();
+  private csvStreamEnabled: boolean = false;
+  private csvFilePath: string | null = null;
+  private snapshotCount: number = 0;
 
   constructor(
     private readonly positionManager: VirtualPositionManager,
@@ -180,6 +183,12 @@ export class PositionSnapshotTracker {
    */
   public initialize(startTime: number): void {
     this.lastSnapshotTime = startTime;
+
+    // Write CSV header if streaming enabled
+    if (this.csvStreamEnabled && this.csvFilePath) {
+      this.writeCsvHeader();
+    }
+
     this.captureSnapshot(startTime, true);
   }
 
@@ -205,16 +214,19 @@ export class PositionSnapshotTracker {
       const snapshot = this.createPositionSnapshot(position, timestamp);
       positionSnapshots.push(snapshot);
 
-      // Store in position history
-      const positionId = snapshot.positionId;
-      if (!this.positionSnapshots.has(positionId)) {
-        this.positionSnapshots.set(positionId, []);
-        this.positionStartTimes.set(positionId, timestamp);
-        this.positionInRangeTimes.set(positionId, 0);
+      // Store in position history (skip if CSV streaming to save memory)
+      if (!this.csvStreamEnabled) {
+        const positionId = snapshot.positionId;
+        if (!this.positionSnapshots.has(positionId)) {
+          this.positionSnapshots.set(positionId, []);
+          this.positionStartTimes.set(positionId, timestamp);
+          this.positionInRangeTimes.set(positionId, 0);
+        }
+        this.positionSnapshots.get(positionId)!.push(snapshot);
       }
-      this.positionSnapshots.get(positionId)!.push(snapshot);
 
       // Update time tracking
+      const positionId = snapshot.positionId;
       this.updateTimeTracking(positionId, snapshot, timestamp);
     }
 
@@ -223,10 +235,20 @@ export class PositionSnapshotTracker {
       positionSnapshots,
       timestamp
     );
-    this.summarySnapshots.push(summarySnapshot);
+
+    // Stream to CSV or store in memory
+    if (this.csvStreamEnabled) {
+      this.appendToCsv(summarySnapshot);
+      this.snapshotCount++;
+    } else {
+      this.summarySnapshots.push(summarySnapshot);
+    }
 
     // Log snapshot if initial or every 10 minutes
-    if (isInitial || this.summarySnapshots.length % 10 === 0) {
+    const snapshotCount = this.csvStreamEnabled
+      ? this.snapshotCount
+      : this.summarySnapshots.length;
+    if (isInitial || snapshotCount % 10 === 0) {
       console.log(
         `📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${
           summarySnapshot.totalPositions
@@ -1234,12 +1256,112 @@ export class PositionSnapshotTracker {
   }
 
   /**
-   * Enable CSV streaming (stub for compatibility)
+   * Enable CSV streaming - write snapshots directly to CSV instead of storing in memory
    */
   public enableCsvStreaming(poolId: string): void {
-    // This is a stub method for compatibility with backtest_engine
-    // CSV streaming is handled in saveSnapshots() method
-    console.log(`CSV streaming enabled for position tracker (pool: ${poolId})`);
+    this.csvStreamEnabled = true;
+    const timestamp = Date.now();
+    this.csvFilePath = path.join(
+      this.outputDir,
+      `position_summary_${poolId}_${timestamp}.csv`
+    );
+    console.log(
+      `📊 CSV streaming enabled for position tracker: ${this.csvFilePath}`
+    );
+  }
+
+  /**
+   * Write CSV header for position summary
+   */
+  private writeCsvHeader(): void {
+    if (!this.csvFilePath) return;
+
+    const header =
+      [
+        "timestamp",
+        "timestampISO",
+        "totalPositions",
+        "activePositions",
+        "inRangePositions",
+        "outOfRangePositions",
+        "totalLiquidity",
+        "totalValueUSD",
+        "totalFeesUSD",
+        "averageTickWidth",
+        "posDistBelow",
+        "posDistInRange",
+        "posDistAbove",
+        "avgUnrealizedPnL",
+        "avgUnrealizedPnLPct",
+        "avgRealizedPnL",
+        "avgFeeYield",
+        "avgFeeYieldAPR",
+        "avgTimeInRange",
+        "avgTimeInRangePct",
+        "totalImpermanentLoss",
+        "totalImpermanentLossPct",
+        "avgROI",
+        "avgSharpeRatio",
+        "totalReturn",
+        "totalReturnPct",
+        "portfolioVolatility",
+        "maxDrawdown",
+        "valueAtRisk",
+        "expectedShortfall",
+        "totalSwapOpportunities",
+        "totalSwapValue",
+        "avgSwapEfficiency",
+        "roundTripsAvoided",
+      ].join(",") + "\n";
+
+    fs.writeFileSync(this.csvFilePath, header);
+  }
+
+  /**
+   * Append summary snapshot to CSV file
+   */
+  private appendToCsv(snapshot: PositionSummarySnapshot): void {
+    if (!this.csvFilePath) return;
+
+    const row =
+      [
+        snapshot.timestamp,
+        snapshot.timestampISO,
+        snapshot.totalPositions,
+        snapshot.activePositions,
+        snapshot.inRangePositions,
+        snapshot.outOfRangePositions,
+        snapshot.totalLiquidity,
+        snapshot.totalValueUSD,
+        snapshot.totalFeesUSD,
+        snapshot.averageTickWidth,
+        snapshot.positionDistribution.below,
+        snapshot.positionDistribution.inRange,
+        snapshot.positionDistribution.above,
+        snapshot.performanceMetrics.avgUnrealizedPnL,
+        snapshot.performanceMetrics.avgUnrealizedPnLPct,
+        snapshot.performanceMetrics.avgRealizedPnL,
+        snapshot.performanceMetrics.avgFeeYield,
+        snapshot.performanceMetrics.avgFeeYieldAPR,
+        snapshot.performanceMetrics.avgTimeInRange,
+        snapshot.performanceMetrics.avgTimeInRangePct,
+        snapshot.performanceMetrics.totalImpermanentLoss,
+        snapshot.performanceMetrics.totalImpermanentLossPct,
+        snapshot.performanceMetrics.avgROI,
+        snapshot.performanceMetrics.avgSharpeRatio,
+        snapshot.performanceMetrics.totalReturn,
+        snapshot.performanceMetrics.totalReturnPct,
+        snapshot.riskMetrics.portfolioVolatility,
+        snapshot.riskMetrics.maxDrawdown,
+        snapshot.riskMetrics.valueAtRisk,
+        snapshot.riskMetrics.expectedShortfall,
+        snapshot.optimizationAnalysis.totalSwapOpportunities,
+        snapshot.optimizationAnalysis.totalSwapValue,
+        snapshot.optimizationAnalysis.avgSwapEfficiency,
+        snapshot.optimizationAnalysis.roundTripsAvoided,
+      ].join(",") + "\n";
+
+    fs.appendFileSync(this.csvFilePath, row);
   }
 
   /**

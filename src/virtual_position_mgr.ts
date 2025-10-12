@@ -754,6 +754,58 @@ export class VirtualPositionManager {
     return this.positions.get(positionId);
   }
 
+  /**
+   * Calculate current token amounts for a position based on current price
+   * Returns the actual amounts of token A and B currently in the position
+   */
+  calculatePositionAmounts(positionId: string): {
+    currentAmountA: bigint;
+    currentAmountB: bigint;
+  } {
+    const position = this.positions.get(positionId);
+    if (!position) {
+      return { currentAmountA: 0n, currentAmountB: 0n };
+    }
+
+    const currentTick = this.pool.tickCurrent;
+    const sqrtPriceX64 = this.pool.sqrtPriceX64;
+    const Q64 = VirtualPositionManager.Q64;
+
+    // Get sqrt prices for position boundaries
+    const sqrtLower = this.pool.tickToSqrtPrice(position.tickLower);
+    const sqrtUpper = this.pool.tickToSqrtPrice(position.tickUpper);
+
+    let amount0 = 0n;
+    let amount1 = 0n;
+
+    if (position.liquidity > 0n) {
+      if (currentTick < position.tickLower) {
+        // Position is above current price - all token0 (tokenA)
+        amount0 =
+          (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) /
+          sqrtLower /
+          sqrtUpper;
+        amount1 = 0n;
+      } else if (currentTick >= position.tickUpper) {
+        // Position is below current price - all token1 (tokenB)
+        amount0 = 0n;
+        amount1 = (position.liquidity * (sqrtUpper - sqrtLower)) / Q64;
+      } else {
+        // Position is in range - mix of both tokens
+        amount0 =
+          (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) /
+          sqrtPriceX64 /
+          sqrtUpper;
+        amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
+      }
+    }
+
+    return {
+      currentAmountA: amount0,
+      currentAmountB: amount1,
+    };
+  }
+
   calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
     const position = this.positions.get(positionId);
     if (!position) return { fee0: 0n, fee1: 0n };

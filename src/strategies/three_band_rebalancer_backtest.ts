@@ -202,11 +202,15 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const posFeesA = Number(pos.tokensOwed0);
         const posFeesB = Number(pos.tokensOwed1);
 
+        // Calculate actual current amounts based on position's liquidity and current price
+        const { currentAmountA, currentAmountB } =
+          manager.calculatePositionAmounts(pos.id);
+
         csvParts.push(
           pos.tickLower.toString(),
           pos.tickUpper.toString(),
-          pos.amountA.toString(),
-          pos.amountB.toString(),
+          currentAmountA.toString(),
+          currentAmountB.toString(),
           posFeesA.toString(),
           posFeesB.toString(),
           posInRange

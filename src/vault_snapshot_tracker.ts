@@ -126,6 +126,8 @@ export class VaultSnapshotTracker {
   private readonly snapshotInterval: number = 60 * 1000; // 1 minute
   private readonly outputDir: string;
   private initialValue: number = 0;
+  private csvStreamEnabled: boolean = false;
+  private csvFilePath: string | null = null;
 
   constructor(
     private readonly positionManager: VirtualPositionManager,
@@ -151,6 +153,11 @@ export class VaultSnapshotTracker {
   public initialize(startTime: number): void {
     this.lastSnapshotTime = startTime;
     this.initialValue = this.calculateTotalValue();
+
+    // Write CSV header if streaming enabled
+    if (this.csvStreamEnabled && this.csvFilePath) {
+      this.writeCsvHeader();
+    }
 
     // Create initial snapshot
     this.captureSnapshot(startTime, true);
@@ -261,10 +268,16 @@ export class VaultSnapshotTracker {
       },
     };
 
-    this.snapshots.push(snapshot);
+    // Stream to CSV or store in memory
+    if (this.csvStreamEnabled) {
+      this.appendToCsv(snapshot);
+    } else {
+      this.snapshots.push(snapshot);
+    }
 
-    // Enhanced logging with more metrics
-    if (isInitial || this.snapshots.length % 10 === 0) {
+    // Enhanced logging with more metrics (check snapshots length or use counter for CSV mode)
+    const snapshotCount = this.csvStreamEnabled ? 1 : this.snapshots.length;
+    if (isInitial || snapshotCount % 10 === 0) {
       console.log(`📸 Enhanced Vault Snapshot [${snapshot.timestampISO}]:`);
       console.log(
         `   💰 Value: $${totalValue.toFixed(
@@ -937,12 +950,140 @@ export class VaultSnapshotTracker {
   }
 
   /**
-   * Enable CSV streaming (stub for compatibility)
+   * Enable CSV streaming - write snapshots directly to CSV instead of storing in memory
    */
   public enableCsvStreaming(poolId: string): void {
-    // This is a stub method for compatibility with backtest_engine
-    // CSV streaming is handled in saveSnapshots() method
-    console.log(`CSV streaming enabled for vault tracker (pool: ${poolId})`);
+    this.csvStreamEnabled = true;
+    const timestamp = Date.now();
+    this.csvFilePath = path.join(
+      this.outputDir,
+      `vault_${poolId}_${timestamp}.csv`
+    );
+    console.log(
+      `📊 CSV streaming enabled for vault tracker: ${this.csvFilePath}`
+    );
+  }
+
+  /**
+   * Write CSV header
+   */
+  private writeCsvHeader(): void {
+    if (!this.csvFilePath) return;
+
+    const header =
+      [
+        "timestamp",
+        "timestampISO",
+        "totalValueUSD",
+        "cashTokenA",
+        "cashTokenB",
+        "cashTotalUSD",
+        "tokenAPrice",
+        "tokenBPrice",
+        "positionCount",
+        "totalLiquidity",
+        "activePositions",
+        "inRangePositions",
+        "outOfRangePositions",
+        "avgTickWidth",
+        "collected0",
+        "collected1",
+        "owed0",
+        "owed1",
+        "totalFeesUSD",
+        "feeYieldAPR",
+        "feeYieldDaily",
+        "totalReturn",
+        "totalReturnPct",
+        "unrealizedPnL",
+        "unrealizedPnLPct",
+        "realizedPnL",
+        "realizedPnLPct",
+        "roi",
+        "sharpeRatio",
+        "maxDrawdown",
+        "volatility",
+        "costTokenA",
+        "costTokenB",
+        "costUSD",
+        "avgCostBasis",
+        "currentTick",
+        "sqrtPriceX64",
+        "liquidity",
+        "feeGrowthGlobal0X64",
+        "feeGrowthGlobal1X64",
+        "volume24h",
+        "tvl",
+        "priceRatio",
+        "priceChange24h",
+        "volatility24h",
+        "valueAtRisk",
+        "beta",
+        "correlation",
+      ].join(",") + "\n";
+
+    fs.writeFileSync(this.csvFilePath, header);
+  }
+
+  /**
+   * Append snapshot to CSV file
+   */
+  private appendToCsv(snapshot: VaultSnapshot): void {
+    if (!this.csvFilePath) return;
+
+    const row =
+      [
+        snapshot.timestamp,
+        snapshot.timestampISO,
+        snapshot.totalValueUSD,
+        snapshot.cashBalances.tokenA,
+        snapshot.cashBalances.tokenB,
+        snapshot.cashBalances.totalUSD,
+        snapshot.cashBalances.tokenAPrice,
+        snapshot.cashBalances.tokenBPrice,
+        snapshot.positions.count,
+        snapshot.positions.totalLiquidity,
+        snapshot.positions.activePositions,
+        snapshot.positions.inRangePositions,
+        snapshot.positions.outOfRangePositions,
+        snapshot.positions.avgTickWidth,
+        snapshot.fees.collected0,
+        snapshot.fees.collected1,
+        snapshot.fees.owed0,
+        snapshot.fees.owed1,
+        snapshot.fees.totalFeesUSD,
+        snapshot.fees.feeYieldAPR,
+        snapshot.fees.feeYieldDaily,
+        snapshot.performance.totalReturn,
+        snapshot.performance.totalReturnPct,
+        snapshot.performance.unrealizedPnL,
+        snapshot.performance.unrealizedPnLPct,
+        snapshot.performance.realizedPnL,
+        snapshot.performance.realizedPnLPct,
+        snapshot.performance.roi,
+        snapshot.performance.sharpeRatio,
+        snapshot.performance.maxDrawdown,
+        snapshot.performance.volatility,
+        snapshot.costs.totalCostTokenA,
+        snapshot.costs.totalCostTokenB,
+        snapshot.costs.totalCostUSD,
+        snapshot.costs.avgCostBasis,
+        snapshot.poolState.currentTick,
+        snapshot.poolState.sqrtPriceX64,
+        snapshot.poolState.liquidity,
+        snapshot.poolState.feeGrowthGlobal0X64,
+        snapshot.poolState.feeGrowthGlobal1X64,
+        snapshot.poolState.volume24h,
+        snapshot.poolState.tvl,
+        snapshot.priceInfo.priceRatio,
+        snapshot.priceInfo.priceChange24h,
+        snapshot.priceInfo.volatility24h,
+        snapshot.riskMetrics.valueAtRisk,
+        snapshot.riskMetrics.beta,
+        snapshot.riskMetrics.correlation,
+      ].join(",") + "\n";
+
+    fs.appendFileSync(this.csvFilePath, row);
   }
 
   /**
