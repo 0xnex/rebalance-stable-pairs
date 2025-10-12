@@ -16,40 +16,40 @@ async function fetchHistorical() {
 
     // Tìm timestamp cũ nhất từ data đã có
     const existingDataDir = './data_30_days';
-    let oldestTimestamp = Date.now();
+    // let oldestTimestamp = Date(1757667157490);
 
-    console.log('🔍 Analyzing existing data...');
+    // console.log('🔍 Analyzing existing data...');
 
-    if (fs.existsSync(existingDataDir)) {
-        const files = fs.readdirSync(existingDataDir)
-            .filter(f => f.startsWith('30day_'))
-            .sort();
+    // if (fs.existsSync(existingDataDir)) {
+    //     const files = fs.readdirSync(existingDataDir)
+    //         .filter(f => f.startsWith('30day_'))
+    //         .sort();
 
-        if (files.length > 0) {
-            console.log(`📁 Found ${files.length} existing files`);
+    //     if (files.length > 0) {
+    //         console.log(`📁 Found ${files.length} existing files`);
 
-            // Đọc file cuối cùng để tìm timestamp cũ nhất
-            const firstFile = path.join(existingDataDir, files[files.length - 1]);
-            const firstContent = JSON.parse(fs.readFileSync(firstFile, 'utf-8'));
+    //         // Đọc file cuối cùng để tìm timestamp cũ nhất
+    //         const firstFile = path.join(existingDataDir, files[files.length - 1]);
+    //         const firstContent = JSON.parse(fs.readFileSync(firstFile, 'utf-8'));
 
-            if (firstContent.data && firstContent.data.length > 0) {
-                // Tìm timestamp nhỏ nhất trong file cuối cùng
-                const timestamps = firstContent.data.map((tx: any) => parseInt(tx.timestampMs));
-                oldestTimestamp = Math.min(...timestamps);
+    //         if (firstContent.data && firstContent.data.length > 0) {
+    //             // Tìm timestamp nhỏ nhất trong file cuối cùng
+    //             const timestamps = firstContent.data.map((tx: any) => parseInt(tx.timestampMs));
+    //             oldestTimestamp = Math.min(...timestamps);
 
-                console.log(`📅 Oldest existing data: ${new Date(oldestTimestamp).toISOString()}`);
-            }
-        } else {
-            console.log('📁 No existing data found, will fetch from pool creation');
-        }
-    } else {
-        console.log('📁 No existing data directory found');
-    }
+    //             console.log(`📅 Oldest existing data: ${new Date(oldestTimestamp).toISOString()}`);
+    //         }
+    //     } else {
+    //         console.log('📁 No existing data found, will fetch from pool creation');
+    //     }
+    // } else {
+    //     console.log('📁 No existing data directory found');
+    // }
 
     // Pool creation time (ước tính - có thể điều chỉnh)
     // Thường pools được tạo vài tháng trước
     const poolCreationTime = new Date('2024-01-01').getTime(); // Điều chỉnh theo pool thực tế
-    const historicalEndTime = oldestTimestamp - (60 * 1000); // Lùi 1 phút để tránh overlap
+    const historicalEndTime = 1757667157490// Lùi 1 phút để tránh overlap
 
     console.log('\n📜 Historical Collection Config:');
     console.log(`   📅 Start: ${new Date(poolCreationTime).toISOString()} (Pool creation)`);
