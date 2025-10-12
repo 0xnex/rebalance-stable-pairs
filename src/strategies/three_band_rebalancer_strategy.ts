@@ -297,6 +297,11 @@ export class ThreeBandRebalancerStrategy {
     // Calculate weights for dynamic allocation
     const weights = this.calculateSegmentWeights(descriptors, currentTick);
 
+    // Capture initial capital before opening any positions
+    const initialTotals = this.manager.getTotals();
+    const initialCapitalA = initialTotals.cashAmountA ?? initialTotals.amountA;
+    const initialCapitalB = initialTotals.cashAmountB ?? initialTotals.amountB;
+
     for (let i = 0; i < openOrder.length; i++) {
       const descriptor = openOrder[i];
       if (!descriptor) continue;
@@ -311,7 +316,9 @@ export class ThreeBandRebalancerStrategy {
         descriptor.lower,
         descriptor.upper,
         now,
-        weight
+        weight,
+        initialCapitalA,
+        initialCapitalB
       );
       opened.push(segment);
     }
@@ -439,17 +446,22 @@ export class ThreeBandRebalancerStrategy {
     tickLower: number,
     tickUpper: number,
     timestamp: number,
-    weight?: number
+    weight?: number,
+    initialCapitalA?: bigint,
+    initialCapitalB?: bigint
   ): SegmentState {
     const slippages = this.buildSlippageAttempts();
     const totals = this.manager.getTotals();
     let availableA = totals.cashAmountA ?? totals.amountA;
     let availableB = totals.cashAmountB ?? totals.amountB;
 
-    // Apply dynamic allocation weight if enabled
-    if (weight !== undefined && this.config.enableDynamicAllocation) {
-      availableA = (availableA * BigInt(Math.floor(weight * 10000))) / 10000n;
-      availableB = (availableB * BigInt(Math.floor(weight * 10000))) / 10000n;
+    // Always apply weight for equal allocation across segments
+    // Use initial capital if provided (for equal funding), otherwise use remaining cash
+    if (weight !== undefined) {
+      const baseA = initialCapitalA ?? availableA;
+      const baseB = initialCapitalB ?? availableB;
+      availableA = (baseA * BigInt(Math.floor(weight * 10000))) / 10000n;
+      availableB = (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
     }
 
     let lastError: Error | null = null;
@@ -559,12 +571,7 @@ export class ThreeBandRebalancerStrategy {
       return false;
     }
 
-    // Check fee velocity if enabled
-    if (this.config.enableDynamicAllocation) {
-      if (!this.shouldRotateBasedOnFeeVelocity(direction, now)) {
-        return false;
-      }
-    }
+    // Fee velocity check removed for simplicity
 
     if (this.config.minRotationProfitTokenB <= 0) {
       return true;
@@ -576,10 +583,9 @@ export class ThreeBandRebalancerStrategy {
     }
 
     const totals = this.manager.getTotals();
-    const deltaA =
-      Number(totals.collectedFees0 - this.lastRotationFeesTokenA) / 1_000_000;
-    const deltaB =
-      Number(totals.collectedFees1 - this.lastRotationFeesTokenB) / 1_000_000;
+    // Use raw values (no decimal normalization)
+    const deltaA = Number(totals.collectedFees0 - this.lastRotationFeesTokenA);
+    const deltaB = Number(totals.collectedFees1 - this.lastRotationFeesTokenB);
     const estimatedB = deltaB + deltaA * this.pool.price;
     const rotationCost = (this.config.actionCostTokenB ?? 0) * 2;
     return estimatedB - rotationCost >= this.config.minRotationProfitTokenB;
@@ -810,82 +816,16 @@ export class ThreeBandRebalancerStrategy {
   }
 
   /**
-   * Calculate weights for dynamic capital allocation
+   * Calculate weights for capital allocation
+   * Simplified to always use equal weights
    */
   private calculateSegmentWeights(
     descriptors: Array<{ lower: number; upper: number; mid: number }>,
     currentTick: number
   ): number[] {
-    if (!this.config.enableDynamicAllocation) {
-      // Equal weights
-      const equalWeight = 1.0 / descriptors.length;
-      return descriptors.map(() => equalWeight);
-    }
-
-    const activeBandWeightPct = this.config.activeBandWeightPercent ?? 60;
-    const activeBandWeight = activeBandWeightPct / 100;
-    const remainingWeight = 1.0 - activeBandWeight;
-
-    // Find which band contains the current tick
-    let activeBandIndex = -1;
-    for (let i = 0; i < descriptors.length; i++) {
-      const desc = descriptors[i];
-      if (desc && currentTick >= desc.lower && currentTick < desc.upper) {
-        activeBandIndex = i;
-        break;
-      }
-    }
-
-    // Calculate weights
-    const weights: number[] = [];
-    for (let i = 0; i < descriptors.length; i++) {
-      const descriptor = descriptors[i];
-      if (!descriptor) {
-        weights.push(0);
-        continue;
-      }
-
-      if (i === activeBandIndex) {
-        // Active band gets the configured weight
-        weights.push(activeBandWeight);
-      } else {
-        // Distribute remaining weight based on distance from current price
-        const distance = Math.abs(descriptor.mid - currentTick);
-        const maxDistance = Math.max(
-          ...descriptors
-            .filter((d) => d !== undefined)
-            .map((d) => Math.abs(d.mid - currentTick))
-        );
-
-        // Closer bands get more weight
-        const distanceWeight = maxDistance > 0 ? 1 - distance / maxDistance : 1;
-        weights.push(distanceWeight);
-      }
-    }
-
-    // Normalize non-active weights to sum to remainingWeight
-    const nonActiveSum = weights.reduce(
-      (sum, w, idx) => (idx === activeBandIndex ? sum : sum + w),
-      0
-    );
-
-    if (nonActiveSum > 0) {
-      for (let i = 0; i < weights.length; i++) {
-        if (i !== activeBandIndex && weights[i] !== undefined) {
-          weights[i] = (weights[i]! / nonActiveSum) * remainingWeight;
-        }
-      }
-    } else {
-      // Fallback: equal distribution
-      const equalWeight = remainingWeight / (descriptors.length - 1);
-      for (let i = 0; i < weights.length; i++) {
-        if (i !== activeBandIndex) {
-          weights[i] = equalWeight;
-        }
-      }
-    }
-
-    return weights;
+    // Always use equal weights for simplicity
+    const equalWeight = 1.0 / descriptors.length;
+    return descriptors.map(() => equalWeight);
   }
 
   /**
