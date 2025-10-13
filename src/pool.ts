@@ -24,6 +24,8 @@ class Pool {
   tickBitmap: Set<number>;
   feeGrowthGlobal0X64: bigint; // Global fee growth for token 0
   feeGrowthGlobal1X64: bigint; // Global fee growth for token 1
+  totalSwapFee0: bigint; // Cumulative swap fees collected in token 0
+  totalSwapFee1: bigint; // Cumulative swap fees collected in token 1
 
   constructor(feeRate: number, tickSpacing: number, feeRatePpm: bigint = 0n) {
     this.reserveA = 0n;
@@ -40,6 +42,8 @@ class Pool {
     this.tickBitmap = new Set();
     this.feeGrowthGlobal0X64 = 0n;
     this.feeGrowthGlobal1X64 = 0n;
+    this.totalSwapFee0 = 0n;
+    this.totalSwapFee1 = 0n;
   }
   get price(): number {
     // Convert Q64.64 sqrtPrice to actual price
@@ -251,6 +255,16 @@ class Pool {
     }
 
     const { totalFee, lpFee } = fees;
+
+    // Track cumulative swap fees
+    if (totalFee > 0n) {
+      if (zeroForOne) {
+        this.totalSwapFee0 += totalFee;
+      } else {
+        this.totalSwapFee1 += totalFee;
+      }
+    }
+
     if (lpFee > 0n) {
       this.updateFeeGrowth(lpFee, zeroForOne);
     }
@@ -459,11 +473,11 @@ class Pool {
 
   // Helper: Handle BigInt subtraction with wrap-around (for Q64.64 fixed-point)
   private submod(a: bigint, b: bigint): bigint {
-    // For Q64.64 values, handle wrap-around at 2^256
+    // For backtesting, clamp negative values to 0 instead of wrapping
+    // (Real Uniswap V3 wraps at 2^256, but this causes issues in simulations)
     const diff = a - b;
     if (diff < 0n) {
-      // Wrap around: this handles the case where fee growth has wrapped
-      return diff + 2n ** 256n;
+      return 0n; // Clamp to 0 instead of wrapping around
     }
     return diff;
   }
