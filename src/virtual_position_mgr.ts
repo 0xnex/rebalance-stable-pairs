@@ -79,7 +79,7 @@ export class VirtualPositionManager {
 
   private static readonly Q64 = 1n << 64n;
 
-  constructor(private readonly pool: PoolPositionContext) {}
+  constructor(private readonly pool: PoolPositionContext) { }
 
   /**
    * Subtract with modulo wrap-around for fee growth calculations
@@ -136,6 +136,42 @@ export class VirtualPositionManager {
     }
 
     this.lastProcessedTick = currentTick;
+  }
+
+  /**
+   * Calculate total fees for a position using monotonic, non-negative deltas.
+   * Ensures we never return negative fees due to wrapped or decreasing checkpoints.
+   */
+  private calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+    const position = this.positions.get(positionId);
+    if (!position) {
+      return { fee0: 0n, fee1: 0n };
+    }
+
+    // Keep virtual tick feeGrowthOutside in sync on tick moves
+    this.processTickCrossings();
+
+    // Compute feeGrowthInside using pool (preferred) with fallback to virtual ticks
+    const feeInside0 = this.calculateFeeGrowthInside(position.tickLower, position.tickUpper, 0);
+    const feeInside1 = this.calculateFeeGrowthInside(position.tickLower, position.tickUpper, 1);
+
+    // Deltas since last checkpoint; clamp to >= 0 to avoid negative due to wrap or reorder
+    let delta0 = feeInside0 - position.feeGrowthInside0LastX64;
+    let delta1 = feeInside1 - position.feeGrowthInside1LastX64;
+    if (delta0 < 0n) delta0 = 0n;
+    if (delta1 < 0n) delta1 = 0n;
+
+    // Newly accrued fees
+    const newFee0 = (position.liquidity * delta0) / (2n ** 64n);
+    const newFee1 = (position.liquidity * delta1) / (2n ** 64n);
+
+    // Total owed = already owed + newly accrued; never negative
+    let total0 = position.tokensOwed0 + newFee0;
+    let total1 = position.tokensOwed1 + newFee1;
+    if (total0 < 0n) total0 = 0n;
+    if (total1 < 0n) total1 = 0n;
+
+    return { fee0: total0, fee1: total1 };
   }
 
   /**
@@ -868,6 +904,9 @@ export class VirtualPositionManager {
       return { currentAmountA: 0n, currentAmountB: 0n };
     }
 
+    // Keep virtual tick feeGrowthOutside in sync when price crosses ticks
+    this.processTickCrossings();
+
     const currentTick = this.pool.tickCurrent;
     const sqrtPriceX64 = this.pool.sqrtPriceX64;
     const Q64 = VirtualPositionManager.Q64;
@@ -958,8 +997,10 @@ export class VirtualPositionManager {
     );
 
     // Calculate fee delta since position was created
-    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
-    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    let delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    let delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    if (delta0 < 0n) delta0 = 0n;
+    if (delta1 < 0n) delta1 = 0n;
 
     // Calculate fees earned from the delta (this is the total fees since creation)
     const fee0 = (position.liquidity * delta0) / 2n ** 64n;
@@ -974,6 +1015,9 @@ export class VirtualPositionManager {
   updatePositionFees(positionId: string): boolean {
     const position = this.positions.get(positionId);
     if (!position) return false;
+
+    // Sync tick crossings before reading fee growth
+    this.processTickCrossings();
 
     // Check if position is in range
     const inRange =
@@ -997,8 +1041,10 @@ export class VirtualPositionManager {
       1
     );
 
-    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
-    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    let delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    let delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    if (delta0 < 0n) delta0 = 0n;
+    if (delta1 < 0n) delta1 = 0n;
 
     // Calculate new fees from the delta
     const newFees0 = (position.liquidity * delta0) / 2n ** 64n;
@@ -1007,6 +1053,8 @@ export class VirtualPositionManager {
     // ACCUMULATE fees (don't replace)
     position.tokensOwed0 += newFees0;
     position.tokensOwed1 += newFees1;
+    if (position.tokensOwed0 < 0n) position.tokensOwed0 = 0n;
+    if (position.tokensOwed1 < 0n) position.tokensOwed1 = 0n;
 
     // Update checkpoints
     position.feeGrowthInside0LastX64 = feeGrowthInside0;
