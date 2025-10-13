@@ -940,9 +940,11 @@ export class VirtualPositionManager {
       1
     );
 
-    // Calculate fee delta since position was created
-    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
-    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    // Calculate fee delta since position was created (clamp negative to 0)
+    const rawDelta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    const rawDelta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    const delta0 = rawDelta0 < 0n ? 0n : rawDelta0;
+    const delta1 = rawDelta1 < 0n ? 0n : rawDelta1;
 
     // Calculate fees earned from the delta (this is the total fees since creation)
     const fee0 = (position.liquidity * delta0) / 2n ** 64n;
@@ -980,8 +982,11 @@ export class VirtualPositionManager {
       1
     );
 
-    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
-    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    // Calculate fee delta since last update (clamp negative to 0)
+    const rawDelta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    const rawDelta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    const delta0 = rawDelta0 < 0n ? 0n : rawDelta0;
+    const delta1 = rawDelta1 < 0n ? 0n : rawDelta1;
 
     // Calculate new fees from the delta
     const newFees0 = (position.liquidity * delta0) / 2n ** 64n;
