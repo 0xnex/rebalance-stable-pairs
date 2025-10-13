@@ -103,9 +103,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
   // CSV file writer for separate output
   const tradingPair = process.env.TRADING_PAIR || "SUI/USDC";
-  const investment = process.env.INITIAL_INVESTMENT || "100000";
   const pairForFilename = tradingPair.replace("/", "_");
-  const csvFilePath = `three_band_backtest_${pairForFilename}_${investment}.csv`;
+  const csvFilePath = `three_band_backtest_${pairForFilename}_${Date.now()}.csv`;
   let csvInitialized = false;
 
   const config: Partial<ThreeBandRebalancerConfig> = {
