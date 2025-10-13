@@ -1,22 +1,22 @@
 #!/usr/bin/env bun
 
 /**
- * Fetch 30 Days Data - Optimized command for 30 days collection
+ * Fetch Data - Optimized command for collection
  */
 
 import { SuiEventFetcher, EventType } from './src/sui_event_fetcher';
 
 async function fetch30Days() {
-    console.log('📅 Fetching 30 Days Data');
+    console.log('📅 Fetching Data');
     console.log('========================\n');
 
-    const poolId = '0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9';
+    const poolId = '0x7aa448e4e16d5fde0e1f12ca26826b5bc72921bea5067f6f12fd7e298e2655f9';
 
-    // 30 ngày từ hiện tại
+    // ngày từ hiện tại
     const now = Date.now();
-    const thirtyDaysAgo = now - (30 * 24 * 60 * 60 * 1000);
+    const thirtyDaysAgo = now - (365 * 24 * 60 * 60 * 1000);
 
-    console.log('📅 30-Day Collection Config:');
+    console.log('📅 Collection Config:');
     console.log(`   📅 Start: ${new Date(thirtyDaysAgo).toISOString()}`);
     console.log(`   📅 End: ${new Date(now).toISOString()}`);
     console.log(`   🎯 Pool: ${poolId}`);
@@ -40,14 +40,14 @@ async function fetch30Days() {
         startTime: thirtyDaysAgo,
         endTime: now,
         batchSize: 1000,
-        outputDir: './data_30_days',
-        filePrefix: '30day_'
+        outputDir: `./data/${poolId}`,
+        filePrefix: `data_${poolId}_`
     });
 
     const startTime = Date.now();
 
     try {
-        console.log('🚀 Starting 30-day collection...');
+        console.log('🚀 Starting collection...');
         console.log('⚠️  This will take several hours. Progress will be logged.\n');
 
         const pages = await fetcher.fetchAllEvents();
@@ -56,13 +56,13 @@ async function fetch30Days() {
 
         // Count results
         const fs = require('fs');
-        const outputDir = './data_30_days';
+        const outputDir = `./data/${poolId}`;
         let fileCount = 0;
         let totalEvents = 0;
         let totalSize = 0;
 
         if (fs.existsSync(outputDir)) {
-            const files = fs.readdirSync(outputDir).filter((f: string) => f.startsWith('30day_'));
+            const files = fs.readdirSync(outputDir).filter((f: string) => f.startsWith(`data_${poolId}_`));
             fileCount = files.length;
 
             for (const file of files) {
@@ -75,7 +75,7 @@ async function fetch30Days() {
             }
         }
 
-        console.log('\n🎉 30-Day Collection Complete!');
+        console.log('\n🎉 Collection Complete!');
         console.log('==============================');
         console.log(`⏱️  Total Duration: ${(duration / 3600).toFixed(1)} hours`);
         console.log(`📊 Total Events: ${totalEvents.toLocaleString()}`);
@@ -98,14 +98,14 @@ async function fetch30Days() {
 
     } catch (error) {
         const partialDuration = (Date.now() - startTime) / 1000;
-        console.error('\n❌ 30-day collection failed:', error);
+        console.error('\n❌ Collection failed:', error);
         console.log(`⏱️  Partial duration: ${(partialDuration / 3600).toFixed(1)} hours`);
 
         // Check partial results
         const fs = require('fs');
-        const outputDir = './data_30_days';
+        const outputDir = `./data/${poolId}`;
         if (fs.existsSync(outputDir)) {
-            const files = fs.readdirSync(outputDir).filter((f: string) => f.startsWith('30day_'));
+            const files = fs.readdirSync(outputDir).filter((f: string) => f.startsWith(`data_${poolId}_`));
             console.log(`📁 Partial files saved: ${files.length}`);
             console.log('💡 You can resume collection or use partial data');
         }
