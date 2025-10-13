@@ -1186,6 +1186,71 @@ class Pool {
       utilization,
     };
   }
+
+  // Serialize pool state to JSON for saving/loading
+  serialize(): string {
+    const state = {
+      reserveA: this.reserveA.toString(),
+      reserveB: this.reserveB.toString(),
+      sqrtPriceX64: this.sqrtPriceX64.toString(),
+      liquidity: this.liquidity.toString(),
+      tickCurrent: this.tickCurrent,
+      feeRate: this.feeRate,
+      tickSpacing: this.tickSpacing,
+      feeRatePpm: this.feeRatePpm.toString(),
+      protocolFeeShareNumerator: this.protocolFeeShareNumerator.toString(),
+      protocolFeeShareDenominator: this.protocolFeeShareDenominator.toString(),
+      feeGrowthGlobal0X64: this.feeGrowthGlobal0X64.toString(),
+      feeGrowthGlobal1X64: this.feeGrowthGlobal1X64.toString(),
+      ticks: Array.from(this.ticks.entries()).map(([tick, data]) => ({
+        tick,
+        liquidityNet: data.liquidityNet.toString(),
+        liquidityGross: data.liquidityGross.toString(),
+        feeGrowthOutside0X64: data.feeGrowthOutside0X64.toString(),
+        feeGrowthOutside1X64: data.feeGrowthOutside1X64.toString(),
+      })),
+      tickBitmap: Array.from(this.tickBitmap),
+    };
+    return JSON.stringify(state, null, 2);
+  }
+
+  // Deserialize pool state from JSON
+  static deserialize(json: string): Pool {
+    const state = JSON.parse(json);
+    const pool = new Pool(
+      state.feeRate,
+      state.tickSpacing,
+      BigInt(state.feeRatePpm)
+    );
+
+    pool.reserveA = BigInt(state.reserveA);
+    pool.reserveB = BigInt(state.reserveB);
+    pool.sqrtPriceX64 = BigInt(state.sqrtPriceX64);
+    pool.liquidity = BigInt(state.liquidity);
+    pool.tickCurrent = state.tickCurrent;
+    pool.protocolFeeShareNumerator = BigInt(state.protocolFeeShareNumerator);
+    pool.protocolFeeShareDenominator = BigInt(
+      state.protocolFeeShareDenominator
+    );
+    pool.feeGrowthGlobal0X64 = BigInt(state.feeGrowthGlobal0X64);
+    pool.feeGrowthGlobal1X64 = BigInt(state.feeGrowthGlobal1X64);
+
+    // Restore ticks
+    pool.ticks = new Map();
+    for (const tickData of state.ticks) {
+      pool.ticks.set(tickData.tick, {
+        liquidityNet: BigInt(tickData.liquidityNet),
+        liquidityGross: BigInt(tickData.liquidityGross),
+        feeGrowthOutside0X64: BigInt(tickData.feeGrowthOutside0X64),
+        feeGrowthOutside1X64: BigInt(tickData.feeGrowthOutside1X64),
+      });
+    }
+
+    // Restore tick bitmap
+    pool.tickBitmap = new Set(state.tickBitmap);
+
+    return pool;
+  }
 }
 
 export { Pool };

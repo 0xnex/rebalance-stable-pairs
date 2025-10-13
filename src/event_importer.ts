@@ -57,6 +57,8 @@ type ImportOptions = {
   seedEventCount?: number;
   startTime?: number;
   endTime?: number;
+  dumpStateAt?: number; // timestamp to dump pool state
+  dumpStatePath?: string; // path to save the dumped state
 };
 
 import { rawEventService } from "./services/raw_event_service.js";
@@ -190,6 +192,24 @@ async function importEvents(
         `Processing ${rawEvents.length} DB events for pool ${poolId} (offset ${offset})`
       );
       for (const rawEvent of rawEvents) {
+        // Check if we need to dump state (for DB import, we need to check timestamp from rawEvent)
+        if (
+          options?.dumpStateAt &&
+          rawEvent.timestamp &&
+          parseInt(rawEvent.timestamp.toString()) >= options.dumpStateAt &&
+          !(pool as any).dumped
+        ) {
+          const dumpPath =
+            options.dumpStatePath ||
+            `pool_state_${poolId}_${options.dumpStateAt}.json`;
+          const stateJson = pool.serialize();
+          fs.writeFileSync(dumpPath, stateJson);
+          logger?.log?.(
+            `💾 Pool state dumped to ${dumpPath} at timestamp ${rawEvent.timestamp}`
+          );
+          (pool as any).dumped = true;
+        }
+
         // If rawEvent.data.events exists (array), treat as multiple events (like file import)
         if (Array.isArray(rawEvent.data?.events)) {
           for (const event of rawEvent.data.events) {
@@ -243,10 +263,44 @@ async function importEvents(
   let pool = new Pool(0.003, 2); // Default fee rate and tick spacing
 
   // Read all JSON files in the directory
-  const files = fs
+  let files = fs
     .readdirSync(dir)
     .filter((file) => file.endsWith(".json"))
     .sort(); // Process files in order
+
+  // Detect if files are in descending chronological order by comparing first and last file
+  if (files.length >= 2) {
+    try {
+      const firstFilePath = path.join(dir, files[0]!);
+      const lastFilePath = path.join(dir, files[files.length - 1]!);
+
+      const firstFileData = JSON.parse(
+        fs.readFileSync(firstFilePath, "utf-8")
+      ) as MomentumEventPage;
+      const lastFileData = JSON.parse(
+        fs.readFileSync(lastFilePath, "utf-8")
+      ) as MomentumEventPage;
+
+      // Get first transaction timestamp from each file
+      const firstFileTimestamp = firstFileData.data[0]?.timestampMs
+        ? parseInt(firstFileData.data[0].timestampMs)
+        : 0;
+      const lastFileTimestamp = lastFileData.data[0]?.timestampMs
+        ? parseInt(lastFileData.data[0].timestampMs)
+        : 0;
+
+      // If first file has newer events than last file, files are in descending order
+      if (firstFileTimestamp > lastFileTimestamp) {
+        logger?.log?.(`Detected files in descending order, reversing...`);
+        files = files.reverse();
+      }
+    } catch (error) {
+      logger?.warn?.(
+        `Could not detect file order, proceeding with default sort:`,
+        error
+      );
+    }
+  }
 
   logger?.log?.(`Processing ${files.length} files for pool ${poolId}`);
   const seedLimit = options?.seedEventCount;
@@ -257,8 +311,48 @@ async function importEvents(
       const data = JSON.parse(
         fs.readFileSync(filePath, "utf-8")
       ) as MomentumEventPage;
-      for (const transaction of data.data) {
+
+      // Reverse transactions within the file if they are in descending order
+      let transactions = data.data;
+      if (transactions.length >= 2) {
+        const firstTransaction = transactions[0];
+        const lastTransaction = transactions[transactions.length - 1];
+
+        if (firstTransaction && lastTransaction) {
+          const firstTransactionTimestamp = parseInt(
+            firstTransaction.timestampMs
+          );
+          const lastTransactionTimestamp = parseInt(
+            lastTransaction.timestampMs
+          );
+
+          // If first transaction is newer than last, reverse the order
+          if (firstTransactionTimestamp > lastTransactionTimestamp) {
+            transactions = transactions.reverse();
+          }
+        }
+      }
+
+      for (const transaction of transactions) {
         const transactionTimestamp = parseInt(transaction.timestampMs);
+
+        // Dump pool state if we've reached the specified dump timestamp
+        if (
+          options?.dumpStateAt &&
+          transactionTimestamp >= options.dumpStateAt &&
+          !(pool as any).dumped
+        ) {
+          const dumpPath =
+            options.dumpStatePath ||
+            `pool_state_${poolId}_${options.dumpStateAt}.json`;
+          const stateJson = pool.serialize();
+          fs.writeFileSync(dumpPath, stateJson);
+          logger?.log?.(
+            `💾 Pool state dumped to ${dumpPath} at timestamp ${transactionTimestamp}`
+          );
+          // Mark as dumped to avoid multiple dumps
+          (pool as any).dumped = true;
+        }
 
         // Stop processing if we've reached the specified timestamp
         if (transactionTimestamp > untilTimestamp) {
@@ -561,6 +655,16 @@ export function processRepayFlashSwapEvent(pool: Pool, parsedJson: any): void {
 
 function processOpenPositionEvent(_pool: Pool, _parsedJson: any): void {
   // OpenPosition event does not change pool state nor strategy state for backtests
+}
+
+// Load pool from dumped state file
+export function loadPoolFromState(stateFilePath: string): Pool {
+  if (!fs.existsSync(stateFilePath)) {
+    throw new Error(`Pool state file not found: ${stateFilePath}`);
+  }
+
+  const stateJson = fs.readFileSync(stateFilePath, "utf-8");
+  return Pool.deserialize(stateJson);
 }
 
 // Export the main function and types
