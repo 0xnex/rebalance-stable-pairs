@@ -940,9 +940,13 @@ export class VirtualPositionManager {
       1
     );
 
-    // Calculate total fees (no delta logic)
-    const fee0 = (position.liquidity * feeGrowthInside0) / 2n ** 64n;
-    const fee1 = (position.liquidity * feeGrowthInside1) / 2n ** 64n;
+    // Calculate fee delta since position was created
+    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+
+    // Calculate fees earned from the delta (this is the total fees since creation)
+    const fee0 = (position.liquidity * delta0) / 2n ** 64n;
+    const fee1 = (position.liquidity * delta1) / 2n ** 64n;
 
     return {
       fee0,
@@ -954,28 +958,42 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return false;
 
-    // Calculate and update fees
-    const fees = this.calculatePositionFees(positionId);
-    position.tokensOwed0 = fees.fee0;
-    position.tokensOwed1 = fees.fee1;
-
-    // Update checkpoints (only if in range)
+    // Check if position is in range
     const inRange =
       this.pool.tickCurrent >= position.tickLower &&
       this.pool.tickCurrent < position.tickUpper;
 
-    if (inRange) {
-      position.feeGrowthInside0LastX64 = this.pool.calculateFeeGrowthInside(
-        position.tickLower,
-        position.tickUpper,
-        0
-      );
-      position.feeGrowthInside1LastX64 = this.pool.calculateFeeGrowthInside(
-        position.tickLower,
-        position.tickUpper,
-        1
-      );
+    if (!inRange) {
+      // Out of range: fees don't accumulate
+      return true;
     }
+
+    // Calculate fee delta since last update
+    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+      position.tickLower,
+      position.tickUpper,
+      0
+    );
+    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+      position.tickLower,
+      position.tickUpper,
+      1
+    );
+
+    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+
+    // Calculate new fees from the delta
+    const newFees0 = (position.liquidity * delta0) / 2n ** 64n;
+    const newFees1 = (position.liquidity * delta1) / 2n ** 64n;
+
+    // ACCUMULATE fees (don't replace)
+    position.tokensOwed0 += newFees0;
+    position.tokensOwed1 += newFees1;
+
+    // Update checkpoints
+    position.feeGrowthInside0LastX64 = feeGrowthInside0;
+    position.feeGrowthInside1LastX64 = feeGrowthInside1;
 
     return true;
   }
@@ -1662,6 +1680,24 @@ export class VirtualPositionManager {
     // Reset tokensOwed (we've now collected them)
     position.tokensOwed0 = 0n;
     position.tokensOwed1 = 0n;
+
+    // Update checkpoint to current feeGrowthInside so we don't double-count
+    const inRange =
+      this.pool.tickCurrent >= position.tickLower &&
+      this.pool.tickCurrent < position.tickUpper;
+
+    if (inRange) {
+      position.feeGrowthInside0LastX64 = this.pool.calculateFeeGrowthInside(
+        position.tickLower,
+        position.tickUpper,
+        0
+      );
+      position.feeGrowthInside1LastX64 = this.pool.calculateFeeGrowthInside(
+        position.tickLower,
+        position.tickUpper,
+        1
+      );
+    }
 
     // Add to cash and total collected
     this.cashAmountA += fees.fee0;
