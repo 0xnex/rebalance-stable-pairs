@@ -161,12 +161,12 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       }
     }
 
-    // Calculate fees (keep raw values, no decimal conversion)
+    // Calculate fees (keep as BigInt to avoid overflow)
     // feesOwed = uncollected fees, collectedFees = already collected
-    const feesOwedA = Number(totals.feesOwed0);
-    const feesOwedB = Number(totals.feesOwed1);
-    const feesCollectedA = Number(totals.collectedFees0);
-    const feesCollectedB = Number(totals.collectedFees1);
+    const feesOwedA = totals.feesOwed0 ?? 0n;
+    const feesOwedB = totals.feesOwed1 ?? 0n;
+    const feesCollectedA = totals.collectedFees0 ?? 0n;
+    const feesCollectedB = totals.collectedFees1 ?? 0n;
     const totalFeesA = feesOwedA + feesCollectedA;
     const totalFeesB = feesOwedB + feesCollectedB;
 
@@ -219,8 +219,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const pos = positions[i]!;
         const posInRange =
           tick >= pos.tickLower && tick < pos.tickUpper ? "1" : "0";
-        const posFeesA = Number(pos.tokensOwed0);
-        const posFeesB = Number(pos.tokensOwed1);
+        const posFeesA = pos.tokensOwed0.toString();
+        const posFeesB = pos.tokensOwed1.toString();
 
         // Check if position has liquidity
         if (pos.liquidity === 0n) {
@@ -384,11 +384,12 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
               )}s / ${minDwell.toFixed(1)}s ${dwellOk}`
             );
 
-            // Show profit check details (keep all raw values)
+            // Show profit check details (convert fees to numbers for calculation)
             const rotationCost = (config.actionCostTokenB ?? 0) * 2;
             const minProfitB = config.minRotationProfitTokenB ?? 0;
 
-            const estimatedFeeValueB = totalFeesB + totalFeesA * price;
+            const estimatedFeeValueB =
+              Number(totalFeesB) + Number(totalFeesA) * price;
             const netProfit = estimatedFeeValueB - rotationCost;
             const profitOk = netProfit >= minProfitB ? "✓" : "✗";
 

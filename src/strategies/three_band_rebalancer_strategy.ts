@@ -491,6 +491,9 @@ export class ThreeBandRebalancerStrategy {
 
     for (const slippage of slippages) {
       try {
+        const preSwapTick = this.pool.tickCurrent;
+        const preSwapPrice = this.pool.price;
+
         const result = this.manager.addLiquidityWithSwap(
           tickLower,
           tickUpper,
@@ -499,6 +502,24 @@ export class ThreeBandRebalancerStrategy {
           slippage,
           this.getActionCost()
         );
+
+        const postSwapTick = this.pool.tickCurrent;
+        const postSwapPrice = this.pool.price;
+        const inRange = postSwapTick >= tickLower && postSwapTick < tickUpper;
+
+        // Log price movement from swap
+        if (postSwapTick !== preSwapTick) {
+          console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
+          console.log(
+            `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
+          );
+          console.log(
+            `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(6)}`
+          );
+          console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
+          console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
+          console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
+        }
 
         return {
           id: result.positionId,
