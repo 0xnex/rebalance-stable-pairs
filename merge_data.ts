@@ -24,10 +24,11 @@ async function mergeData() {
     console.log('🔄 Merging All Data');
     console.log('===================\n');
 
+    const poolId = '0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9';
+
     const dataDirs = [
-        { dir: './data_historical', prefix: 'historical_', label: 'Historical' },
-        { dir: './data_30_days', prefix: '30day_', label: '30-Day' },
-        { dir: './data_future', prefix: 'future_', label: 'Future' }
+        { dir: `./data_historical/${poolId}`, prefix: 'historical_', label: 'Historical' },
+        { dir: `./data_30_days/${poolId}`, prefix: '30day_', label: '30-Day' },
     ];
 
     const allTransactions: Transaction[] = [];
@@ -52,14 +53,32 @@ async function mergeData() {
 
         console.log(`📁 ${label}: Processing ${files.length} files...`);
 
+        let processedFiles = 0;
+        let skippedFiles = 0;
+
         for (const file of files) {
             const filePath = path.join(dir, file);
-            const content: DataPage = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
 
-            allTransactions.push(...content.data);
-            totalEvents += content.data.reduce((sum, tx) => sum + tx.events.length, 0);
-            totalFiles++;
+            try {
+                const content: DataPage = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+
+                if (content.data && Array.isArray(content.data)) {
+                    allTransactions.push(...content.data);
+                    totalEvents += content.data.reduce((sum, tx) => sum + tx.events.length, 0);
+                    processedFiles++;
+                } else {
+                    console.log(`   ⚠️  Skipping ${file}: Invalid data structure`);
+                    skippedFiles++;
+                }
+            } catch (error) {
+                console.log(`   ❌ Skipping ${file}: JSON parse error - ${error.message}`);
+                skippedFiles++;
+                continue;
+            }
         }
+
+        totalFiles += processedFiles;
+        console.log(`   ✅ Processed: ${processedFiles} files, ⚠️  Skipped: ${skippedFiles} files`);
     }
 
     console.log(`\n📊 Data Summary:`);
