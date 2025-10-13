@@ -842,7 +842,10 @@ export class VirtualPositionManager {
     };
   }
 
-  calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+  /**
+   * Calculate newly accrued fees since last update (for internal use by updatePositionFees)
+   */
+  private calculateNewPositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
     const position = this.positions.get(positionId);
     if (!position) return { fee0: 0n, fee1: 0n };
 
@@ -892,8 +895,25 @@ export class VirtualPositionManager {
       : 0n;
 
     return {
-      fee0: position.tokensOwed0 + fee0,
-      fee1: position.tokensOwed1 + fee1,
+      fee0: fee0,
+      fee1: fee1,
+    };
+  }
+
+  /**
+   * Calculate total fees for a position (existing + newly accrued)
+   */
+  calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+    const position = this.positions.get(positionId);
+    if (!position) return { fee0: 0n, fee1: 0n };
+
+    // Get newly accrued fees since last update
+    const newFees = this.calculateNewPositionFees(positionId);
+
+    // Return total fees (existing + new)
+    return {
+      fee0: position.tokensOwed0 + newFees.fee0,
+      fee1: position.tokensOwed1 + newFees.fee1,
     };
   }
 
@@ -901,10 +921,14 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return false;
 
-    const fees = this.calculatePositionFees(positionId);
-    position.tokensOwed0 = fees.fee0;
-    position.tokensOwed1 = fees.fee1;
+    // Calculate only the newly accrued fees since last update
+    const newFees = this.calculateNewPositionFees(positionId);
 
+    // Add the new fees to existing owed fees (proper accumulation)
+    position.tokensOwed0 += newFees.fee0;
+    position.tokensOwed1 += newFees.fee1;
+
+    // Update the fee growth tracking to prevent double counting
     position.feeGrowthInside0LastX64 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
