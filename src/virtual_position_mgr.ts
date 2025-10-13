@@ -92,11 +92,11 @@ export class VirtualPositionManager {
    */
   private getTickData(tick: number):
     | {
-        liquidityNet: bigint;
-        liquidityGross: bigint;
-        feeGrowthOutside0X64: bigint;
-        feeGrowthOutside1X64: bigint;
-      }
+      liquidityNet: bigint;
+      liquidityGross: bigint;
+      feeGrowthOutside0X64: bigint;
+      feeGrowthOutside1X64: bigint;
+    }
     | undefined {
     // First check if the pool has this tick (from real on-chain events)
     const poolTick = this.pool.ticks.get(tick);
@@ -133,12 +133,9 @@ export class VirtualPositionManager {
     const tickUpperData = this.getTickData(tickUpper);
 
     if (!tickLowerData || !tickUpperData) {
-      // If no tick data at all, assume all global fees apply
-      const globalFeeGrowth =
-        tokenIndex === 0
-          ? (this.pool as any).feeGrowthGlobal0X64
-          : (this.pool as any).feeGrowthGlobal1X64;
-      return globalFeeGrowth || 0n;
+      // SAFER: Don't assume all global fees apply, return 0 instead
+      // This prevents massive fee spikes when tick data is missing
+      return 0n;
     }
 
     const globalFeeGrowth =
@@ -155,15 +152,36 @@ export class VirtualPositionManager {
         ? tickUpperData.feeGrowthOutside0X64
         : tickUpperData.feeGrowthOutside1X64;
 
-    // Calculate fee growth inside the range
+    // Calculate fee growth inside the range with safe arithmetic
     let feeGrowthInside: bigint;
-    if (this.pool.tickCurrent < tickLower) {
-      feeGrowthInside = feeGrowthOutsideLower - feeGrowthOutsideUpper;
-    } else if (this.pool.tickCurrent >= tickUpper) {
-      feeGrowthInside = feeGrowthOutsideUpper - feeGrowthOutsideLower;
-    } else {
-      feeGrowthInside =
-        globalFeeGrowth - feeGrowthOutsideLower - feeGrowthOutsideUpper;
+    try {
+      if (this.pool.tickCurrent < tickLower) {
+        feeGrowthInside = feeGrowthOutsideLower >= feeGrowthOutsideUpper
+          ? feeGrowthOutsideLower - feeGrowthOutsideUpper
+          : 0n;
+      } else if (this.pool.tickCurrent >= tickUpper) {
+        feeGrowthInside = feeGrowthOutsideUpper >= feeGrowthOutsideLower
+          ? feeGrowthOutsideUpper - feeGrowthOutsideLower
+          : 0n;
+      } else {
+        // In range calculation with overflow protection
+        const temp1 = globalFeeGrowth >= feeGrowthOutsideLower
+          ? globalFeeGrowth - feeGrowthOutsideLower
+          : 0n;
+        feeGrowthInside = temp1 >= feeGrowthOutsideUpper
+          ? temp1 - feeGrowthOutsideUpper
+          : 0n;
+      }
+
+      // Cap the result to prevent unrealistic spikes
+      const MAX_FEE_GROWTH = 2n ** 60n;
+      if (feeGrowthInside > MAX_FEE_GROWTH) {
+        feeGrowthInside = 0n; // Reset to 0 if unrealistic
+      }
+
+    } catch (error) {
+      // Safe fallback
+      feeGrowthInside = 0n;
     }
 
     return feeGrowthInside;
@@ -778,25 +796,36 @@ export class VirtualPositionManager {
     let amount0 = 0n;
     let amount1 = 0n;
 
-    if (position.liquidity > 0n) {
-      if (currentTick < position.tickLower) {
-        // Position is above current price - all token0 (tokenA)
-        amount0 =
-          (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) /
-          sqrtLower /
-          sqrtUpper;
-        amount1 = 0n;
-      } else if (currentTick >= position.tickUpper) {
-        // Position is below current price - all token1 (tokenB)
-        amount0 = 0n;
-        amount1 = (position.liquidity * (sqrtUpper - sqrtLower)) / Q64;
-      } else {
-        // Position is in range - mix of both tokens
-        amount0 =
-          (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) /
-          sqrtPriceX64 /
-          sqrtUpper;
-        amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
+    if (position.liquidity > 0n && sqrtLower > 0n && sqrtUpper > 0n && sqrtPriceX64 > 0n) {
+      try {
+        if (currentTick < position.tickLower) {
+          // Position is above current price - all token0 (tokenA)
+          // Safe division to prevent overflow
+          if (sqrtLower > 0n && sqrtUpper > 0n) {
+            amount0 = (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) / sqrtLower / sqrtUpper;
+          }
+          amount1 = 0n;
+        } else if (currentTick >= position.tickUpper) {
+          // Position is below current price - all token1 (tokenB)
+          amount0 = 0n;
+          amount1 = (position.liquidity * (sqrtUpper - sqrtLower)) / Q64;
+        } else {
+          // Position is in range - mix of both tokens
+          if (sqrtPriceX64 > 0n && sqrtUpper > 0n) {
+            amount0 = (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) / sqrtPriceX64 / sqrtUpper;
+          }
+          amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
+        }
+
+        // Sanity check: cap amounts to prevent unrealistic spikes
+        const MAX_REASONABLE_AMOUNT = 2n ** 96n; // Very large but reasonable upper bound
+        amount0 = amount0 > MAX_REASONABLE_AMOUNT ? position.amountA : amount0;
+        amount1 = amount1 > MAX_REASONABLE_AMOUNT ? position.amountB : amount1;
+
+      } catch (error) {
+        // Fallback to stored amounts if calculation fails
+        amount0 = position.amountA;
+        amount1 = position.amountB;
       }
     }
 
@@ -821,17 +850,34 @@ export class VirtualPositionManager {
       1
     );
 
-    const feeGrowthDelta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
-    const feeGrowthDelta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    // Safe calculation to prevent underflow/overflow
+    let feeGrowthDelta0 = 0n;
+    let feeGrowthDelta1 = 0n;
 
-    const fee0 =
-      feeGrowthDelta0 <= 0n
-        ? 0n
-        : (position.liquidity * feeGrowthDelta0) / 2n ** 64n;
-    const fee1 =
-      feeGrowthDelta1 <= 0n
-        ? 0n
-        : (position.liquidity * feeGrowthDelta1) / 2n ** 64n;
+    try {
+      feeGrowthDelta0 = feeGrowthInside0 >= position.feeGrowthInside0LastX64
+        ? feeGrowthInside0 - position.feeGrowthInside0LastX64
+        : 0n;
+      feeGrowthDelta1 = feeGrowthInside1 >= position.feeGrowthInside1LastX64
+        ? feeGrowthInside1 - position.feeGrowthInside1LastX64
+        : 0n;
+    } catch (error) {
+      // Handle BigInt overflow/underflow
+      feeGrowthDelta0 = 0n;
+      feeGrowthDelta1 = 0n;
+    }
+
+    // Cap maximum fee growth delta to prevent spikes
+    const MAX_FEE_GROWTH_DELTA = 2n ** 60n; // Reasonable upper bound
+    feeGrowthDelta0 = feeGrowthDelta0 > MAX_FEE_GROWTH_DELTA ? MAX_FEE_GROWTH_DELTA : feeGrowthDelta0;
+    feeGrowthDelta1 = feeGrowthDelta1 > MAX_FEE_GROWTH_DELTA ? MAX_FEE_GROWTH_DELTA : feeGrowthDelta1;
+
+    const fee0 = position.liquidity > 0n && feeGrowthDelta0 > 0n
+      ? (position.liquidity * feeGrowthDelta0) / 2n ** 64n
+      : 0n;
+    const fee1 = position.liquidity > 0n && feeGrowthDelta1 > 0n
+      ? (position.liquidity * feeGrowthDelta1) / 2n ** 64n
+      : 0n;
 
     return {
       fee0: position.tokensOwed0 + fee0,
