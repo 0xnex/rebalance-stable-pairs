@@ -77,7 +77,7 @@ export class VirtualPositionManager {
 
   private static readonly Q64 = 1n << 64n;
 
-  constructor(private readonly pool: PoolPositionContext) {}
+  constructor(private readonly pool: PoolPositionContext) { }
 
   setInitialBalances(amountA: bigint, amountB: bigint): void {
     this.initialAmountA = amountA;
@@ -174,8 +174,9 @@ export class VirtualPositionManager {
       }
 
       // Cap the result to prevent unrealistic spikes
-      const MAX_FEE_GROWTH = 2n ** 60n;
+      const MAX_FEE_GROWTH = 1000000000000000n; // 1e15 - reasonable fee growth limit
       if (feeGrowthInside > MAX_FEE_GROWTH) {
+        console.warn(`[VirtualPositionManager] Fee growth inside too large: ${feeGrowthInside} for range [${tickLower},${tickUpper}]`);
         feeGrowthInside = 0n; // Reset to 0 if unrealistic
       }
 
@@ -818,9 +819,15 @@ export class VirtualPositionManager {
         }
 
         // Sanity check: cap amounts to prevent unrealistic spikes
-        const MAX_REASONABLE_AMOUNT = 2n ** 96n; // Very large but reasonable upper bound
-        amount0 = amount0 > MAX_REASONABLE_AMOUNT ? position.amountA : amount0;
-        amount1 = amount1 > MAX_REASONABLE_AMOUNT ? position.amountB : amount1;
+        // Use realistic DeFi limits instead of astronomical 2^96
+        const MAX_REASONABLE_AMOUNT = 1000000000000000000n; // 1e18 (1 ETH in wei, reasonable for most tokens)
+
+        if (amount0 > MAX_REASONABLE_AMOUNT || amount1 > MAX_REASONABLE_AMOUNT) {
+          // Log the problematic calculation for debugging
+          console.warn(`[VirtualPositionManager] Calculated amount too large: amount0=${amount0} amount1=${amount1} liquidity=${position.liquidity} tick=${currentTick} range=[${position.tickLower},${position.tickUpper}]`);
+          amount0 = position.amountA;
+          amount1 = position.amountB;
+        }
 
       } catch (error) {
         // Fallback to stored amounts if calculation fails
@@ -868,9 +875,14 @@ export class VirtualPositionManager {
     }
 
     // Cap maximum fee growth delta to prevent spikes
-    const MAX_FEE_GROWTH_DELTA = 2n ** 60n; // Reasonable upper bound
-    feeGrowthDelta0 = feeGrowthDelta0 > MAX_FEE_GROWTH_DELTA ? MAX_FEE_GROWTH_DELTA : feeGrowthDelta0;
-    feeGrowthDelta1 = feeGrowthDelta1 > MAX_FEE_GROWTH_DELTA ? MAX_FEE_GROWTH_DELTA : feeGrowthDelta1;
+    // Use realistic fee growth limit - fees shouldn't grow by more than this per update
+    const MAX_FEE_GROWTH_DELTA = 1000000000000000n; // 1e15 - reasonable fee growth limit
+
+    if (feeGrowthDelta0 > MAX_FEE_GROWTH_DELTA || feeGrowthDelta1 > MAX_FEE_GROWTH_DELTA) {
+      console.warn(`[VirtualPositionManager] Fee growth delta too large: delta0=${feeGrowthDelta0} delta1=${feeGrowthDelta1} positionId=${positionId}`);
+      feeGrowthDelta0 = feeGrowthDelta0 > MAX_FEE_GROWTH_DELTA ? 0n : feeGrowthDelta0;
+      feeGrowthDelta1 = feeGrowthDelta1 > MAX_FEE_GROWTH_DELTA ? 0n : feeGrowthDelta1;
+    }
 
     const fee0 = position.liquidity > 0n && feeGrowthDelta0 > 0n
       ? (position.liquidity * feeGrowthDelta0) / 2n ** 64n

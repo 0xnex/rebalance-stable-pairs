@@ -255,8 +255,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
           }
 
           // Debug: detect and log unrealistic spikes
-          const MAX_REASONABLE_AMOUNT = 1e15; // 1 quadrillion (very large but reasonable)
-          const MAX_REASONABLE_FEES = 1e12;   // 1 trillion
+          const MAX_REASONABLE_AMOUNT = 1e18; // 1 quintillion (1 ETH in wei)
+          const MAX_REASONABLE_FEES = 1e15;   // 1 quadrillion (reasonable fee limit)
 
           // Safe BigInt to Number conversion with overflow protection
           const safeBigIntToNumber = (value: bigint): number => {
@@ -317,7 +317,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     // Calculate sum of position amounts (actual current amounts) with safety checks
     let sumAmountA = 0n;
     let sumAmountB = 0n;
-    const MAX_TOTAL_AMOUNT = 2n ** 96n; // Very large but reasonable upper bound
+    const MAX_TOTAL_AMOUNT = 1000000000000000000n; // 1e18 - realistic DeFi limit
 
     for (const pos of positions) {
       try {
@@ -353,7 +353,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     const totalCurrentB = sumAmountB + cashB;
 
     // Safety check for total values before CSV output
-    const MAX_REASONABLE_TOTAL = 1e18; // 1 quintillion (very large but reasonable)
+    const MAX_REASONABLE_TOTAL = 1e19; // 10 quintillion (allow for multiple positions)
 
     // Safe BigInt to Number conversion for totals
     const safeBigIntToNumber = (value: bigint): number => {
