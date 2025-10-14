@@ -57,8 +57,6 @@ type ImportOptions = {
   seedEventCount?: number;
   startTime?: number;
   endTime?: number;
-  dumpStateAt?: number; // timestamp to dump pool state
-  dumpStatePath?: string; // path to save the dumped state
 };
 
 import { rawEventService } from "./services/raw_event_service.js";
@@ -70,6 +68,10 @@ function commonProcessEvent({
   poolId,
   eventTypes,
   logger,
+  transactionEvents,
+  txDigest,
+  eventSeq,
+  fileName,
 }: {
   pool: Pool;
   eventType: string;
@@ -77,6 +79,10 @@ function commonProcessEvent({
   poolId: string;
   eventTypes?: EventType[];
   logger?: Partial<Console>;
+  transactionEvents?: MomentumEvent[]; // All events in current transaction
+  txDigest?: string;
+  eventSeq?: number;
+  fileName?: string;
 }): { pool: Pool; handled: boolean } {
   if (parsedJson.pool_id !== poolId) return { pool, handled: false };
   let handled = false;
@@ -96,7 +102,13 @@ function commonProcessEvent({
         handled = true;
         break;
       case EventTypes[EventType.Swap]:
-        processSwapEvent(pool, parsedJson, { logger });
+        processSwapEvent(pool, parsedJson, {
+          logger,
+          transactionEvents,
+          txDigest,
+          eventSeq,
+          fileName,
+        });
         handled = true;
         break;
       case EventTypes[EventType.AddLiquidity]:
@@ -108,7 +120,8 @@ function commonProcessEvent({
         handled = true;
         break;
       case EventTypes[EventType.RepayFlashSwap]:
-        processRepayFlashSwapEvent(pool, parsedJson);
+        // RepayFlashSwap is now handled together with SwapEvent
+        // Skip standalone processing
         handled = true;
         break;
       case EventTypes[EventType.OpenPosition]:
@@ -126,37 +139,6 @@ function commonProcessEvent({
   return { pool, handled };
 }
 
-function logValidationStats(
-  pool: Pool,
-  poolId: string,
-  logger?: Partial<Console>
-) {
-  logger?.log?.(`Finished processing events for pool ${poolId}`);
-  // Log validation statistics
-  const validationStats = pool.getValidationStats();
-  logger?.log?.(`\n📊 Validation Statistics:`, {
-    totalSwaps: validationStats.totalSwaps,
-    exactMatchRate: `${(validationStats.exactMatchRate * 100).toFixed(2)}%`,
-    amountOutMatchRate: `${(validationStats.amountOutMatchRate * 100).toFixed(
-      2
-    )}%`,
-    feeMatchRate: `${(validationStats.feeMatchRate * 100).toFixed(2)}%`,
-    protocolFeeMatchRate: `${(
-      validationStats.protocolFeeMatchRate * 100
-    ).toFixed(2)}%`,
-    mismatches: {
-      amountOut: validationStats.amountOutMismatches,
-      fee: validationStats.feeMismatches,
-      protocolFee: validationStats.protocolFeeMismatches,
-    },
-    totalDifferences: {
-      amountOut: validationStats.totalAmountOutDifference.toString(),
-      fee: validationStats.totalFeeDifference.toString(),
-      protocolFee: validationStats.totalProtocolFeeDifference.toString(),
-    },
-  });
-}
-
 async function importEvents(
   poolId: string,
   untilTimestamp: number,
@@ -164,14 +146,17 @@ async function importEvents(
   options?: ImportOptions
 ): Promise<Pool> {
   const logger = options?.silent ? undefined : console;
-  console.log("options: ", options);
+
+  // Output CSV header for validation mismatches
+  console.log("\n=== CSV Validation Report ===");
+  console.log("文件,tx,序号,事件,对比字段,期望值,实际值");
   // If dataDir is falsy, import from DB
   if (!options?.dataDir) {
     console.log("options.dataDir is falsy, importing from DB");
     // DB: Each record is a transaction with 1 event
     // ...same logic as file-based, but each DB row is a transaction with 1 event
     // Initialize pool with default values (will be updated from CreatePool event)
-    let pool = new Pool(0.003, 2); // Default fee rate and tick spacing
+    let pool = new Pool(3000n, 2); // Default fee rate (0.3% = 3000 ppm) and tick spacing
 
     // Fetch events from database in pages of 100
     const pageSize = 100;
@@ -192,24 +177,6 @@ async function importEvents(
         `Processing ${rawEvents.length} DB events for pool ${poolId} (offset ${offset})`
       );
       for (const rawEvent of rawEvents) {
-        // Check if we need to dump state (for DB import, we need to check timestamp from rawEvent)
-        if (
-          options?.dumpStateAt &&
-          rawEvent.timestamp &&
-          parseInt(rawEvent.timestamp.toString()) >= options.dumpStateAt &&
-          !(pool as any).dumped
-        ) {
-          const dumpPath =
-            options.dumpStatePath ||
-            `pool_state_${poolId}_${options.dumpStateAt}.json`;
-          const stateJson = pool.serialize();
-          fs.writeFileSync(dumpPath, stateJson);
-          logger?.log?.(
-            `💾 Pool state dumped to ${dumpPath} at timestamp ${rawEvent.timestamp}`
-          );
-          (pool as any).dumped = true;
-        }
-
         // If rawEvent.data.events exists (array), treat as multiple events (like file import)
         if (Array.isArray(rawEvent.data?.events)) {
           for (const event of rawEvent.data.events) {
@@ -222,6 +189,10 @@ async function importEvents(
               poolId,
               eventTypes,
               logger,
+              transactionEvents: rawEvent.data?.events,
+              txDigest: rawEvent.data?.digest || event.id?.txDigest,
+              eventSeq: event.id?.eventSeq,
+              fileName: "db_import",
             });
             pool = result.pool;
             if (result.handled) {
@@ -237,7 +208,29 @@ async function importEvents(
       if (rawEvents.length < pageSize) break;
       offset += pageSize;
     }
-    logValidationStats(pool, poolId, logger);
+
+    // End CSV report
+    console.log("=== End of CSV Validation Report ===\n");
+
+    // Log final pool state summary
+    logger?.log?.(`\n📊 Final Pool State Summary:`);
+    logger?.log?.(`  Pool ID: ${poolId}`);
+    logger?.log?.(`  Liquidity: ${pool.liquidity.toString()}`);
+    logger?.log?.(`  SqrtPriceX64: ${pool.sqrtPriceX64.toString()}`);
+    logger?.log?.(`  Current Tick: ${pool.tickCurrent}`);
+    logger?.log?.(`  Reserve A (X): ${pool.reserveA.toString()}`);
+    logger?.log?.(`  Reserve B (Y): ${pool.reserveB.toString()}`);
+    logger?.log?.(
+      `  Fee Growth Global 0: ${pool.feeGrowthGlobal0X64.toString()}`
+    );
+    logger?.log?.(
+      `  Fee Growth Global 1: ${pool.feeGrowthGlobal1X64.toString()}`
+    );
+    logger?.log?.(`  Total Swap Fee 0: ${pool.totalSwapFee0.toString()}`);
+    logger?.log?.(`  Total Swap Fee 1: ${pool.totalSwapFee1.toString()}`);
+    logger?.log?.(`  Active Ticks: ${pool.ticks.size}`);
+    logger?.log?.(`  Processed Events: ${processedSeedEvents}`);
+
     return pool;
   }
 
@@ -260,7 +253,7 @@ async function importEvents(
   }
 
   // Initialize pool with default values (will be updated from CreatePool event)
-  let pool = new Pool(0.003, 2); // Default fee rate and tick spacing
+  let pool = new Pool(3000n, 2); // Default fee rate (0.3% = 3000 ppm) and tick spacing
 
   // Read all JSON files in the directory
   let files = fs
@@ -336,24 +329,6 @@ async function importEvents(
       for (const transaction of transactions) {
         const transactionTimestamp = parseInt(transaction.timestampMs);
 
-        // Dump pool state if we've reached the specified dump timestamp
-        if (
-          options?.dumpStateAt &&
-          transactionTimestamp >= options.dumpStateAt &&
-          !(pool as any).dumped
-        ) {
-          const dumpPath =
-            options.dumpStatePath ||
-            `pool_state_${poolId}_${options.dumpStateAt}.json`;
-          const stateJson = pool.serialize();
-          fs.writeFileSync(dumpPath, stateJson);
-          logger?.log?.(
-            `💾 Pool state dumped to ${dumpPath} at timestamp ${transactionTimestamp}`
-          );
-          // Mark as dumped to avoid multiple dumps
-          (pool as any).dumped = true;
-        }
-
         // Stop processing if we've reached the specified timestamp
         if (transactionTimestamp > untilTimestamp) {
           logger?.log?.(
@@ -371,6 +346,10 @@ async function importEvents(
             poolId,
             eventTypes,
             logger,
+            transactionEvents: transaction.events,
+            txDigest: transaction.digest,
+            eventSeq: event.id?.eventSeq,
+            fileName: file,
           });
           pool = result.pool;
           if (result.handled) {
@@ -386,7 +365,29 @@ async function importEvents(
       // Continue processing other files
     }
   }
-  logValidationStats(pool, poolId, logger);
+
+  // End CSV report
+  console.log("=== End of CSV Validation Report ===\n");
+
+  // Log final pool state summary
+  logger?.log?.(`\n📊 Final Pool State Summary:`);
+  logger?.log?.(`  Pool ID: ${poolId}`);
+  logger?.log?.(`  Liquidity: ${pool.liquidity.toString()}`);
+  logger?.log?.(`  SqrtPriceX64: ${pool.sqrtPriceX64.toString()}`);
+  logger?.log?.(`  Current Tick: ${pool.tickCurrent}`);
+  logger?.log?.(`  Reserve A (X): ${pool.reserveA.toString()}`);
+  logger?.log?.(`  Reserve B (Y): ${pool.reserveB.toString()}`);
+  logger?.log?.(
+    `  Fee Growth Global 0: ${pool.feeGrowthGlobal0X64.toString()}`
+  );
+  logger?.log?.(
+    `  Fee Growth Global 1: ${pool.feeGrowthGlobal1X64.toString()}`
+  );
+  logger?.log?.(`  Total Swap Fee 0: ${pool.totalSwapFee0.toString()}`);
+  logger?.log?.(`  Total Swap Fee 1: ${pool.totalSwapFee1.toString()}`);
+  logger?.log?.(`  Active Ticks: ${pool.ticks.size}`);
+  logger?.log?.(`  Processed Events: ${processedSeedEvents}`);
+
   return pool;
 }
 
@@ -409,7 +410,7 @@ function processCreatePoolEvent(
   logger?: Partial<Console>
 ): Pool {
   const feeRateRaw = BigInt(parsedJson.fee_rate || 0);
-  const feeRate = Number(feeRateRaw) / 10000; // Convert from basis points-like format for legacy usage
+  const feeRate = Number(feeRateRaw) / 1_000_000; // Convert from basis points-like format for legacy usage
   const tickSpacing = parsedJson.tick_spacing;
 
   logger?.log?.(
@@ -423,7 +424,7 @@ function processCreatePoolEvent(
     typeY: parsedJson.type_y,
   });
 
-  const pool = new Pool(feeRate, tickSpacing, feeRateRaw);
+  const pool = new Pool(feeRateRaw, tickSpacing);
 
   // Initialize pool with initial state if available
   if (parsedJson.initial_sqrt_price) {
@@ -474,9 +475,34 @@ function processCreatePoolEvent(
 export function processSwapEvent(
   pool: Pool,
   parsedJson: any,
-  options?: { logger?: Partial<Console> }
+  options?: {
+    logger?: Partial<Console>;
+    transactionEvents?: MomentumEvent[];
+    txDigest?: string;
+    eventSeq?: number;
+    fileName?: string;
+  }
 ): void {
   const logger = options?.logger;
+  const transactionEvents = options?.transactionEvents || [];
+  const txDigest = options?.txDigest || "unknown";
+  const eventSeq = options?.eventSeq ?? 0;
+  const fileName = options?.fileName || "unknown";
+
+  // Check if there's a RepayFlashSwapEvent in the same transaction for this pool
+  const flashSwapEvent = transactionEvents.find(
+    (evt) =>
+      evt.type === EventTypes[EventType.RepayFlashSwap] &&
+      evt.parsedJson?.pool_id === parsedJson.pool_id
+  );
+
+  // Removed verbose flash swap detection log to keep CSV report clean
+  // if (flashSwapEvent) {
+  //   logger?.log?.(
+  //     `  Found RepayFlashSwapEvent in transaction for pool ${parsedJson.pool_id}`
+  //   );
+  // }
+
   // Parse swap event with correct field names for trade::SwapEvent
   const zeroForOne = parsedJson.x_for_y === true; // x_for_y true → token0 in, token1 out
   const amountIn = zeroForOne
@@ -502,6 +528,87 @@ export function processSwapEvent(
     pool.reserveB = BigInt(parsedJson.reserve_y);
   }
 
+  // Check if this is a same-token flash swap
+  let isFlashSwapSameToken = false;
+  if (flashSwapEvent) {
+    const flashData = flashSwapEvent.parsedJson;
+    const amountXDebt = BigInt(flashData.amount_x_debt || 0);
+    const amountYDebt = BigInt(flashData.amount_y_debt || 0);
+    const paidX = BigInt(flashData.paid_x || 0);
+    const paidY = BigInt(flashData.paid_y || 0);
+
+    // Same token case: debt and paid are equal (no extra fee in repayment)
+    // Example: debt_x=219029, paid_x=219029, debt_y=0, paid_y=0
+    const sameTokenX =
+      amountXDebt === paidX && amountYDebt === 0n && paidY === 0n;
+    const sameTokenY =
+      amountYDebt === paidY && amountXDebt === 0n && paidX === 0n;
+
+    isFlashSwapSameToken = sameTokenX || sameTokenY;
+
+    if (isFlashSwapSameToken) {
+      // Same token flash swap - just collect the fee from SwapEvent, don't execute swap
+      // The fee is in SwapEvent.fee_amount, not in the RepayFlashSwap diff
+      const paidX = BigInt(flashData.paid_x || 0);
+      const paidY = BigInt(flashData.paid_y || 0);
+
+      // Calculate actual fee from RepayFlashSwap (should be 0 for same-token)
+      const feeCollectedX = paidX > amountXDebt ? paidX - amountXDebt : 0n;
+      const feeCollectedY = paidY > amountYDebt ? paidY - amountYDebt : 0n;
+
+      // The real fee is in SwapEvent.fee_amount - add it based on direction
+      const swapFeeX = zeroForOne ? expectedFee : 0n;
+      const swapFeeY = zeroForOne ? 0n : expectedFee;
+
+      // Create synthetic paid amounts that include the swap fee
+      const effectivePaidX = paidX + swapFeeX;
+      const effectivePaidY = paidY + swapFeeY;
+
+      pool.applyRepayFlashSwap(
+        amountXDebt,
+        amountYDebt,
+        effectivePaidX,
+        effectivePaidY,
+        parsedJson.reserve_x ? BigInt(parsedJson.reserve_x) : undefined,
+        parsedJson.reserve_y ? BigInt(parsedJson.reserve_y) : undefined
+      );
+
+      // Verbose flash swap log - comment out to keep CSV report clean
+      // logger?.log?.(
+      //   `  ⚡ Same-token flash swap detected: ` +
+      //     `x_for_y=${zeroForOne}, ` +
+      //     `debt=(${amountXDebt}, ${amountYDebt}), ` +
+      //     `paid=(${paidX}, ${paidY}), ` +
+      //     `repay_fee=(${feeCollectedX}, ${feeCollectedY}), ` +
+      //     `swap_fee=${expectedFee}, ` +
+      //     `total_fee=(${swapFeeX}, ${swapFeeY})`
+      // );
+
+      // Sync sqrt_price and tick to match the event
+      if (parsedJson.sqrt_price_after) {
+        pool.sqrtPriceX64 = BigInt(parsedJson.sqrt_price_after);
+        pool.tickCurrent = convertSigned32BitToTick(
+          parsedJson.tick_index?.bits || pool.tickCurrent
+        );
+      }
+
+      // Sync liquidity to event value
+      if (parsedJson.liquidity) {
+        pool.liquidity = BigInt(parsedJson.liquidity);
+      }
+
+      return; // Skip normal swap processing
+    }
+    // Cross-token flash swap - process as normal swap
+    // Verbose log commented out to keep CSV report clean
+    // else {
+    //   logger?.log?.(
+    //     `  🔄 Cross-token flash swap detected: will process as normal swap`
+    //   );
+    // }
+  }
+
+  // Normal swap processing (or cross-token flash swap)
   if (amountIn > 0) {
     // Use validation method to compare with event data
     const result = pool.applySwapWithValidation(
@@ -512,36 +619,28 @@ export function processSwapEvent(
       expectedProtocolFee > 0 ? expectedProtocolFee : undefined
     );
 
-    // Log validation results
+    // Log validation results in CSV format
     if (!result.validation.isExactMatch) {
-      logger?.warn?.(`❌ Swap validation FAILED:`, {
-        transaction: parsedJson,
-        calculated: {
-          amountOut: result.amountOut.toString(),
-          fee: result.feeAmount.toString(),
-          protocolFee: result.protocolFee.toString(),
-        },
-        expected: {
-          amountOut: expectedAmountOut.toString(),
-          fee: expectedFee.toString(),
-          protocolFee: expectedProtocolFee.toString(),
-        },
-        differences: {
-          amountOut: result.validation.amountOutDifference.toString(),
-          fee: result.validation.feeDifference.toString(),
-          protocolFee: result.validation.protocolFeeDifference.toString(),
-        },
-        validation: {
-          amountOutMatch: result.validation.amountOutMatch,
-          feeMatch: result.validation.feeMatch,
-          protocolFeeMatch: result.validation.protocolFeeMatch,
-          isExactMatch: result.validation.isExactMatch,
-        },
-      });
-    } else {
-      logger?.log?.(
-        `✅ Swap validation PASSED for amount ${amountIn.toString()}`
-      );
+      // Output CSV header on first mismatch (or you can output it at the start of import)
+      // Format: 文件, tx, 序号, 事件, 对比字段, 期望值, 实际值
+
+      if (!result.validation.amountOutMatch) {
+        console.log(
+          `${fileName},${txDigest},${eventSeq},SwapEvent,amountOut,${expectedAmountOut},${result.amountOut}`
+        );
+      }
+
+      if (!result.validation.feeMatch) {
+        console.log(
+          `${fileName},${txDigest},${eventSeq},SwapEvent,fee,${expectedFee},${result.feeAmount}`
+        );
+      }
+
+      if (!result.validation.protocolFeeMatch) {
+        console.log(
+          `${fileName},${txDigest},${eventSeq},SwapEvent,protocolFee,${expectedProtocolFee},${result.protocolFee}`
+        );
+      }
     }
   }
 }
@@ -564,16 +663,6 @@ export function processAddLiquidityEvent(
   const amountB = BigInt(parsedJson.amount_y || 0);
   const liquidityDelta = BigInt(parsedJson.liquidity || 0);
 
-  logger?.log?.(`Processing AddLiquidity event:`, {
-    tickLower,
-    tickUpper,
-    amountA: amountA.toString(),
-    amountB: amountB.toString(),
-    reserveX: parsedJson.reserve_x,
-    reserveY: parsedJson.reserve_y,
-    liquidity: parsedJson.liquidity,
-  });
-
   if (liquidityDelta !== 0n) {
     pool.applyLiquidityDelta(tickLower, tickUpper, liquidityDelta);
     if (parsedJson.liquidity) {
@@ -583,14 +672,6 @@ export function processAddLiquidityEvent(
       pool.reserveA = BigInt(parsedJson.reserve_x);
       pool.reserveB = BigInt(parsedJson.reserve_y);
     }
-    logger?.log?.(
-      `Added liquidity: ${amountA.toString()} A, ${amountB.toString()} B`
-    );
-    logger?.log?.(`Pool state after add:`, {
-      reserveA: pool.reserveA.toString(),
-      reserveB: pool.reserveB.toString(),
-      liquidity: pool.liquidity.toString(),
-    });
   }
 }
 
@@ -629,7 +710,11 @@ export function processRemoveLiquidityEvent(
   }
 }
 
-export function processRepayFlashSwapEvent(pool: Pool, parsedJson: any): void {
+export function processRepayFlashSwapEvent(
+  pool: Pool,
+  parsedJson: any,
+  options?: { logger?: Partial<Console> }
+): void {
   // Parse flash swap repayment event data
   const amountXDebt = BigInt(parsedJson.amount_x_debt || 0);
   const amountYDebt = BigInt(parsedJson.amount_y_debt || 0);
@@ -642,7 +727,25 @@ export function processRepayFlashSwapEvent(pool: Pool, parsedJson: any): void {
     ? BigInt(parsedJson.reserve_y)
     : undefined;
 
-  // Apply the flash swap repayment to adjust reserves
+  // Validate flash swap repayment data
+  if (paidX < amountXDebt || paidY < amountYDebt) {
+    options?.logger?.warn?.(
+      `Flash swap repayment: paid amounts less than debt amounts. ` +
+        `X: paid=${paidX}, debt=${amountXDebt}, Y: paid=${paidY}, debt=${amountYDebt}`
+    );
+  }
+
+  // Calculate fees collected
+  const feeX = paidX > amountXDebt ? paidX - amountXDebt : 0n;
+  const feeY = paidY > amountYDebt ? paidY - amountYDebt : 0n;
+
+  if (feeX > 0n || feeY > 0n) {
+    options?.logger?.log?.(
+      `Flash swap repayment: collected fees X=${feeX}, Y=${feeY}`
+    );
+  }
+
+  // Apply the flash swap repayment to collect fees and update tick data
   pool.applyRepayFlashSwap(
     amountXDebt,
     amountYDebt,

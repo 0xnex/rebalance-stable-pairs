@@ -3,8 +3,8 @@ export type VirtualPosition = {
   tickLower: number;
   tickUpper: number;
   liquidity: bigint;
-  amountA: bigint;
-  amountB: bigint;
+  amount0: bigint;
+  amount1: bigint;
   feeGrowthInside0LastX64: bigint;
   feeGrowthInside1LastX64: bigint;
   tokensOwed0: bigint;
@@ -55,10 +55,10 @@ export interface PoolPositionContext {
 
 export class VirtualPositionManager {
   private positions = new Map<string, VirtualPosition>();
-  private initialAmountA = 0n;
-  private initialAmountB = 0n;
-  private cashAmountA = 0n;
-  private cashAmountB = 0n;
+  private initialAmount0 = 0n;
+  private initialAmount1 = 0n;
+  private amount0 = 0n;
+  private amount1 = 0n;
   private totalFeesCollected0 = 0n;
   private totalFeesCollected1 = 0n;
   private totalCostTokenA = 0;
@@ -77,6 +77,11 @@ export class VirtualPositionManager {
 
   private lastProcessedTick: number | null = null;
 
+  // Maximum ratio of virtual liquidity to pool liquidity (default 50%)
+  // This ensures fee calculations remain accurate
+  // For multi-position strategies (like 3-band), we need higher limits
+  private maxLiquidityRatio = 0.5;
+
   private static readonly Q64 = 1n << 64n;
 
   constructor(private readonly pool: PoolPositionContext) {}
@@ -94,11 +99,31 @@ export class VirtualPositionManager {
     return diff;
   }
 
-  setInitialBalances(amountA: bigint, amountB: bigint): void {
-    this.initialAmountA = amountA;
-    this.initialAmountB = amountB;
-    this.cashAmountA = amountA;
-    this.cashAmountB = amountB;
+  setInitialBalances(amount0: bigint, amount1: bigint): void {
+    this.initialAmount0 = amount0;
+    this.initialAmount1 = amount1;
+    this.amount0 = amount0;
+    this.amount1 = amount1;
+  }
+
+  /**
+   * Get total active liquidity from all virtual positions in current price range
+   */
+  private getTotalActiveLiquidity(): bigint {
+    let total = 0n;
+    const currentTick = this.pool.tickCurrent;
+
+    for (const position of this.positions.values()) {
+      // Check if position is in range
+      if (
+        currentTick >= position.tickLower &&
+        currentTick < position.tickUpper
+      ) {
+        total += position.liquidity;
+      }
+    }
+
+    return total;
   }
 
   /**
@@ -164,19 +189,8 @@ export class VirtualPositionManager {
     tickUpper: number,
     tokenIndex: 0 | 1
   ): bigint {
-    // Try pool's calculation first (it will handle ticks that exist in the pool)
-    const poolResult = this.pool.calculateFeeGrowthInside(
-      tickLower,
-      tickUpper,
-      tokenIndex
-    );
-
-    // If pool returned a value (ticks exist), use it
-    if (poolResult !== 0n) {
-      return poolResult;
-    }
-
-    // Otherwise, calculate using virtual ticks and global fee growth
+    // ALWAYS use virtual ticks for consistency
+    // Virtual positions need isolated fee tracking separate from real pool
     const tickLowerData = this.getTickData(tickLower);
     const tickUpperData = this.getTickData(tickUpper);
 
@@ -279,8 +293,8 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return null;
 
-    const nextAmountA = position.amountA + amountA;
-    const nextAmountB = position.amountB + amountB;
+    const nextAmountA = position.amount0 + amountA;
+    const nextAmountB = position.amount1 + amountB;
     const nextLiquidity = this.calculateVirtualLiquidity(
       position.tickLower,
       position.tickUpper,
@@ -303,12 +317,12 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return null;
 
-    if (amountA > position.amountA || amountB > position.amountB) {
+    if (amountA > position.amount0 || amountB > position.amount1) {
       return null;
     }
 
-    const nextAmountA = position.amountA - amountA;
-    const nextAmountB = position.amountB - amountB;
+    const nextAmountA = position.amount0 - amountA;
+    const nextAmountB = position.amount1 - amountB;
     const nextLiquidity = this.calculateVirtualLiquidity(
       position.tickLower,
       position.tickUpper,
@@ -356,7 +370,7 @@ export class VirtualPositionManager {
 
     const { liquidity, usedA, usedB, refundA, refundB } = funding;
 
-    if (usedA > this.cashAmountA || usedB > this.cashAmountB) {
+    if (usedA > this.amount0 || usedB > this.amount1) {
       throw new Error("Insufficient available balances to open position");
     }
 
@@ -402,8 +416,8 @@ export class VirtualPositionManager {
     remainingTokenB: bigint;
     slippageHit: boolean;
   } {
-    const snapshotCashA = this.cashAmountA;
-    const snapshotCashB = this.cashAmountB;
+    const snapshotCashA = this.amount0;
+    const snapshotCashB = this.amount1;
     try {
       if (maxAmountA < 0n || maxAmountB < 0n) {
         throw new Error("Amounts must be non-negative");
@@ -413,14 +427,12 @@ export class VirtualPositionManager {
         throw new Error("maxSlippageBps must be >= 0");
       }
 
-      if (this.cashAmountA <= 0n && this.cashAmountB <= 0n) {
+      if (this.amount0 <= 0n && this.amount1 <= 0n) {
         throw new Error("No available balances to add liquidity");
       }
 
-      const availableA =
-        maxAmountA <= this.cashAmountA ? maxAmountA : this.cashAmountA;
-      const availableB =
-        maxAmountB <= this.cashAmountB ? maxAmountB : this.cashAmountB;
+      const availableA = maxAmountA <= this.amount0 ? maxAmountA : this.amount0;
+      const availableB = maxAmountB <= this.amount1 ? maxAmountB : this.amount1;
 
       if (availableA <= 0n && availableB <= 0n) {
         throw new Error("Provided limits are zero");
@@ -471,16 +483,16 @@ export class VirtualPositionManager {
 
         if (zeroForOne) {
           // swapping token0 -> token1 (A -> B)
-          this.cashAmountA -= result.amountIn;
-          this.cashAmountB += result.amountOut;
+          this.amount0 -= result.amountIn;
+          this.amount1 += result.amountOut;
           swappedFromA += result.amountIn;
           swappedToB += result.amountOut;
           workingA -= result.amountIn;
           workingB += result.amountOut;
         } else {
           // swapping token1 -> token0 (B -> A)
-          this.cashAmountB -= result.amountIn;
-          this.cashAmountA += result.amountOut;
+          this.amount1 -= result.amountIn;
+          this.amount0 += result.amountOut;
           swappedFromB += result.amountIn;
           swappedToA += result.amountOut;
           workingB -= result.amountIn;
@@ -596,10 +608,7 @@ export class VirtualPositionManager {
         throw new Error("Unable to derive liquidity from provided amounts");
       }
 
-      if (
-        funding.usedA > this.cashAmountA ||
-        funding.usedB > this.cashAmountB
-      ) {
+      if (funding.usedA > this.amount0 || funding.usedB > this.amount1) {
         throw new Error("Insufficient balances after swaps to open position");
       }
 
@@ -621,13 +630,13 @@ export class VirtualPositionManager {
         swappedFromTokenB: swappedFromB,
         swappedToTokenA: swappedToA,
         swappedToTokenB: swappedToB,
-        remainingTokenA: this.cashAmountA,
-        remainingTokenB: this.cashAmountB,
+        remainingTokenA: this.amount0,
+        remainingTokenB: this.amount1,
         slippageHit,
       };
     } catch (error) {
-      this.cashAmountA = snapshotCashA;
-      this.cashAmountB = snapshotCashB;
+      this.amount0 = snapshotCashA;
+      this.amount1 = snapshotCashB;
       throw error;
     }
   }
@@ -648,7 +657,7 @@ export class VirtualPositionManager {
       };
     }
 
-    const available = zeroForOne ? position.amountA : position.amountB;
+    const available = zeroForOne ? position.amount0 : position.amount1;
     if (available <= 0n) {
       return {
         amountIn: 0n,
@@ -707,9 +716,9 @@ export class VirtualPositionManager {
       `pos_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
 
     // Check if we have enough balance
-    if (amountA > this.cashAmountA || amountB > this.cashAmountB) {
+    if (amountA > this.amount0 || amountB > this.amount1) {
       throw new Error(
-        `Insufficient balance: need ${amountA} tokenA, ${amountB} tokenB, have ${this.cashAmountA} tokenA, ${this.cashAmountB} tokenB`
+        `Insufficient balance: need ${amountA} tokenA, ${amountB} tokenB, have ${this.amount0} tokenA, ${this.amount1} tokenB`
       );
     }
 
@@ -719,6 +728,39 @@ export class VirtualPositionManager {
       amountA,
       amountB
     );
+
+    // CRITICAL: Validate that total virtual liquidity doesn't exceed pool liquidity ratio
+    // VPM uses pool's feeGrowthGlobal which is calculated as: fee / pool.liquidity
+    // If total virtual liquidity is too large, fee calculations become incorrect
+    const poolLiquidity = this.pool.liquidity;
+    const currentActiveLiquidity = this.getTotalActiveLiquidity();
+    const totalAfterCreation = currentActiveLiquidity + liquidity;
+    const maxAllowed =
+      (poolLiquidity * BigInt(Math.floor(this.maxLiquidityRatio * 1000))) /
+      1000n;
+
+    if (totalAfterCreation > maxAllowed) {
+      const ratio = (
+        (Number(totalAfterCreation) / Number(poolLiquidity)) *
+        100
+      ).toFixed(2);
+      throw new Error(
+        `Cannot create position: total virtual liquidity (${totalAfterCreation.toString()}) ` +
+          `would exceed ${(this.maxLiquidityRatio * 100).toFixed(
+            0
+          )}% of pool liquidity (${poolLiquidity.toString()}). ` +
+          `This would be ${ratio}% of pool. Current virtual: ${currentActiveLiquidity.toString()}, ` +
+          `new position: ${liquidity.toString()}.`
+      );
+    }
+
+    // Also warn if single position is very large (even if total is ok)
+    if (liquidity > poolLiquidity / 10n) {
+      console.warn(
+        `⚠️  Warning: Single position liquidity (${liquidity.toString()}) is >10% of pool liquidity (${poolLiquidity.toString()}). ` +
+          `Consider splitting into smaller positions for more accurate fee tracking.`
+      );
+    }
 
     // Ensure tick data exists for the position range
     // Initialize virtual tick data (doesn't modify pool state)
@@ -774,12 +816,14 @@ export class VirtualPositionManager {
       }
     );
 
-    const feeGrowthInside0 = this.calculateFeeGrowthInside(
+    // Initialize fee growth checkpoints using pool's real fee growth
+    // This ensures fees start accumulating correctly from creation
+    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       0
     );
-    const feeGrowthInside1 = this.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       1
@@ -790,8 +834,8 @@ export class VirtualPositionManager {
       tickLower,
       tickUpper,
       liquidity,
-      amountA,
-      amountB,
+      amount0: amountA,
+      amount1: amountB,
       feeGrowthInside0LastX64: feeGrowthInside0,
       feeGrowthInside1LastX64: feeGrowthInside1,
       tokensOwed0: 0n,
@@ -800,8 +844,8 @@ export class VirtualPositionManager {
     };
 
     // Deduct the amounts from initial balance
-    this.cashAmountA -= amountA;
-    this.cashAmountB -= amountB;
+    this.amount0 -= amountA;
+    this.amount1 -= amountB;
 
     this.positions.set(id, position);
     return id;
@@ -815,18 +859,18 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return false;
 
-    position.amountA += amountADelta;
-    position.amountB += amountBDelta;
-    if (position.amountA < 0n || position.amountB < 0n) {
-      position.amountA -= amountADelta;
-      position.amountB -= amountBDelta;
+    position.amount0 += amountADelta;
+    position.amount1 += amountBDelta;
+    if (position.amount0 < 0n || position.amount1 < 0n) {
+      position.amount0 -= amountADelta;
+      position.amount1 -= amountBDelta;
       return false;
     }
     position.liquidity = this.calculateVirtualLiquidity(
       position.tickLower,
       position.tickUpper,
-      position.amountA,
-      position.amountB
+      position.amount0,
+      position.amount1
     );
     return true;
   }
@@ -844,8 +888,8 @@ export class VirtualPositionManager {
     const tokensOwed1 = position.tokensOwed1;
 
     // Return principal and accrued fees to cash balances
-    this.cashAmountA += position.amountA + tokensOwed0;
-    this.cashAmountB += position.amountB + tokensOwed1;
+    this.amount0 += position.amount0 + tokensOwed0;
+    this.amount1 += position.amount1 + tokensOwed1;
     this.totalFeesCollected0 += tokensOwed0;
     this.totalFeesCollected1 += tokensOwed1;
 
@@ -970,7 +1014,8 @@ export class VirtualPositionManager {
       return true;
     }
 
-    // Calculate fee delta since last update
+    // Use pool's real fee growth (not virtual ticks) for accurate tracking
+    // This ensures fees accumulate as pool swaps happen
     const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
@@ -1004,6 +1049,9 @@ export class VirtualPositionManager {
   }
 
   updateAllPositionFees(): void {
+    // Process tick crossings first to update virtual tick states
+    this.processTickCrossings();
+
     for (const id of this.positions.keys()) {
       this.updatePositionFees(id);
     }
@@ -1026,8 +1074,8 @@ export class VirtualPositionManager {
     }
 
     const fees = this.calculatePositionFees(positionId);
-    const valueA = position.amountA;
-    const valueB = position.amountB;
+    const valueA = position.amount0;
+    const valueB = position.amount1;
     const totalValue = valueA + valueB;
 
     return { totalValue, valueA, valueB, fees };
@@ -1058,18 +1106,18 @@ export class VirtualPositionManager {
             message: "Amount A and B required for add action",
           };
         }
-        position.amountA += amountA;
-        position.amountB += amountB;
+        position.amount0 += amountA;
+        position.amount1 += amountB;
         position.liquidity = this.calculateVirtualLiquidity(
           position.tickLower,
           position.tickUpper,
-          position.amountA,
-          position.amountB
+          position.amount0,
+          position.amount1
         );
         return {
           success: true,
-          newAmountA: position.amountA,
-          newAmountB: position.amountB,
+          newAmountA: position.amount0,
+          newAmountB: position.amount1,
         };
 
       case "remove":
@@ -1079,21 +1127,21 @@ export class VirtualPositionManager {
             message: "Amount A and B required for remove action",
           };
         }
-        if (amountA > position.amountA || amountB > position.amountB) {
+        if (amountA > position.amount0 || amountB > position.amount1) {
           return { success: false, message: "Insufficient position balance" };
         }
-        position.amountA -= amountA;
-        position.amountB -= amountB;
+        position.amount0 -= amountA;
+        position.amount1 -= amountB;
         position.liquidity = this.calculateVirtualLiquidity(
           position.tickLower,
           position.tickUpper,
-          position.amountA,
-          position.amountB
+          position.amount0,
+          position.amount1
         );
         return {
           success: true,
-          newAmountA: position.amountA,
-          newAmountB: position.amountB,
+          newAmountA: position.amount0,
+          newAmountB: position.amount1,
         };
 
       case "collect":
@@ -1298,12 +1346,12 @@ export class VirtualPositionManager {
           bValue = b.liquidity;
           break;
         case "amountA":
-          aValue = a.amountA;
-          bValue = b.amountA;
+          aValue = a.amount0;
+          bValue = b.amount0;
           break;
         case "amountB":
-          aValue = a.amountB;
-          bValue = b.amountB;
+          aValue = a.amount1;
+          bValue = b.amount1;
           break;
         case "createdAt":
           aValue = a.createdAt;
@@ -1417,7 +1465,7 @@ export class VirtualPositionManager {
 
     for (const position of positions) {
       totalLiquidity += position.liquidity;
-      totalValue += position.amountA + position.amountB;
+      totalValue += position.amount0 + position.amount1;
 
       const fees = this.calculatePositionFees(position.id);
       totalFee0 += fees.fee0;
@@ -1498,12 +1546,12 @@ export class VirtualPositionManager {
     let worstPosition: VirtualPosition | null = null;
 
     for (const position of positions) {
-      const currentValue = position.amountA + position.amountB;
+      const currentValue = position.amount0 + position.amount1;
       const fees = this.calculatePositionFees(position.id);
       const totalValue = currentValue + fees.fee0 + fees.fee1;
 
       // Calculate return based on initial investment (simplified)
-      const initialValue = this.initialAmountA + this.initialAmountB;
+      const initialValue = this.initialAmount0 + this.initialAmount1;
       const returnRate =
         initialValue > 0n ? Number(totalValue) / Number(initialValue) - 1 : 0;
 
@@ -1652,8 +1700,8 @@ export class VirtualPositionManager {
     let feesOwed1 = 0n;
 
     for (const position of this.positions.values()) {
-      amountA += position.amountA;
-      amountB += position.amountB;
+      amountA += position.amount0;
+      amountB += position.amount1;
       feesOwed0 += position.tokensOwed0;
       feesOwed1 += position.tokensOwed1;
     }
@@ -1664,10 +1712,10 @@ export class VirtualPositionManager {
       feesOwed0,
       feesOwed1,
       positions: this.positions.size,
-      initialAmountA: this.initialAmountA,
-      initialAmountB: this.initialAmountB,
-      cashAmountA: this.cashAmountA,
-      cashAmountB: this.cashAmountB,
+      initialAmountA: this.initialAmount0,
+      initialAmountB: this.initialAmount1,
+      cashAmountA: this.amount0,
+      cashAmountB: this.amount1,
       collectedFees0: this.totalFeesCollected0,
       collectedFees1: this.totalFeesCollected1,
       totalCostTokenA: this.totalCostTokenA,
@@ -1705,8 +1753,8 @@ export class VirtualPositionManager {
     }
 
     // Add to cash and total collected
-    this.cashAmountA += fees.fee0;
-    this.cashAmountB += fees.fee1;
+    this.amount0 += fees.fee0;
+    this.amount1 += fees.fee1;
     this.totalFeesCollected0 += fees.fee0;
     this.totalFeesCollected1 += fees.fee1;
 
@@ -1723,20 +1771,20 @@ export class VirtualPositionManager {
     if (!position) return false;
 
     if (zeroForOne) {
-      if (position.amountA + this.cashAmountA < amountIn) return false;
-      position.amountA -= amountIn;
-      position.amountB += amountOut;
+      if (position.amount0 + this.amount0 < amountIn) return false;
+      position.amount0 -= amountIn;
+      position.amount1 += amountOut;
     } else {
-      if (position.amountB + this.cashAmountB < amountIn) return false;
-      position.amountB -= amountIn;
-      position.amountA += amountOut;
+      if (position.amount1 + this.amount1 < amountIn) return false;
+      position.amount1 -= amountIn;
+      position.amount0 += amountOut;
     }
 
     position.liquidity = this.calculateVirtualLiquidity(
       position.tickLower,
       position.tickUpper,
-      position.amountA,
-      position.amountB
+      position.amount0,
+      position.amount1
     );
     return true;
   }

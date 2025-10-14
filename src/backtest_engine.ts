@@ -131,7 +131,12 @@ class PerformanceTracker {
   record(timestamp: number, force = false) {
     const value = this.computeValue();
     if (this.initialValue === null) {
-      this.initialValue = value;
+      // Use the manager's initial balances as the true initial value
+      // (not the computed value which may include positions already created)
+      const totals = this.manager.getTotals();
+      const initialA = Number(totals.initialAmountA || 0n);
+      const initialB = Number(totals.initialAmountB || 0n);
+      this.initialValue = initialA * this.pool.price + initialB;
     }
     this.finalValue = value;
 
@@ -199,13 +204,18 @@ class PerformanceTracker {
     const cashB = Number(
       (totals as any).cashAmountB ?? totals.initialAmountB ?? 0n
     );
-    const fees0 = Number(totals.feesOwed0 ?? 0n);
-    const fees1 = Number(totals.feesOwed1 ?? 0n);
+    const feesOwed0 = Number(totals.feesOwed0 ?? 0n);
+    const feesOwed1 = Number(totals.feesOwed1 ?? 0n);
+    const collectedFees0 = Number((totals as any).collectedFees0 ?? 0n);
+    const collectedFees1 = Number((totals as any).collectedFees1 ?? 0n);
     const costA = (totals as any).totalCostTokenA ?? 0;
     const costB = (totals as any).totalCostTokenB ?? 0;
 
-    const valueTokenB = cashB + amountB + fees1;
-    const valueTokenAinB = (cashA + amountA + fees0) * price;
+    // Total value = cash + positions + fees (both owed and collected)
+    // Note: Collected fees are already in cash after position close
+    // So we only add feesOwed (uncollected) to avoid double counting
+    const valueTokenB = cashB + amountB + feesOwed1;
+    const valueTokenAinB = (cashA + amountA + feesOwed0) * price;
     const costValue = costB + costA * price;
     return valueTokenB + valueTokenAinB - costValue;
   }
@@ -434,8 +444,8 @@ export class BacktestEngine {
         widthPercent,
         isActive,
         liquidity: pos.liquidity.toString(),
-        amountA: pos.amountA.toString(),
-        amountB: pos.amountB.toString(),
+        amountA: pos.amount0.toString(),
+        amountB: pos.amount1.toString(),
         distanceFromCurrentPercent,
       };
     });
