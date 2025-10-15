@@ -42,10 +42,10 @@ export class RawEventService {
       values.push(endTime);
       paramIdx++;
     }
+    where.push(`timestamp_ms != 0`);
     const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
-    const sqlText = `SELECT * FROM raw_events ${whereClause} ORDER BY timestamp_ms ASC LIMIT $${paramIdx} OFFSET $${
-      paramIdx + 1
-    }`;
+    const sqlText = `SELECT * FROM raw_events ${whereClause} ORDER BY timestamp_ms ASC LIMIT $${paramIdx} OFFSET $${paramIdx + 1
+      }`;
     values.push(limit, offset);
     const result = await sql.unsafe(sqlText, values);
     return result as unknown as RawEvent[];
@@ -61,3 +61,4 @@ export class RawEventService {
 
 // Export singleton instance
 export const rawEventService = new RawEventService();
+
