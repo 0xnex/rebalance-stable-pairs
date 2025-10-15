@@ -4,7 +4,8 @@
   "type": "module",
   "private": true,
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "ts-node": "^10.9.2"
   },
   "peerDependencies": {
     "typescript": "^5"
@@ -12,11 +13,15 @@
   "dependencies": {
     "@mysten/sui.js": "^0.54.1",
     "cross-fetch": "^4.1.0",
+    "decimal.js": "^10.6.0",
+    "dotenv": "^17.2.3",
+    "postgres": "^3.4.7",
     "zod": "^4.1.11"
   },
   "scripts": {
     "test": "bun run test-runner.ts",
     "test:pool": "bun run test-runner.ts",
+    "test:db": "node --loader ts-node/esm src/test_db_connection.ts",
     "backtest": "bun run src/backtest_runner.ts",
     "backtest:enhanced": "bun run src/enhanced_backtest_runner.ts",
     "backtest:report": "bun run src/enhanced_backtest_runner.ts --format table",

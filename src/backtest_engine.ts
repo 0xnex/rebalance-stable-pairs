@@ -13,6 +13,7 @@ import {
 import { VirtualPositionManager } from "./virtual_position_mgr";
 import { VaultSnapshotTracker } from "./vault_snapshot_tracker";
 import { PositionSnapshotTracker } from "./position_snapshot_tracker";
+import { rawEventService } from "./services/raw_event_service";
 
 export type BacktestEventKind =
   | "swap"
@@ -61,6 +62,21 @@ export type StrategyContext = {
   logger?: Partial<Console>;
 };
 
+export type PositionInfo = {
+  id: string;
+  tickLower: number;
+  tickUpper: number;
+  priceLower: number;
+  priceUpper: number;
+  midPrice: number;
+  widthPercent: number;
+  isActive: boolean;
+  liquidity: string;
+  amountA: string;
+  amountB: string;
+  distanceFromCurrentPercent: number;
+};
+
 export type BacktestReport = {
   poolId: string;
   startTime: number;
@@ -71,6 +87,12 @@ export type BacktestReport = {
   strategyId: string;
   totals: ReturnType<VirtualPositionManager["getTotals"]>;
   performance: PerformanceSummary;
+  finalState: {
+    currentPrice: number;
+    currentTick: number;
+    liquidity: string;
+    openPositions: PositionInfo[];
+  };
 };
 
 type PerformanceSample = {
@@ -98,6 +120,7 @@ class PerformanceTracker {
   private maxDrawdownPct = 0;
   private lastSampleTs: number | null = null;
   private readonly samples: PerformanceSample[] = [];
+  private readonly maxSamples = 10000; // Limit memory usage
 
   constructor(
     private readonly pool: Pool,
@@ -130,6 +153,16 @@ class PerformanceTracker {
     ) {
       this.samples.push({ timestamp, value });
       this.lastSampleTs = timestamp;
+
+      // Keep only most recent samples to limit memory (keep first, last, and recent)
+      if (this.samples.length > this.maxSamples) {
+        const toKeep = Math.floor(this.maxSamples * 0.8);
+        const first = this.samples[0];
+        const recent = this.samples.slice(-toKeep);
+        this.samples.length = 0;
+        if (first) this.samples.push(first);
+        this.samples.push(...recent);
+      }
     }
   }
 
@@ -160,8 +193,12 @@ class PerformanceTracker {
 
     const amountA = Number(totals.amountA ?? 0n);
     const amountB = Number(totals.amountB ?? 0n);
-    const cashA = Number((totals as any).cashAmountA ?? totals.initialAmountA ?? 0n);
-    const cashB = Number((totals as any).cashAmountB ?? totals.initialAmountB ?? 0n);
+    const cashA = Number(
+      (totals as any).cashAmountA ?? totals.initialAmountA ?? 0n
+    );
+    const cashB = Number(
+      (totals as any).cashAmountB ?? totals.initialAmountB ?? 0n
+    );
     const fees0 = Number(totals.feesOwed0 ?? 0n);
     const fees1 = Number(totals.feesOwed1 ?? 0n);
     const costA = (totals as any).totalCostTokenA ?? 0;
@@ -191,8 +228,14 @@ export class BacktestEngine {
   }
 
   async run(): Promise<BacktestReport | undefined> {
-    const { poolId, startTime, endTime, dataDir, poolSeedEndTime, poolSeedEventCount } =
-      this.config;
+    const {
+      poolId,
+      startTime,
+      endTime,
+      dataDir,
+      poolSeedEndTime,
+      poolSeedEventCount,
+    } = this.config;
     const seedEndTime = poolSeedEndTime || startTime;
 
     this.logger?.log?.(
@@ -205,6 +248,8 @@ export class BacktestEngine {
       silent: true,
       dataDir,
       seedEventCount: poolSeedEventCount,
+      startTime,
+      endTime,
     });
 
     const strategy = this.config.strategyFactory(pool);
@@ -216,18 +261,28 @@ export class BacktestEngine {
     );
 
     // Initialize snapshot trackers
-    this.vaultTracker = new VaultSnapshotTracker(manager, pool, './snapshots');
-    this.positionTracker = new PositionSnapshotTracker(manager, pool, './snapshots');
+    this.vaultTracker = new VaultSnapshotTracker(manager, pool, "./snapshots");
+    this.positionTracker = new PositionSnapshotTracker(
+      manager,
+      pool,
+      "./snapshots"
+    );
 
-    const events = this.loadEvents(
+    // Enable CSV streaming to avoid memory buildup for large backtests
+    this.vaultTracker.enableCsvStreaming(poolId);
+    this.positionTracker.enableCsvStreaming(poolId);
+
+    // Stream events instead of loading all into memory
+    const eventIterator = await this.streamEvents(
       dataDir,
       poolId,
       startTime,
       endTime,
       poolSeedEventCount
     );
+
     this.logger?.log?.(
-      `[backtest] loaded ${events.length} events between ${new Date(
+      `[backtest] streaming events between ${new Date(
         startTime
       ).toISOString()} and ${new Date(endTime).toISOString()}`
     );
@@ -247,28 +302,38 @@ export class BacktestEngine {
 
     let stepIndex = 0;
     let timestamp = startTime;
-    let eventPtr = 0;
+    let eventsProcessed = 0;
     const stepMs = this.stepMs;
     const totalSteps = Math.ceil((endTime - startTime) / stepMs);
 
+    // Buffer for events (memory-efficient: only holds future events)
+    let eventBuffer: BacktestMomentumEvent[] = [];
+    // const iterator = eventIterator[Symbol.iterator]();
+    let nextEvent = await eventIterator.next();
+
     while (timestamp <= endTime) {
-      // Process events up to this timestamp window
-      while (
-        eventPtr < events.length &&
-        events[eventPtr]?.timestamp !== undefined &&
-        events[eventPtr]!.timestamp <= timestamp
-      ) {
-        const ev = events[eventPtr];
-        if (ev) {
-          this.applyEvent(pool, ev);
-          manager.updateAllPositionFees();
-          if (strategy.onEvent) {
-            await strategy.onEvent({ ...ctxBase, timestamp, stepIndex }, ev);
-            performance.record(timestamp);
-          }
-        }
-        eventPtr += 1;
+      // Load events from stream into buffer up to current timestamp
+      while (!nextEvent.done && nextEvent.value.timestamp <= timestamp) {
+        eventBuffer.push(nextEvent.value);
+        nextEvent = await eventIterator.next();
       }
+
+      // Process events in current window
+      let i = 0;
+      while (i < eventBuffer.length && eventBuffer[i]!.timestamp <= timestamp) {
+        const ev = eventBuffer[i]!;
+        this.applyEvent(pool, ev);
+        manager.updateAllPositionFees();
+        if (strategy.onEvent) {
+          await strategy.onEvent({ ...ctxBase, timestamp, stepIndex }, ev);
+          performance.record(timestamp);
+        }
+        eventsProcessed++;
+        i++;
+      }
+
+      // Remove processed events from buffer (memory optimization)
+      eventBuffer.splice(0, i);
 
       await strategy.onTick({ ...ctxBase, timestamp, stepIndex });
       manager.updateAllPositionFees();
@@ -277,6 +342,20 @@ export class BacktestEngine {
       // Update snapshot trackers
       this.vaultTracker?.update(timestamp);
       this.positionTracker?.update(timestamp);
+
+      // Periodic cleanup (every 1000 steps)
+      if (stepIndex % 1000 === 0) {
+        // Force garbage collection hint
+        if (global.gc) {
+          global.gc();
+        }
+        this.logger?.log?.(
+          `[backtest] Progress: ${stepIndex}/${totalSteps} steps (${(
+            (stepIndex / totalSteps) *
+            100
+          ).toFixed(1)}%) | Buffer: ${eventBuffer.length} events`
+        );
+      }
 
       stepIndex += 1;
       timestamp = startTime + stepIndex * stepMs;
@@ -291,21 +370,75 @@ export class BacktestEngine {
     // Save snapshot reports
     const reportTimestamp = Date.now();
     this.vaultTracker?.saveSnapshots(`vault_${poolId}_${reportTimestamp}.json`);
-    this.positionTracker?.saveSnapshots(`position_${poolId}_${reportTimestamp}.json`);
+    this.positionTracker?.saveSnapshots(
+      `position_${poolId}_${reportTimestamp}.json`
+    );
 
     this.logger?.log?.(`📊 Snapshot reports saved to ./snapshots/`);
+
+    // Collect final position information
+    const openPositions = this.collectPositionInfo(pool, manager);
 
     return {
       poolId,
       startTime,
       endTime,
       stepMs,
-      eventsProcessed: eventPtr,
+      eventsProcessed,
       ticks: stepIndex,
       strategyId: strategy.id,
       totals: manager.getTotals(),
       performance: performance.summary(),
+      finalState: {
+        currentPrice: pool.price,
+        currentTick: pool.tickCurrent,
+        liquidity: pool.liquidity.toString(),
+        openPositions,
+      },
     };
+  }
+
+  private collectPositionInfo(
+    pool: Pool,
+    manager: VirtualPositionManager
+  ): PositionInfo[] {
+    const positions = manager.getAllPositions();
+    const Q64 = 1n << 64n;
+
+    return positions.map((pos) => {
+      // Convert ticks to prices
+      const sqrtLower =
+        Number(pool.tickToSqrtPrice(pos.tickLower)) / Number(Q64);
+      const sqrtUpper =
+        Number(pool.tickToSqrtPrice(pos.tickUpper)) / Number(Q64);
+      const priceLower = sqrtLower * sqrtLower;
+      const priceUpper = sqrtUpper * sqrtUpper;
+      const midPrice = (priceLower + priceUpper) / 2;
+      const widthPercent = ((priceUpper - priceLower) / midPrice) * 100;
+
+      // Check if position is active (current tick is in range)
+      const isActive =
+        pool.tickCurrent >= pos.tickLower && pool.tickCurrent < pos.tickUpper;
+
+      // Calculate distance from current price
+      const distanceFromCurrentPercent =
+        ((midPrice - pool.price) / pool.price) * 100;
+
+      return {
+        id: pos.id,
+        tickLower: pos.tickLower,
+        tickUpper: pos.tickUpper,
+        priceLower,
+        priceUpper,
+        midPrice,
+        widthPercent,
+        isActive,
+        liquidity: pos.liquidity.toString(),
+        amountA: pos.amountA.toString(),
+        amountB: pos.amountB.toString(),
+        distanceFromCurrentPercent,
+      };
+    });
   }
 
   private applyEvent(pool: Pool, event: BacktestMomentumEvent) {
@@ -327,13 +460,25 @@ export class BacktestEngine {
     }
   }
 
-  private loadEvents(
+  private async *streamEvents(
     dir: string,
     poolId: string,
     startTime: number,
     endTime: number,
     skipEventCount?: number
-  ): BacktestMomentumEvent[] {
+  ): AsyncGenerator<BacktestMomentumEvent> {
+    // If dir is empty, use database
+    if (!dir) {
+      yield* this.streamEventsFromDatabase(
+        poolId,
+        startTime,
+        endTime,
+        skipEventCount
+      );
+      return;
+    }
+
+    // Otherwise, read from filesystem
     if (!fs.existsSync(dir)) {
       throw new Error(`Data directory ${dir} not found`);
     }
@@ -358,65 +503,142 @@ export class BacktestEngine {
       .filter((file) => file.endsWith(".json"))
       .sort();
 
-    const events: BacktestMomentumEvent[] = [];
     const skipCount = skipEventCount ?? 0;
     let processedEvents = 0;
 
-    outer: for (const file of files) {
+    // Process files one at a time, yielding events immediately
+    for (const file of files) {
       const full = path.join(workingDir, file);
+      let content: string;
+      let parsed: any;
+
       try {
-        const content = fs.readFileSync(full, "utf8");
-        const parsed = JSON.parse(content);
-        const data = parsed.data ?? [];
-        for (const tx of data) {
-          const ts = Number(tx.timestampMs);
-          if (!Number.isFinite(ts)) continue;
-          if (ts > endTime) break outer;
-
-          for (const ev of tx.events as MomentumEvent[]) {
-            const type = ev.type;
-            const json = ev.parsedJson;
-            if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase()) {
-              continue;
-            }
-
-            if (processedEvents < skipCount) {
-              processedEvents += 1;
-              continue;
-            }
-
-            processedEvents += 1;
-
-            if (ts < startTime) {
-              continue;
-            }
-
-            const kind = this.mapEventKind(type);
-            if (!kind) continue;
-
-            events.push({
-              kind,
-              timestamp: ts,
-              txDigest: tx.digest,
-              eventSeq: Number(ev.id.eventSeq ?? 0),
-              raw: json,
-            });
-          }
-        }
+        content = fs.readFileSync(full, "utf8");
+        parsed = JSON.parse(content);
       } catch (err) {
         this.logger?.warn?.(`failed to parse ${full}: ${err}`);
         continue;
       }
+
+      const data = parsed.data ?? [];
+      const eventsFromFile: BacktestMomentumEvent[] = [];
+
+      for (const tx of data) {
+        const ts = Number(tx.timestampMs);
+        if (!Number.isFinite(ts)) continue;
+        if (ts > endTime) {
+          // Yield remaining events and stop
+          eventsFromFile.sort(this.compareEvents);
+          for (const ev of eventsFromFile) {
+            yield ev;
+          }
+          return;
+        }
+
+        for (const ev of tx.events as MomentumEvent[]) {
+          const type = ev.type;
+          const json = ev.parsedJson;
+          if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase()) {
+            continue;
+          }
+
+          if (processedEvents < skipCount) {
+            processedEvents += 1;
+            continue;
+          }
+
+          processedEvents += 1;
+
+          if (ts < startTime) {
+            continue;
+          }
+
+          const kind = this.mapEventKind(type);
+          if (!kind) continue;
+
+          eventsFromFile.push({
+            kind,
+            timestamp: ts,
+            txDigest: tx.digest,
+            eventSeq: Number(ev.id.eventSeq ?? 0),
+            raw: json,
+          });
+        }
+      }
+
+      // Sort and yield events from this file
+      eventsFromFile.sort(this.compareEvents);
+      for (const ev of eventsFromFile) {
+        yield ev;
+      }
+
+      // Clear memory after processing each file
+      eventsFromFile.length = 0;
     }
+  }
 
-    events.sort((a, b) => {
-      if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
-      if (a.txDigest !== b.txDigest)
-        return a.txDigest.localeCompare(b.txDigest);
-      return a.eventSeq - b.eventSeq;
-    });
+  private async *streamEventsFromDatabase(
+    poolId: string,
+    startTime: number,
+    endTime: number,
+    skipEventCount?: number
+  ): AsyncGenerator<BacktestMomentumEvent> {
+    // NOTE: This function is a generator, but DB access is async, so in real code you may want to use an async generator.
+    // For now, we assume synchronous access for illustration, or you can refactor to async if needed.
 
-    return events;
+    let offset = 0;
+    const limit = 100;
+    let processedEvents = 0;
+    while (true) {
+      const rawEvents = await rawEventService.getEvents({
+        poolAddress: poolId,
+        startTime,
+        endTime,
+        limit,
+        offset,
+      });
+      if (!rawEvents || !rawEvents.length) break;
+
+      for (const tx of rawEvents) {
+        const ts = Number(tx.timestamp_ms);
+        if (!Number.isFinite(ts) || ts > endTime) continue;
+        if (processedEvents < (skipEventCount ?? 0)) {
+          processedEvents++;
+          continue;
+        }
+        processedEvents++;
+        if (ts < startTime) continue;
+        // If tx.data.events exists (array), treat as multiple events
+        if (Array.isArray(tx.data?.events)) {
+          for (const ev of tx.data.events) {
+            const type = ev.type;
+            const json = ev.parsedJson;
+            if (!json || json.pool_id?.toLowerCase() !== poolId.toLowerCase())
+              continue;
+            const kind = this.mapEventKind(type);
+            if (!kind) continue;
+            yield {
+              kind,
+              timestamp: ts,
+              txDigest: ev.txDigest,
+              eventSeq: Number(ev.id?.eventSeq ?? 0),
+              raw: json,
+            };
+          }
+        }
+      }
+      offset += rawEvents.length;
+      if (rawEvents.length < limit) break;
+    }
+  }
+
+  private compareEvents(
+    a: BacktestMomentumEvent,
+    b: BacktestMomentumEvent
+  ): number {
+    if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
+    if (a.txDigest !== b.txDigest) return a.txDigest.localeCompare(b.txDigest);
+    return a.eventSeq - b.eventSeq;
   }
 
   private mapEventKind(type: string): BacktestEventKind | null {

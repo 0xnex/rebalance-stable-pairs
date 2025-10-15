@@ -75,9 +75,24 @@ export class VirtualPositionManager {
     }
   >();
 
+  private lastProcessedTick: number | null = null;
+
   private static readonly Q64 = 1n << 64n;
 
   constructor(private readonly pool: PoolPositionContext) {}
+
+  /**
+   * Subtract with modulo wrap-around for fee growth calculations
+   * Handles the case where fee growth values wrap around 2^256
+   */
+  private submod(a: bigint, b: bigint): bigint {
+    const diff = a - b;
+    if (diff < 0n) {
+      // Wrap around using 2^256 modulo (standard for Uniswap V3 fee growth)
+      return diff + 2n ** 256n;
+    }
+    return diff;
+  }
 
   setInitialBalances(amountA: bigint, amountB: bigint): void {
     this.initialAmountA = amountA;
@@ -87,23 +102,56 @@ export class VirtualPositionManager {
   }
 
   /**
-   * Get tick data without modifying pool state
-   * Checks pool ticks first (real data), then virtual ticks (simulated data)
+   * Update virtual ticks when price crosses them
+   * This is critical for correct fee calculations
+   */
+  private processTickCrossings(): void {
+    const currentTick = this.pool.tickCurrent;
+
+    if (this.lastProcessedTick === null) {
+      this.lastProcessedTick = currentTick;
+      return;
+    }
+
+    if (currentTick === this.lastProcessedTick) {
+      return; // No crossing
+    }
+
+    const global0 = (this.pool as any).feeGrowthGlobal0X64 || 0n;
+    const global1 = (this.pool as any).feeGrowthGlobal1X64 || 0n;
+
+    // Determine direction and range of ticks crossed
+    const movingUp = currentTick > this.lastProcessedTick;
+    const startTick = movingUp ? this.lastProcessedTick : currentTick;
+    const endTick = movingUp ? currentTick : this.lastProcessedTick;
+
+    // Update all virtual ticks that were crossed
+    for (const [tick, tickData] of this.virtualTicks.entries()) {
+      if (tick > startTick && tick <= endTick) {
+        // This tick was crossed
+        // When crossing a tick, feeGrowthOutside is updated to: global - feeGrowthOutside
+        tickData.feeGrowthOutside0X64 = global0 - tickData.feeGrowthOutside0X64;
+        tickData.feeGrowthOutside1X64 = global1 - tickData.feeGrowthOutside1X64;
+      }
+    }
+
+    this.lastProcessedTick = currentTick;
+  }
+
+  /**
+   * Get tick data for virtual position fee calculations
+   * NEVER use real pool ticks because they may have wrapped values from submod
+   * Always use virtual ticks initialized specifically for this position
    */
   private getTickData(tick: number):
     | {
-      liquidityNet: bigint;
-      liquidityGross: bigint;
-      feeGrowthOutside0X64: bigint;
-      feeGrowthOutside1X64: bigint;
-    }
+        liquidityNet: bigint;
+        liquidityGross: bigint;
+        feeGrowthOutside0X64: bigint;
+        feeGrowthOutside1X64: bigint;
+      }
     | undefined {
-    // First check if the pool has this tick (from real on-chain events)
-    const poolTick = this.pool.ticks.get(tick);
-    if (poolTick) {
-      return poolTick;
-    }
-    // Otherwise check our virtual ticks
+    // Only use virtual ticks - pool ticks have wrapped values
     return this.virtualTicks.get(tick);
   }
 
@@ -156,14 +204,36 @@ export class VirtualPositionManager {
         : tickUpperData.feeGrowthOutside1X64;
 
     // Calculate fee growth inside the range
+    // For virtual positions, we use simple subtraction and clamp to 0 if negative
+    // This prevents massive wrapped values from being used as initial checkpoints
     let feeGrowthInside: bigint;
     if (this.pool.tickCurrent < tickLower) {
-      feeGrowthInside = feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      // Current price below range
+      const result = feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      feeGrowthInside = result < 0n ? 0n : result;
     } else if (this.pool.tickCurrent >= tickUpper) {
-      feeGrowthInside = feeGrowthOutsideUpper - feeGrowthOutsideLower;
+      // Current price above range
+      const result = feeGrowthOutsideUpper - feeGrowthOutsideLower;
+      feeGrowthInside = result < 0n ? 0n : result;
     } else {
-      feeGrowthInside =
-        globalFeeGrowth - feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      // Current price inside range
+      const temp = globalFeeGrowth - feeGrowthOutsideLower;
+      const result = temp < 0n ? 0n : temp - feeGrowthOutsideUpper;
+      feeGrowthInside = result < 0n ? 0n : result;
+
+      // Debug extreme values
+      if (feeGrowthInside > 1000000000000000000n) {
+        console.warn(`[VPM calculateFeeGrowthInside] HUGE value detected:`);
+        console.warn(
+          `  tickRange: [${tickLower}, ${tickUpper}], currentTick: ${this.pool.tickCurrent}`
+        );
+        console.warn(`  global: ${globalFeeGrowth}`);
+        console.warn(`  fo[lower]: ${feeGrowthOutsideLower}`);
+        console.warn(`  fo[upper]: ${feeGrowthOutsideUpper}`);
+        console.warn(`  temp: ${temp}`);
+        console.warn(`  result: ${result}`);
+        console.warn(`  feeGrowthInside: ${feeGrowthInside}`);
+      }
     }
 
     return feeGrowthInside;
@@ -653,22 +723,56 @@ export class VirtualPositionManager {
     // Ensure tick data exists for the position range
     // Initialize virtual tick data (doesn't modify pool state)
     // Only create virtual ticks if they don't exist in the pool
-    if (!this.pool.ticks.has(tickLower) && !this.virtualTicks.has(tickLower)) {
+    // IMPORTANT: Initialize feeGrowthOutside correctly based on current tick position
+    // Per Uniswap V3: if tick <= current, feeGrowthOutside = global; else 0
+    const currentTick = this.pool.tickCurrent;
+    const global0 = (this.pool as any).feeGrowthGlobal0X64 || 0n;
+    const global1 = (this.pool as any).feeGrowthGlobal1X64 || 0n;
+
+    // CRITICAL: Always create/update virtual ticks for virtual positions
+    // Even if real pool ticks exist, virtual positions need their own feeGrowthOutside
+    // values initialized according to Uniswap V3 spec (based on current tick)
+    if (!this.virtualTicks.has(tickLower)) {
       this.virtualTicks.set(tickLower, {
         liquidityNet: 0n,
         liquidityGross: 0n,
-        feeGrowthOutside0X64: 0n,
-        feeGrowthOutside1X64: 0n,
+        feeGrowthOutside0X64: tickLower <= currentTick ? global0 : 0n,
+        feeGrowthOutside1X64: tickLower <= currentTick ? global1 : 0n,
       });
     }
-    if (!this.pool.ticks.has(tickUpper) && !this.virtualTicks.has(tickUpper)) {
+    if (!this.virtualTicks.has(tickUpper)) {
       this.virtualTicks.set(tickUpper, {
         liquidityNet: 0n,
         liquidityGross: 0n,
-        feeGrowthOutside0X64: 0n,
-        feeGrowthOutside1X64: 0n,
+        feeGrowthOutside0X64: tickUpper <= currentTick ? global0 : 0n,
+        feeGrowthOutside1X64: tickUpper <= currentTick ? global1 : 0n,
       });
     }
+
+    // Debug: Check tick data BEFORE calculating feeGrowthInside
+    const tickLowerDataBefore = this.getTickData(tickLower);
+    const tickUpperDataBefore = this.getTickData(tickUpper);
+
+    console.log(
+      `[VirtualPositionManager] Tick data AFTER initialization for ${id}:`,
+      {
+        tickLower: {
+          tick: tickLower,
+          exists: !!tickLowerDataBefore,
+          fo0: tickLowerDataBefore?.feeGrowthOutside0X64?.toString() || "N/A",
+          fo1: tickLowerDataBefore?.feeGrowthOutside1X64?.toString() || "N/A",
+        },
+        tickUpper: {
+          tick: tickUpper,
+          exists: !!tickUpperDataBefore,
+          fo0: tickUpperDataBefore?.feeGrowthOutside0X64?.toString() || "N/A",
+          fo1: tickUpperDataBefore?.feeGrowthOutside1X64?.toString() || "N/A",
+        },
+        currentTick: this.pool.tickCurrent,
+        global0: global0.toString(),
+        global1: global1.toString(),
+      }
+    );
 
     const feeGrowthInside0 = this.calculateFeeGrowthInside(
       tickLower,
@@ -754,40 +858,99 @@ export class VirtualPositionManager {
     return this.positions.get(positionId);
   }
 
-  getAllPositions(): VirtualPosition[] {
-    return Array.from(this.positions.values());
+  /**
+   * Calculate current token amounts for a position based on current price
+   * Returns the actual amounts of token A and B currently in the position
+   */
+  calculatePositionAmounts(positionId: string): {
+    currentAmountA: bigint;
+    currentAmountB: bigint;
+  } {
+    const position = this.positions.get(positionId);
+    if (!position) {
+      return { currentAmountA: 0n, currentAmountB: 0n };
+    }
+
+    const currentTick = this.pool.tickCurrent;
+    const sqrtPriceX64 = this.pool.sqrtPriceX64;
+    const Q64 = VirtualPositionManager.Q64;
+
+    // Get sqrt prices for position boundaries
+    const sqrtLower = this.pool.tickToSqrtPrice(position.tickLower);
+    const sqrtUpper = this.pool.tickToSqrtPrice(position.tickUpper);
+
+    let amount0 = 0n;
+    let amount1 = 0n;
+
+    if (position.liquidity > 0n) {
+      if (currentTick < position.tickLower) {
+        // Position is above current price - all token0 (tokenA)
+        amount0 =
+          (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) /
+          sqrtLower /
+          sqrtUpper;
+        amount1 = 0n;
+      } else if (currentTick >= position.tickUpper) {
+        // Position is below current price - all token1 (tokenB)
+        amount0 = 0n;
+        amount1 = (position.liquidity * (sqrtUpper - sqrtLower)) / Q64;
+      } else {
+        // Position is in range - mix of both tokens
+        amount0 =
+          (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) /
+          sqrtPriceX64 /
+          sqrtUpper;
+        amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
+      }
+    }
+
+    return {
+      currentAmountA: amount0,
+      currentAmountB: amount1,
+    };
   }
 
   calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
     const position = this.positions.get(positionId);
     if (!position) return { fee0: 0n, fee1: 0n };
 
-    const feeGrowthInside0 = this.calculateFeeGrowthInside(
+    // Check if position is in range
+    const inRange =
+      this.pool.tickCurrent >= position.tickLower &&
+      this.pool.tickCurrent < position.tickUpper;
+
+    if (!inRange) {
+      // Out of range: return stored fees (fees don't accumulate when out of range)
+      return {
+        fee0: position.tokensOwed0,
+        fee1: position.tokensOwed1,
+      };
+    }
+
+    // In range: Use pool's fee calculation directly
+    // Pool now uses clamping (not wrapping) so it's safe
+    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    const feeGrowthInside1 = this.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
     );
 
-    const feeGrowthDelta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
-    const feeGrowthDelta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+    // Calculate fee delta since position was created
+    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
 
-    const fee0 =
-      feeGrowthDelta0 <= 0n
-        ? 0n
-        : (position.liquidity * feeGrowthDelta0) / 2n ** 64n;
-    const fee1 =
-      feeGrowthDelta1 <= 0n
-        ? 0n
-        : (position.liquidity * feeGrowthDelta1) / 2n ** 64n;
+    // Calculate fees earned from the delta (this is the total fees since creation)
+    const fee0 = (position.liquidity * delta0) / 2n ** 64n;
+    const fee1 = (position.liquidity * delta1) / 2n ** 64n;
 
     return {
-      fee0: position.tokensOwed0 + fee0,
-      fee1: position.tokensOwed1 + fee1,
+      fee0,
+      fee1,
     };
   }
 
@@ -795,20 +958,42 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return false;
 
-    const fees = this.calculatePositionFees(positionId);
-    position.tokensOwed0 = fees.fee0;
-    position.tokensOwed1 = fees.fee1;
+    // Check if position is in range
+    const inRange =
+      this.pool.tickCurrent >= position.tickLower &&
+      this.pool.tickCurrent < position.tickUpper;
 
-    position.feeGrowthInside0LastX64 = this.calculateFeeGrowthInside(
+    if (!inRange) {
+      // Out of range: fees don't accumulate
+      return true;
+    }
+
+    // Calculate fee delta since last update
+    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    position.feeGrowthInside1LastX64 = this.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
     );
+
+    const delta0 = feeGrowthInside0 - position.feeGrowthInside0LastX64;
+    const delta1 = feeGrowthInside1 - position.feeGrowthInside1LastX64;
+
+    // Calculate new fees from the delta
+    const newFees0 = (position.liquidity * delta0) / 2n ** 64n;
+    const newFees1 = (position.liquidity * delta1) / 2n ** 64n;
+
+    // ACCUMULATE fees (don't replace)
+    position.tokensOwed0 += newFees0;
+    position.tokensOwed1 += newFees1;
+
+    // Update checkpoints
+    position.feeGrowthInside0LastX64 = feeGrowthInside0;
+    position.feeGrowthInside1LastX64 = feeGrowthInside1;
 
     return true;
   }
@@ -1043,17 +1228,6 @@ export class VirtualPositionManager {
     return Array.from(this.positions.values()).filter(
       (position) =>
         position.tickLower >= tickLower && position.tickUpper <= tickUpper
-    );
-  }
-
-  /**
-   * Get positions that are currently in range (active)
-   */
-  getActivePositions(): VirtualPosition[] {
-    return Array.from(this.positions.values()).filter(
-      (position) =>
-        this.pool.tickCurrent >= position.tickLower &&
-        this.pool.tickCurrent < position.tickUpper
     );
   }
 
@@ -1500,23 +1674,37 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return null;
 
+    // Calculate current total fees
     const fees = this.calculatePositionFees(positionId);
+
+    // Reset tokensOwed (we've now collected them)
     position.tokensOwed0 = 0n;
     position.tokensOwed1 = 0n;
+
+    // Update checkpoint to current feeGrowthInside so we don't double-count
+    const inRange =
+      this.pool.tickCurrent >= position.tickLower &&
+      this.pool.tickCurrent < position.tickUpper;
+
+    if (inRange) {
+      position.feeGrowthInside0LastX64 = this.pool.calculateFeeGrowthInside(
+        position.tickLower,
+        position.tickUpper,
+        0
+      );
+      position.feeGrowthInside1LastX64 = this.pool.calculateFeeGrowthInside(
+        position.tickLower,
+        position.tickUpper,
+        1
+      );
+    }
+
+    // Add to cash and total collected
     this.cashAmountA += fees.fee0;
     this.cashAmountB += fees.fee1;
     this.totalFeesCollected0 += fees.fee0;
     this.totalFeesCollected1 += fees.fee1;
-    position.feeGrowthInside0LastX64 = this.calculateFeeGrowthInside(
-      position.tickLower,
-      position.tickUpper,
-      0
-    );
-    position.feeGrowthInside1LastX64 = this.calculateFeeGrowthInside(
-      position.tickLower,
-      position.tickUpper,
-      1
-    );
+
     return fees;
   }
 
@@ -1794,7 +1982,9 @@ export class VirtualPositionManager {
    * Get active positions (with liquidity > 0)
    */
   getActivePositions(): VirtualPosition[] {
-    return Array.from(this.positions.values()).filter(pos => pos.liquidity > 0n);
+    return Array.from(this.positions.values()).filter(
+      (pos) => pos.liquidity > 0n
+    );
   }
 
   /**

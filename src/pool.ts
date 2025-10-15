@@ -1,15 +1,6 @@
-/**
- * Pool class for CLMM (Concentrated Liquidity Market Maker) operations
- *
- * Two types of functions:
- * 1. APPLY functions - Actually change pool state (replay events)
- *    - applySwap, applyAddLiquidity, applyRemoveLiquidity
- *    - Use for simulating real transactions and state updates
- *
- * 2. ESTIMATE functions - Work with virtual positions (no state changes)
- *    - estimateOpenPosition, estimateClosePosition, estimateCollectFee
- *    - Use for backtesting and strategy planning
- */
+const Q64 = 1n << 64n;
+const Base = 1.0001;
+
 class Pool {
   reserveA: bigint;
   reserveB: bigint;
@@ -33,6 +24,8 @@ class Pool {
   tickBitmap: Set<number>;
   feeGrowthGlobal0X64: bigint; // Global fee growth for token 0
   feeGrowthGlobal1X64: bigint; // Global fee growth for token 1
+  totalSwapFee0: bigint; // Cumulative swap fees collected in token 0
+  totalSwapFee1: bigint; // Cumulative swap fees collected in token 1
 
   constructor(feeRate: number, tickSpacing: number, feeRatePpm: bigint = 0n) {
     this.reserveA = 0n;
@@ -49,25 +42,26 @@ class Pool {
     this.tickBitmap = new Set();
     this.feeGrowthGlobal0X64 = 0n;
     this.feeGrowthGlobal1X64 = 0n;
+    this.totalSwapFee0 = 0n;
+    this.totalSwapFee1 = 0n;
   }
-
   get price(): number {
     // Convert Q64.64 sqrtPrice to actual price
     // sqrtPriceX64 is sqrt(price) * 2^64
-    const sqrtPrice = Number(this.sqrtPriceX64) / 2 ** 64;
+    const sqrtPrice = Number(this.sqrtPriceX64) / Number(Q64);
     return sqrtPrice * sqrtPrice;
   }
 
   // Convert tick to sqrtPrice (Q64.64)
   tickToSqrtPrice(tick: number): bigint {
-    const sqrtPrice = Math.sqrt(1.0001 ** tick);
-    return BigInt(Math.floor(sqrtPrice * 2 ** 64));
+    const sqrtPrice = Math.sqrt(Base ** tick);
+    return BigInt(Math.floor(sqrtPrice * Number(Q64)));
   }
 
   // Convert sqrtPrice (Q64.64) to tick
   sqrtPriceToTick(sqrtPrice: bigint): number {
-    const price = Number(sqrtPrice) / 2 ** 64;
-    return Math.floor(Math.log(price * price) / Math.log(1.0001));
+    const price = Number(sqrtPrice) / Number(Q64);
+    return Math.floor((2 * Math.log(price)) / Math.log(Base));
   }
 
   // Get active liquidity at current tick
@@ -261,6 +255,16 @@ class Pool {
     }
 
     const { totalFee, lpFee } = fees;
+
+    // Track cumulative swap fees
+    if (totalFee > 0n) {
+      if (zeroForOne) {
+        this.totalSwapFee0 += totalFee;
+      } else {
+        this.totalSwapFee1 += totalFee;
+      }
+    }
+
     if (lpFee > 0n) {
       this.updateFeeGrowth(lpFee, zeroForOne);
     }
@@ -467,6 +471,17 @@ class Pool {
     return { fee0, fee1 };
   }
 
+  // Helper: Handle BigInt subtraction with wrap-around (for Q64.64 fixed-point)
+  private submod(a: bigint, b: bigint): bigint {
+    // For backtesting, clamp negative values to 0 instead of wrapping
+    // (Real Uniswap V3 wraps at 2^256, but this causes issues in simulations)
+    const diff = a - b;
+    if (diff < 0n) {
+      return 0n; // Clamp to 0 instead of wrapping around
+    }
+    return diff;
+  }
+
   // Calculate fee growth inside a tick range
   calculateFeeGrowthInside(
     tickLower: number,
@@ -493,14 +508,24 @@ class Pool {
         : tickUpperData.feeGrowthOutside1X64;
 
     // Calculate fee growth inside the range
+    // Use submod to handle BigInt wrap-around correctly
     let feeGrowthInside: bigint;
     if (this.tickCurrent < tickLower) {
-      feeGrowthInside = feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      // Current price below range
+      feeGrowthInside = this.submod(
+        feeGrowthOutsideLower,
+        feeGrowthOutsideUpper
+      );
     } else if (this.tickCurrent >= tickUpper) {
-      feeGrowthInside = feeGrowthOutsideUpper - feeGrowthOutsideLower;
+      // Current price above range
+      feeGrowthInside = this.submod(
+        feeGrowthOutsideUpper,
+        feeGrowthOutsideLower
+      );
     } else {
-      feeGrowthInside =
-        globalFeeGrowth - feeGrowthOutsideLower - feeGrowthOutsideUpper;
+      // Current price inside range
+      const temp = this.submod(globalFeeGrowth, feeGrowthOutsideLower);
+      feeGrowthInside = this.submod(temp, feeGrowthOutsideUpper);
     }
 
     return feeGrowthInside;
@@ -722,11 +747,11 @@ class Pool {
 
     let effectivePrice: number;
     if (zeroForOne) {
-      // Price is tokenB/tokenA, so amountOut/amountIn
+      // Swapping A for B: price = B/A (how much B you get per A)
       effectivePrice = Number(amountOut) / Number(amountIn);
     } else {
-      // Price is tokenA/tokenB, so amountOut/amountIn
-      effectivePrice = Number(amountOut) / Number(amountIn);
+      // Swapping B for A: need to invert (price = A/B)
+      effectivePrice = Number(amountIn) / Number(amountOut);
     }
 
     // Calculate price impact as percentage
@@ -1174,6 +1199,71 @@ class Pool {
       },
       utilization,
     };
+  }
+
+  // Serialize pool state to JSON for saving/loading
+  serialize(): string {
+    const state = {
+      reserveA: this.reserveA.toString(),
+      reserveB: this.reserveB.toString(),
+      sqrtPriceX64: this.sqrtPriceX64.toString(),
+      liquidity: this.liquidity.toString(),
+      tickCurrent: this.tickCurrent,
+      feeRate: this.feeRate,
+      tickSpacing: this.tickSpacing,
+      feeRatePpm: this.feeRatePpm.toString(),
+      protocolFeeShareNumerator: this.protocolFeeShareNumerator.toString(),
+      protocolFeeShareDenominator: this.protocolFeeShareDenominator.toString(),
+      feeGrowthGlobal0X64: this.feeGrowthGlobal0X64.toString(),
+      feeGrowthGlobal1X64: this.feeGrowthGlobal1X64.toString(),
+      ticks: Array.from(this.ticks.entries()).map(([tick, data]) => ({
+        tick,
+        liquidityNet: data.liquidityNet.toString(),
+        liquidityGross: data.liquidityGross.toString(),
+        feeGrowthOutside0X64: data.feeGrowthOutside0X64.toString(),
+        feeGrowthOutside1X64: data.feeGrowthOutside1X64.toString(),
+      })),
+      tickBitmap: Array.from(this.tickBitmap),
+    };
+    return JSON.stringify(state, null, 2);
+  }
+
+  // Deserialize pool state from JSON
+  static deserialize(json: string): Pool {
+    const state = JSON.parse(json);
+    const pool = new Pool(
+      state.feeRate,
+      state.tickSpacing,
+      BigInt(state.feeRatePpm)
+    );
+
+    pool.reserveA = BigInt(state.reserveA);
+    pool.reserveB = BigInt(state.reserveB);
+    pool.sqrtPriceX64 = BigInt(state.sqrtPriceX64);
+    pool.liquidity = BigInt(state.liquidity);
+    pool.tickCurrent = state.tickCurrent;
+    pool.protocolFeeShareNumerator = BigInt(state.protocolFeeShareNumerator);
+    pool.protocolFeeShareDenominator = BigInt(
+      state.protocolFeeShareDenominator
+    );
+    pool.feeGrowthGlobal0X64 = BigInt(state.feeGrowthGlobal0X64);
+    pool.feeGrowthGlobal1X64 = BigInt(state.feeGrowthGlobal1X64);
+
+    // Restore ticks
+    pool.ticks = new Map();
+    for (const tickData of state.ticks) {
+      pool.ticks.set(tickData.tick, {
+        liquidityNet: BigInt(tickData.liquidityNet),
+        liquidityGross: BigInt(tickData.liquidityGross),
+        feeGrowthOutside0X64: BigInt(tickData.feeGrowthOutside0X64),
+        feeGrowthOutside1X64: BigInt(tickData.feeGrowthOutside1X64),
+      });
+    }
+
+    // Restore tick bitmap
+    pool.tickBitmap = new Set(state.tickBitmap);
+
+    return pool;
   }
 }
 

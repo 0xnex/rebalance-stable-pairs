@@ -5,6 +5,7 @@ import {
   ThreeBandRebalancerStrategy,
   type ThreeBandRebalancerConfig,
 } from "./three_band_rebalancer_strategy";
+import * as fs from "fs";
 
 type EnvConfig = {
   initialAmountA: bigint;
@@ -53,7 +54,7 @@ function readEnvConfig(): EnvConfig {
 
   return {
     initialAmountA: toBigInt(process.env.THREEBAND_INITIAL_A, 0n),
-    initialAmountB: toBigInt(process.env.THREEBAND_INITIAL_B, 10_000n),
+    initialAmountB: toBigInt(process.env.THREEBAND_INITIAL_B, 10_000_000_000n), // 10B default in raw units
     segmentRangePercent: toNumber(process.env.THREEBAND_RANGE_PERCENT, 0.001),
     segmentCount: toNumber(process.env.THREEBAND_SEGMENT_COUNT, 3),
     checkIntervalMs: toNumber(process.env.THREEBAND_CHECK_INTERVAL_MS, 60_000),
@@ -64,12 +65,12 @@ function readEnvConfig(): EnvConfig {
     ),
     bootstrapAttempts: toNumber(process.env.THREEBAND_BOOTSTRAP_ATTEMPTS, 3),
     actionCostTokenA: toNumber(process.env.THREEBAND_ACTION_COST_A, 0),
-    actionCostTokenB: toNumber(process.env.THREEBAND_ACTION_COST_B, 0.02),
-    fastSegmentCount: toNumber(process.env.THREEBAND_FAST_COUNT, 2),
-    fastIntervalMs: toNumber(process.env.THREEBAND_FAST_INTERVAL_MS, 30_000),
+    actionCostTokenB: toNumber(process.env.THREEBAND_ACTION_COST_B, 5000), // Raw units (not decimal)
+    fastSegmentCount: toNumber(process.env.THREEBAND_FAST_COUNT, 3), // All bands are fast
+    fastIntervalMs: toNumber(process.env.THREEBAND_FAST_INTERVAL_MS, 10_000),
     slowIntervalMs: toNumber(
       process.env.THREEBAND_SLOW_INTERVAL_MS,
-      5 * 60 * 1000
+      toNumber(process.env.THREEBAND_FAST_INTERVAL_MS, 10_000) // Default to fast interval
     ),
     minSegmentDwellMs: toNumber(
       process.env.THREEBAND_MIN_DWELL_MS,
@@ -80,9 +81,9 @@ function readEnvConfig(): EnvConfig {
       process.env.THREEBAND_ROTATION_TICK_THRESHOLD,
       0
     ),
-    minRotationProfitTokenB: toNumber(process.env.THREEBAND_MIN_PROFIT_B, 0.05),
+    minRotationProfitTokenB: toNumber(process.env.THREEBAND_MIN_PROFIT_B, 0), // Raw units (not decimal)
 
-    // Enhanced features (can be disabled for comparison testing)
+    // Enhanced features - ALL DISABLED for simplicity
     enableDynamicAllocation: false,
     enableAdaptiveBandWidth: false,
     enablePredictiveRotation: false,
@@ -91,7 +92,7 @@ function readEnvConfig(): EnvConfig {
     feeCompoundingThresholdPercent: 1.0,
     volatilityWindowMs: 600_000,
     momentumWindowSize: 5,
-    activeBandWeightPercent: 60,
+    activeBandWeightPercent: 33.33, // Not used when enableDynamicAllocation=false
   };
 }
 
@@ -100,10 +101,13 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
   const manager = new VirtualPositionManager(pool);
   manager.setInitialBalances(env.initialAmountA, env.initialAmountB);
 
+  // CSV file writer for separate output
+  const csvFilePath = `three_band_backtest_${Date.now()}.csv`;
+  let csvInitialized = false;
+
   const config: Partial<ThreeBandRebalancerConfig> = {
     segmentCount: env.segmentCount,
     segmentRangePercent: env.segmentRangePercent,
-    checkIntervalMs: env.checkIntervalMs,
     maxSwapSlippageBps: env.maxSwapSlippageBps,
     bootstrapMaxSwapSlippageBps: env.bootstrapMaxSwapSlippageBps,
     bootstrapAttempts: env.bootstrapAttempts,
@@ -135,11 +139,277 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     const key = `${action}:${message}`;
     if (lastLogKey === key) return;
     lastLogKey = key;
+
+    // Get current state for detailed logging
+    const tick = pool.tickCurrent;
+    const price = pool.price;
+    const totals = manager.getTotals();
+    const positions = manager.getAllPositions();
+
+    // Calculate total value and breakdown (keep raw values)
+    const amountA = Number(totals.amountA);
+    const amountB = Number(totals.amountB);
+    const valueA = amountA * price;
+    const valueB = amountB;
+    const totalValue = valueA + valueB;
+
+    // Count in-range positions
+    let inRangeCount = 0;
+    for (const pos of positions) {
+      if (tick >= pos.tickLower && tick < pos.tickUpper) {
+        inRangeCount++;
+      }
+    }
+
+    // Calculate fees (keep as BigInt to avoid overflow)
+    // feesOwed = uncollected fees, collectedFees = already collected
+    const feesOwedA = totals.feesOwed0 ?? 0n;
+    const feesOwedB = totals.feesOwed1 ?? 0n;
+    const feesCollectedA = totals.collectedFees0 ?? 0n;
+    const feesCollectedB = totals.collectedFees1 ?? 0n;
+    const totalFeesA = feesOwedA + feesCollectedA;
+    const totalFeesB = feesOwedB + feesCollectedB;
+
+    // Main log line with detailed context (all raw values)
     ctx.logger?.log?.(
       `[three-band] ${new Date(
         ctx.timestamp
-      ).toISOString()} action=${action} msg=${message}`
+      ).toISOString()} action=${action} msg=${message} | tick=${tick} price=${price.toFixed(
+        6
+      )} | value=${totalValue.toFixed(0)} (A:${valueA.toFixed(
+        0
+      )} B:${valueB.toFixed(0)}) | positions=${
+        positions.length
+      } inRange=${inRangeCount} | fees=(A:${totalFeesA} B:${totalFeesB})`
     );
+
+    // Log liquidity distribution on create action
+    if (action === "create") {
+      for (let i = 0; i < positions.length; i++) {
+        const pos = positions[i];
+        if (pos) {
+          const status =
+            tick >= pos.tickLower && tick < pos.tickUpper
+              ? "IN-RANGE"
+              : tick < pos.tickLower
+              ? "BELOW"
+              : "ABOVE";
+          ctx.logger?.log?.(
+            `[three-band]   Position ${i + 1}: [${pos.tickLower},${
+              pos.tickUpper
+            }] ${status} liquidity=${pos.liquidity}`
+          );
+        }
+      }
+    }
+
+    // CSV format for Excel analysis (3 positions)
+    const csvParts: string[] = [
+      new Date(ctx.timestamp).toISOString(),
+      tick.toString(),
+      price.toFixed(6),
+      action,
+      inRangeCount.toString(),
+    ];
+
+    // Add position data (3 positions for three-band strategy)
+    const maxPositions = 3;
+    for (let i = 0; i < maxPositions; i++) {
+      if (i < positions.length && positions[i]) {
+        const pos = positions[i]!;
+        const posInRange =
+          tick >= pos.tickLower && tick < pos.tickUpper ? "1" : "0";
+        const posFeesA = pos.tokensOwed0.toString();
+        const posFeesB = pos.tokensOwed1.toString();
+
+        // Check if position has liquidity
+        if (pos.liquidity === 0n) {
+          // Position has no liquidity - treat as empty
+          ctx.logger?.log?.(
+            `[three-band-warn] Position ${i + 1} [${pos.tickLower},${
+              pos.tickUpper
+            }] has ZERO liquidity - failed to open or was fully closed`
+          );
+          csvParts.push(
+            pos.tickLower.toString(),
+            pos.tickUpper.toString(),
+            "0",
+            "0",
+            "0",
+            "0",
+            "0"
+          );
+        } else {
+          // Calculate actual current amounts based on position's liquidity and current price
+          const { currentAmountA, currentAmountB } =
+            manager.calculatePositionAmounts(pos.id);
+
+          // Debug: log if position has zero amounts but has liquidity
+          if (
+            currentAmountA === 0n &&
+            currentAmountB === 0n &&
+            pos.liquidity > 0n
+          ) {
+            ctx.logger?.log?.(
+              `[three-band-debug] Position ${i + 1} (${pos.id}) has liquidity ${
+                pos.liquidity
+              } but shows 0,0 amounts. Range:[${pos.tickLower},${
+                pos.tickUpper
+              }] CurrentTick:${tick}`
+            );
+          }
+
+          csvParts.push(
+            pos.tickLower.toString(),
+            pos.tickUpper.toString(),
+            currentAmountA.toString(),
+            currentAmountB.toString(),
+            posFeesA.toString(),
+            posFeesB.toString(),
+            posInRange
+          );
+        }
+      } else {
+        // Empty fields for missing positions
+        csvParts.push("", "", "", "", "", "", "");
+      }
+    }
+
+    // Calculate sum of position amounts (actual current amounts)
+    let sumAmountA = 0n;
+    let sumAmountB = 0n;
+    for (const pos of positions) {
+      const { currentAmountA, currentAmountB } =
+        manager.calculatePositionAmounts(pos.id);
+      sumAmountA += currentAmountA;
+      sumAmountB += currentAmountB;
+    }
+
+    // Add cash balances to get true total
+    const cashA = totals.cashAmountA ?? 0n;
+    const cashB = totals.cashAmountB ?? 0n;
+    const totalCurrentA = sumAmountA + cashA;
+    const totalCurrentB = sumAmountB + cashB;
+
+    // Add totals (sum of actual position amounts + cash)
+    csvParts.push(
+      totalCurrentA.toString(),
+      totalCurrentB.toString(),
+      totalFeesA.toString(),
+      totalFeesB.toString()
+    );
+
+    // Debug: verify totals are reasonable
+    ctx.logger?.log?.(
+      `[three-band-debug] Sum of positions: A=${sumAmountA} B=${sumAmountB}, Cash: A=${cashA} B=${cashB}, Total: A=${totalCurrentA} B=${totalCurrentB}`
+    );
+
+    // Write CSV to separate file
+    if (!csvInitialized) {
+      // Write header
+      const csvHeader = [
+        "timestamp",
+        "tick",
+        "price",
+        "action",
+        "in_range_count",
+        "pos1_tick_lower",
+        "pos1_tick_upper",
+        "pos1_amount_a",
+        "pos1_amount_b",
+        "pos1_fee_a",
+        "pos1_fee_b",
+        "pos1_in_range",
+        "pos2_tick_lower",
+        "pos2_tick_upper",
+        "pos2_amount_a",
+        "pos2_amount_b",
+        "pos2_fee_a",
+        "pos2_fee_b",
+        "pos2_in_range",
+        "pos3_tick_lower",
+        "pos3_tick_upper",
+        "pos3_amount_a",
+        "pos3_amount_b",
+        "pos3_fee_a",
+        "pos3_fee_b",
+        "pos3_in_range",
+        "total_amount_a",
+        "total_amount_b",
+        "total_fee_a",
+        "total_fee_b",
+      ];
+      fs.writeFileSync(csvFilePath, csvHeader.join(",") + "\n");
+      csvInitialized = true;
+      ctx.logger?.log?.(`[three-band] CSV output file: ${csvFilePath}`);
+    }
+
+    // Append data row
+    fs.appendFileSync(csvFilePath, csvParts.join(",") + "\n");
+
+    // Additional details for position ranges when action is wait or rebalance
+    if (action === "wait" || action === "rebalance") {
+      const segments = strategy.getSegments();
+      if (segments.length > 0) {
+        const firstSeg = segments[0];
+        const lastSeg = segments[segments.length - 1];
+
+        if (firstSeg && lastSeg) {
+          let rangeStatus = "IN RANGE ✓";
+          if (tick < firstSeg.tickLower) {
+            rangeStatus = "BELOW RANGE ⬇️";
+          } else if (tick >= lastSeg.tickUpper) {
+            rangeStatus = "ABOVE RANGE ⬆️";
+          }
+
+          const lowerDist = tick - firstSeg.tickLower;
+          const upperDist = lastSeg.tickUpper - tick;
+
+          ctx.logger?.log?.(
+            `[three-band]   → Range: [${firstSeg.tickLower}, ${lastSeg.tickUpper}] | Status: ${rangeStatus} | Distance: lower=${lowerDist}ticks upper=${upperDist}ticks`
+          );
+
+          // Show segment dwell times and conditions for wait/rotation actions
+          if (message.includes("rotating") || message.includes("Waiting")) {
+            const now = ctx.timestamp;
+            const direction = message.includes("up") ? "up" : "down";
+            const candidateSeg = direction === "up" ? firstSeg : lastSeg;
+            const dwellTime = (now - candidateSeg.lastMoved) / 1000;
+            const minDwell = config.minSegmentDwellMs! / 1000;
+            const dwellOk = dwellTime >= minDwell ? "✓" : "✗";
+
+            ctx.logger?.log?.(
+              `[three-band]   → Rebalance Direction: ${direction} | Segment Dwell: ${dwellTime.toFixed(
+                1
+              )}s / ${minDwell.toFixed(1)}s ${dwellOk}`
+            );
+
+            // Show profit check details (convert fees to numbers for calculation)
+            const rotationCost = (config.actionCostTokenB ?? 0) * 2;
+            const minProfitB = config.minRotationProfitTokenB ?? 0;
+
+            const estimatedFeeValueB =
+              Number(totalFeesB) + Number(totalFeesA) * price;
+            const netProfit = estimatedFeeValueB - rotationCost;
+            const profitOk = netProfit >= minProfitB ? "✓" : "✗";
+
+            ctx.logger?.log?.(
+              `[three-band]   → Conditions: minOutOfRangeMs=${(
+                config.minOutOfRangeMs! / 1000
+              ).toFixed(0)}s minProfitB=${minProfitB} rotationTickThreshold=${
+                config.rotationTickThreshold
+              }ticks`
+            );
+
+            ctx.logger?.log?.(
+              `[three-band]   → Profit Check: fees=${estimatedFeeValueB.toFixed(
+                0
+              )} cost=${rotationCost} net=${netProfit.toFixed(0)} ${profitOk}`
+            );
+          }
+        }
+      }
+    }
   };
 
   const runOnce = (ctx: StrategyContext) => {
