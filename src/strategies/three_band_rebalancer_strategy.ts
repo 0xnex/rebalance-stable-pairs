@@ -67,6 +67,36 @@ export class ThreeBandRebalancerStrategy {
   private lastCompoundingCheck = 0;
   private lastRepairAttempt = 0; // throttle repairs to avoid spamming opens
 
+  // Remove surplus segments, keeping exactly 3 closest to current tick
+  private trimToThreeSegments(now: number, currentTick: number) {
+    if (this.segments.length <= 3) return false;
+    const keep = this.segments
+      .slice()
+      .sort((a, b) => {
+        const amid = this.segmentMid(a);
+        const bmid = this.segmentMid(b);
+        return Math.abs(currentTick - amid) - Math.abs(currentTick - bmid);
+      })
+      .slice(0, 3)
+      .map((s) => s.id);
+
+    let changed = false;
+    const toRemove = this.segments.filter((s) => !keep.includes(s.id));
+    for (const seg of toRemove) {
+      try {
+        this.manager.removePosition(seg.id, this.getActionCost());
+        changed = true;
+      } catch {
+        // ignore failures
+      }
+    }
+    if (changed) {
+      this.segments = this.segments.filter((s) => keep.includes(s.id));
+      for (const s of this.segments) this.updateSegmentFeeTracking(s.id);
+    }
+    return changed;
+  }
+
   constructor(
     manager: VirtualPositionManager,
     pool: Pool,
@@ -156,6 +186,19 @@ export class ThreeBandRebalancerStrategy {
         action: "wait",
         message: `Repair cooldown ${Math.ceil(remaining / 1000)}s before retry to open missing bands`,
       };
+    }
+
+    // If we somehow have more than 3, trim to 3 closest to price
+    if (this.segments.length > 3) {
+      const trimmed = this.trimToThreeSegments(now, currentTick);
+      if (trimmed) {
+        this.captureFeeBaseline();
+        return {
+          action: "rebalance",
+          message: `Trimmed surplus bands to maintain exactly 3 positions`,
+          segments: this.getSegments(),
+        };
+      }
     }
 
     // Update tracking data
@@ -457,6 +500,11 @@ export class ThreeBandRebalancerStrategy {
         action: "none",
         message: `Failed to open any positions - slippage too high or insufficient capital`,
       };
+    }
+
+    // Ensure we never exceed 3 after seed/repair
+    if (this.segments.length > 3) {
+      this.trimToThreeSegments(now, this.pool.tickCurrent);
     }
 
     const successMessage =
