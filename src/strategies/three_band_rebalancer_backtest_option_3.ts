@@ -123,7 +123,11 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     manager.setInitialBalances(env.initialAmountA, env.initialAmountB);
 
     // CSV file writer for separate output
-    const csvFilePath = `three_band_option3_backtest_${Date.now()}.csv`;
+    const token_a = process.env.TOKEN_A_NAME;
+    const token_b = process.env.TOKEN_B_NAME;
+    const initial_amount_a = process.env.THREEBAND_INITIAL_A;
+    const initial_amount_b = process.env.THREEBAND_INITIAL_B;
+    const csvFilePath = `three_band_option3_backtest_${token_a}_${token_b}_${initial_amount_a}_${initial_amount_b}_${Date.now()}.csv`;
     let csvInitialized = false;
 
     // Track rebalancing history for Option 3 constraints
