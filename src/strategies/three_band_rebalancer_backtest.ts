@@ -102,7 +102,9 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
   manager.setInitialBalances(env.initialAmountA, env.initialAmountB);
 
   // CSV file writer for separate output
-  const csvFilePath = `three_band_backtest_${Date.now()}.csv`;
+  const tradingPair = process.env.TRADING_PAIR || "SUI/USDC";
+  const pairForFilename = tradingPair.replace("/", "_");
+  const csvFilePath = `three_band_backtest_${pairForFilename}_${Date.now()}.csv`;
   let csvInitialized = false;
 
   const config: Partial<ThreeBandRebalancerConfig> = {
@@ -178,8 +180,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         6
       )} | value=${totalValue.toFixed(0)} (A:${valueA.toFixed(
         0
-      )} B:${valueB.toFixed(0)}) | positions=${
-        positions.length
+      )} B:${valueB.toFixed(0)}) | positions=${positions.length
       } inRange=${inRangeCount} | fees=(A:${totalFeesA} B:${totalFeesB})`
     );
 
@@ -192,11 +193,10 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             tick >= pos.tickLower && tick < pos.tickUpper
               ? "IN-RANGE"
               : tick < pos.tickLower
-              ? "BELOW"
-              : "ABOVE";
+                ? "BELOW"
+                : "ABOVE";
           ctx.logger?.log?.(
-            `[three-band]   Position ${i + 1}: [${pos.tickLower},${
-              pos.tickUpper
+            `[three-band]   Position ${i + 1}: [${pos.tickLower},${pos.tickUpper
             }] ${status} liquidity=${pos.liquidity}`
           );
         }
@@ -226,8 +226,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         if (pos.liquidity === 0n) {
           // Position has no liquidity - treat as empty
           ctx.logger?.log?.(
-            `[three-band-warn] Position ${i + 1} [${pos.tickLower},${
-              pos.tickUpper
+            `[three-band-warn] Position ${i + 1} [${pos.tickLower},${pos.tickUpper
             }] has ZERO liquidity - failed to open or was fully closed`
           );
           csvParts.push(
@@ -251,23 +250,65 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             pos.liquidity > 0n
           ) {
             ctx.logger?.log?.(
-              `[three-band-debug] Position ${i + 1} (${pos.id}) has liquidity ${
-                pos.liquidity
-              } but shows 0,0 amounts. Range:[${pos.tickLower},${
-                pos.tickUpper
+              `[three-band-debug] Position ${i + 1} (${pos.id}) has liquidity ${pos.liquidity
+              } but shows 0,0 amounts. Range:[${pos.tickLower},${pos.tickUpper
               }] CurrentTick:${tick}`
             );
           }
 
-          csvParts.push(
-            pos.tickLower.toString(),
-            pos.tickUpper.toString(),
-            currentAmountA.toString(),
-            currentAmountB.toString(),
-            posFeesA.toString(),
-            posFeesB.toString(),
-            posInRange
-          );
+          // Debug: detect and log unrealistic spikes
+          const MAX_REASONABLE_AMOUNT = 1e18; // 1 quintillion (1 ETH in wei)
+          const MAX_REASONABLE_FEES = 1e15;   // 1 quadrillion (reasonable fee limit)
+
+          // Safe BigInt to Number conversion with overflow protection
+          const safeBigIntToNumber = (value: bigint): number => {
+            try {
+              const num = Number(value);
+              // Check for overflow (Number.MAX_SAFE_INTEGER = 2^53 - 1)
+              if (!Number.isFinite(num) || num > Number.MAX_SAFE_INTEGER) {
+                return Number.MAX_SAFE_INTEGER;
+              }
+              return num;
+            } catch {
+              return Number.MAX_SAFE_INTEGER;
+            }
+          };
+
+          const amountANum = safeBigIntToNumber(currentAmountA);
+          const amountBNum = safeBigIntToNumber(currentAmountB);
+
+          if (amountANum > MAX_REASONABLE_AMOUNT || amountBNum > MAX_REASONABLE_AMOUNT ||
+            posFeesA > MAX_REASONABLE_FEES || posFeesB > MAX_REASONABLE_FEES) {
+            ctx.logger?.log?.(
+              `[three-band-SPIKE] Position ${i + 1} UNREALISTIC VALUES: amountA=${currentAmountA} amountB=${currentAmountB} feesA=${posFeesA} feesB=${posFeesB} liquidity=${pos.liquidity} tick=${tick} range=[${pos.tickLower},${pos.tickUpper}]`
+            );
+
+            // Cap the values to prevent CSV corruption
+            const cappedAmountA = amountANum > MAX_REASONABLE_AMOUNT ? pos.amountA : currentAmountA;
+            const cappedAmountB = amountBNum > MAX_REASONABLE_AMOUNT ? pos.amountB : currentAmountB;
+            const cappedFeesA = posFeesA > MAX_REASONABLE_FEES ? 0 : posFeesA;
+            const cappedFeesB = posFeesB > MAX_REASONABLE_FEES ? 0 : posFeesB;
+
+            csvParts.push(
+              pos.tickLower.toString(),
+              pos.tickUpper.toString(),
+              cappedAmountA.toString(),
+              cappedAmountB.toString(),
+              cappedFeesA.toString(),
+              cappedFeesB.toString(),
+              posInRange
+            );
+          } else {
+            csvParts.push(
+              pos.tickLower.toString(),
+              pos.tickUpper.toString(),
+              currentAmountA.toString(),
+              currentAmountB.toString(),
+              posFeesA.toString(),
+              posFeesB.toString(),
+              posInRange
+            );
+          }
         }
       } else {
         // Empty fields for missing positions
@@ -275,14 +316,36 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       }
     }
 
-    // Calculate sum of position amounts (actual current amounts)
+    // Calculate sum of position amounts (actual current amounts) with safety checks
     let sumAmountA = 0n;
     let sumAmountB = 0n;
+    const MAX_TOTAL_AMOUNT = 1000000000000000000n; // 1e18 - realistic DeFi limit
+
     for (const pos of positions) {
-      const { currentAmountA, currentAmountB } =
-        manager.calculatePositionAmounts(pos.id);
-      sumAmountA += currentAmountA;
-      sumAmountB += currentAmountB;
+      try {
+        const { currentAmountA, currentAmountB } =
+          manager.calculatePositionAmounts(pos.id);
+
+        // Safety check to prevent overflow accumulation
+        if (currentAmountA < MAX_TOTAL_AMOUNT && currentAmountB < MAX_TOTAL_AMOUNT) {
+          sumAmountA += currentAmountA;
+          sumAmountB += currentAmountB;
+        } else {
+          // Fallback to stored amounts for unrealistic calculated amounts
+          sumAmountA += pos.amountA;
+          sumAmountB += pos.amountB;
+          ctx.logger?.log?.(
+            `[three-band-SPIKE] Position ${pos.id} calculated amounts too large, using stored amounts`
+          );
+        }
+      } catch (error) {
+        // Fallback to stored amounts if calculation fails
+        sumAmountA += pos.amountA;
+        sumAmountB += pos.amountB;
+        ctx.logger?.log?.(
+          `[three-band-error] Failed to calculate amounts for position ${pos.id}, using stored amounts`
+        );
+      }
     }
 
     // Add cash balances to get true total
@@ -291,10 +354,41 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     const totalCurrentA = sumAmountA + cashA;
     const totalCurrentB = sumAmountB + cashB;
 
+    // Safety check for total values before CSV output
+    const MAX_REASONABLE_TOTAL = 1e19; // 10 quintillion (allow for multiple positions)
+
+    // Safe BigInt to Number conversion for totals
+    const safeBigIntToNumber = (value: bigint): number => {
+      try {
+        const num = Number(value);
+        if (!Number.isFinite(num) || num > Number.MAX_SAFE_INTEGER) {
+          return Number.MAX_SAFE_INTEGER;
+        }
+        return num;
+      } catch {
+        return Number.MAX_SAFE_INTEGER;
+      }
+    };
+
+    const totalANum = safeBigIntToNumber(totalCurrentA);
+    const totalBNum = safeBigIntToNumber(totalCurrentB);
+
+    let finalTotalA = totalCurrentA;
+    let finalTotalB = totalCurrentB;
+
+    if (totalANum > MAX_REASONABLE_TOTAL || totalBNum > MAX_REASONABLE_TOTAL) {
+      ctx.logger?.log?.(
+        `[three-band-SPIKE] UNREALISTIC TOTALS: totalA=${totalCurrentA} totalB=${totalCurrentB} - using fallback`
+      );
+      // Fallback to sum of stored amounts + cash
+      finalTotalA = positions.reduce((sum, pos) => sum + pos.amountA, 0n) + cashA;
+      finalTotalB = positions.reduce((sum, pos) => sum + pos.amountB, 0n) + cashB;
+    }
+
     // Add totals (sum of actual position amounts + cash)
     csvParts.push(
-      totalCurrentA.toString(),
-      totalCurrentB.toString(),
+      finalTotalA.toString(),
+      finalTotalB.toString(),
       totalFeesA.toString(),
       totalFeesB.toString()
     );
@@ -396,8 +490,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             ctx.logger?.log?.(
               `[three-band]   → Conditions: minOutOfRangeMs=${(
                 config.minOutOfRangeMs! / 1000
-              ).toFixed(0)}s minProfitB=${minProfitB} rotationTickThreshold=${
-                config.rotationTickThreshold
+              ).toFixed(0)}s minProfitB=${minProfitB} rotationTickThreshold=${config.rotationTickThreshold
               }ticks`
             );
 

@@ -131,8 +131,7 @@ async function main() {
     `⚡ Enhanced Fees: ${config.enableEnhancedFees ? "Enabled" : "Disabled"}`
   );
   console.log(
-    `📋 Detailed Report: ${
-      config.enableDetailedReport ? "Enabled" : "Disabled"
+    `📋 Detailed Report: ${config.enableDetailedReport ? "Enabled" : "Disabled"
     }`
   );
 
@@ -158,6 +157,8 @@ async function main() {
   process.env.TOKEN_A_DECIMALS = tokenMetadata.tokenADecimals.toString();
   process.env.TOKEN_B_NAME = tokenMetadata.tokenBName;
   process.env.TOKEN_B_DECIMALS = tokenMetadata.tokenBDecimals.toString();
+  process.env.TRADING_PAIR = config.tradingPair;
+  process.env.INITIAL_INVESTMENT = config.initialInvestment.toString();
 
   console.log(`\n💱 Token Configuration:`);
   console.log(

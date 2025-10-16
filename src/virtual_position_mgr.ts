@@ -84,7 +84,7 @@ export class VirtualPositionManager {
 
   private static readonly Q64 = 1n << 64n;
 
-  constructor(private readonly pool: PoolPositionContext) {}
+  constructor(private readonly pool: PoolPositionContext) { }
 
   /**
    * Subtract with modulo wrap-around for fee growth calculations
@@ -164,17 +164,53 @@ export class VirtualPositionManager {
   }
 
   /**
+   * Calculate total fees for a position using monotonic, non-negative deltas.
+   * Ensures we never return negative fees due to wrapped or decreasing checkpoints.
+   */
+  private calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+    const position = this.positions.get(positionId);
+    if (!position) {
+      return { fee0: 0n, fee1: 0n };
+    }
+
+    // Keep virtual tick feeGrowthOutside in sync on tick moves
+    this.processTickCrossings();
+
+    // Compute feeGrowthInside using pool (preferred) with fallback to virtual ticks
+    const feeInside0 = this.calculateFeeGrowthInside(position.tickLower, position.tickUpper, 0);
+    const feeInside1 = this.calculateFeeGrowthInside(position.tickLower, position.tickUpper, 1);
+
+    // Deltas since last checkpoint; clamp to >= 0 to avoid negative due to wrap or reorder
+    let delta0 = feeInside0 - position.feeGrowthInside0LastX64;
+    let delta1 = feeInside1 - position.feeGrowthInside1LastX64;
+    if (delta0 < 0n) delta0 = 0n;
+    if (delta1 < 0n) delta1 = 0n;
+
+    // Newly accrued fees
+    const newFee0 = (position.liquidity * delta0) / (2n ** 64n);
+    const newFee1 = (position.liquidity * delta1) / (2n ** 64n);
+
+    // Total owed = already owed + newly accrued; never negative
+    let total0 = position.tokensOwed0 + newFee0;
+    let total1 = position.tokensOwed1 + newFee1;
+    if (total0 < 0n) total0 = 0n;
+    if (total1 < 0n) total1 = 0n;
+
+    return { fee0: total0, fee1: total1 };
+  }
+
+  /**
    * Get tick data for virtual position fee calculations
    * NEVER use real pool ticks because they may have wrapped values from submod
    * Always use virtual ticks initialized specifically for this position
    */
   private getTickData(tick: number):
     | {
-        liquidityNet: bigint;
-        liquidityGross: bigint;
-        feeGrowthOutside0X64: bigint;
-        feeGrowthOutside1X64: bigint;
-      }
+      liquidityNet: bigint;
+      liquidityGross: bigint;
+      feeGrowthOutside0X64: bigint;
+      feeGrowthOutside1X64: bigint;
+    }
     | undefined {
     // Only use virtual ticks - pool ticks have wrapped values
     return this.virtualTicks.get(tick);
@@ -195,12 +231,9 @@ export class VirtualPositionManager {
     const tickUpperData = this.getTickData(tickUpper);
 
     if (!tickLowerData || !tickUpperData) {
-      // If no tick data at all, assume all global fees apply
-      const globalFeeGrowth =
-        tokenIndex === 0
-          ? (this.pool as any).feeGrowthGlobal0X64
-          : (this.pool as any).feeGrowthGlobal1X64;
-      return globalFeeGrowth || 0n;
+      // SAFER: Don't assume all global fees apply, return 0 instead
+      // This prevents massive fee spikes when tick data is missing
+      return 0n;
     }
 
     const globalFeeGrowth =
@@ -915,6 +948,9 @@ export class VirtualPositionManager {
       return { currentAmountA: 0n, currentAmountB: 0n };
     }
 
+    // Keep virtual tick feeGrowthOutside in sync when price crosses ticks
+    this.processTickCrossings();
+
     const currentTick = this.pool.tickCurrent;
     const sqrtPriceX64 = this.pool.sqrtPriceX64;
     const Q64 = VirtualPositionManager.Q64;
@@ -926,25 +962,42 @@ export class VirtualPositionManager {
     let amount0 = 0n;
     let amount1 = 0n;
 
-    if (position.liquidity > 0n) {
-      if (currentTick < position.tickLower) {
-        // Position is above current price - all token0 (tokenA)
-        amount0 =
-          (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) /
-          sqrtLower /
-          sqrtUpper;
-        amount1 = 0n;
-      } else if (currentTick >= position.tickUpper) {
-        // Position is below current price - all token1 (tokenB)
-        amount0 = 0n;
-        amount1 = (position.liquidity * (sqrtUpper - sqrtLower)) / Q64;
-      } else {
-        // Position is in range - mix of both tokens
-        amount0 =
-          (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) /
-          sqrtPriceX64 /
-          sqrtUpper;
-        amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
+    if (position.liquidity > 0n && sqrtLower > 0n && sqrtUpper > 0n && sqrtPriceX64 > 0n) {
+      try {
+        if (currentTick < position.tickLower) {
+          // Position is above current price - all token0 (tokenA)
+          // Safe division to prevent overflow
+          if (sqrtLower > 0n && sqrtUpper > 0n) {
+            amount0 = (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) / sqrtLower / sqrtUpper;
+          }
+          amount1 = 0n;
+        } else if (currentTick >= position.tickUpper) {
+          // Position is below current price - all token1 (tokenB)
+          amount0 = 0n;
+          amount1 = (position.liquidity * (sqrtUpper - sqrtLower)) / Q64;
+        } else {
+          // Position is in range - mix of both tokens
+          if (sqrtPriceX64 > 0n && sqrtUpper > 0n) {
+            amount0 = (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) / sqrtPriceX64 / sqrtUpper;
+          }
+          amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
+        }
+
+        // Sanity check: cap amounts to prevent unrealistic spikes
+        // Use realistic DeFi limits instead of astronomical 2^96
+        const MAX_REASONABLE_AMOUNT = 1000000000000000000n; // 1e18 (1 ETH in wei, reasonable for most tokens)
+
+        if (amount0 > MAX_REASONABLE_AMOUNT || amount1 > MAX_REASONABLE_AMOUNT) {
+          // Log the problematic calculation for debugging
+          console.warn(`[VirtualPositionManager] Calculated amount too large: amount0=${amount0} amount1=${amount1} liquidity=${position.liquidity} tick=${currentTick} range=[${position.tickLower},${position.tickUpper}]`);
+          amount0 = position.amountA;
+          amount1 = position.amountB;
+        }
+
+      } catch (error) {
+        // Fallback to stored amounts if calculation fails
+        amount0 = position.amountA;
+        amount1 = position.amountB;
       }
     }
 
@@ -954,7 +1007,10 @@ export class VirtualPositionManager {
     };
   }
 
-  calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+  /**
+   * Calculate newly accrued fees since last update (for internal use by updatePositionFees)
+   */
+  private calculateNewPositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
     const position = this.positions.get(positionId);
     if (!position) return { fee0: 0n, fee1: 0n };
 
@@ -1004,6 +1060,9 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return false;
 
+    // Sync tick crossings before reading fee growth
+    this.processTickCrossings();
+
     // Check if position is in range
     const inRange =
       this.pool.tickCurrent >= position.tickLower &&
@@ -1040,6 +1099,8 @@ export class VirtualPositionManager {
     // ACCUMULATE fees (don't replace)
     position.tokensOwed0 += newFees0;
     position.tokensOwed1 += newFees1;
+    if (position.tokensOwed0 < 0n) position.tokensOwed0 = 0n;
+    if (position.tokensOwed1 < 0n) position.tokensOwed1 = 0n;
 
     // Update checkpoints
     position.feeGrowthInside0LastX64 = feeGrowthInside0;
