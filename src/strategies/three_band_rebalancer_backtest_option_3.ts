@@ -261,13 +261,22 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             }
         }
 
-        // Calculate fees (keep as BigInt to avoid overflow)
-        const feesOwedA = totals.feesOwed0 ?? 0n;
-        const feesOwedB = totals.feesOwed1 ?? 0n;
+        // Calculate fees using live per-position snapshot to avoid stale/zero totals
+        let liveFeesA = 0n;
+        let liveFeesB = 0n;
+        try {
+            for (const p of positions) {
+                const f = manager.calculatePositionFees(p.id);
+                liveFeesA += f.fee0;
+                liveFeesB += f.fee1;
+            }
+        } catch {
+            // ignore
+        }
         const feesCollectedA = totals.collectedFees0 ?? 0n;
         const feesCollectedB = totals.collectedFees1 ?? 0n;
-        const totalFeesA = feesOwedA + feesCollectedA;
-        const totalFeesB = feesOwedB + feesCollectedB;
+        const totalFeesA = liveFeesA + feesCollectedA;
+        const totalFeesB = liveFeesB + feesCollectedB;
 
         // Determine rebalancing case for Option 3
         const rebalancingCase = getRebalancingCase(price);
@@ -335,8 +344,16 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 const pos = positions[i]!;
                 const posInRange =
                     tick >= pos.tickLower && tick < pos.tickUpper ? "1" : "0";
-                const posFeesA = pos.tokensOwed0.toString();
-                const posFeesB = pos.tokensOwed1.toString();
+                // Use live fee calculation snapshot to avoid stale owed fields
+                let posFeesA = "0";
+                let posFeesB = "0";
+                try {
+                    const fees = manager.calculatePositionFees(pos.id);
+                    posFeesA = fees.fee0.toString();
+                    posFeesB = fees.fee1.toString();
+                } catch {
+                    // ignore calculation errors; keep zeros
+                }
                 const allocation = i === 0 ? env.position1AllocationPercent :
                     i === 1 ? env.position2AllocationPercent :
                         env.position3AllocationPercent;
