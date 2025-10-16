@@ -226,7 +226,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const totals = manager.getTotals();
         // Ensure Position 1 in CSV refers to the band covering current price
         // Sort positions so index 0 is the in-range band (or the closest to current tick)
-        let positions = manager.getAllPositions();
+        let positions = manager.getAllPositions().filter((p) => p.liquidity > 0n);
         try {
             const currentTick = pool.tickCurrent;
             positions = positions
@@ -253,7 +253,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const valueB = amountB;
         const totalValue = valueA + valueB;
 
-        // Count in-range positions
+        // Count in-range positions (only for active, non-zero liquidity positions)
         let inRangeCount = 0;
         for (const pos of positions) {
             if (tick >= pos.tickLower && tick < pos.tickUpper) {
