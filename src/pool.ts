@@ -1,3 +1,6 @@
+// pool.ts
+import Decimal from "decimal.js";
+
 const Q64 = 1n << 64n;
 const Base = 1.0001;
 
@@ -7,11 +10,8 @@ class Pool {
   sqrtPriceX64: bigint; // Q64.64
   liquidity: bigint;
   tickCurrent: number;
-  feeRate: number; // e.g. 0.003 for 0.3%
   tickSpacing: number;
   feeRatePpm: bigint; // fee rate expressed in millionths (from on-chain data)
-  protocolFeeShareNumerator: bigint;
-  protocolFeeShareDenominator: bigint;
   ticks: Map<
     number,
     {
@@ -24,27 +24,31 @@ class Pool {
   tickBitmap: Set<number>;
   feeGrowthGlobal0X64: bigint; // Global fee growth for token 0
   feeGrowthGlobal1X64: bigint; // Global fee growth for token 1
-  totalSwapFee0: bigint; // Cumulative swap fees collected in token 0
-  totalSwapFee1: bigint; // Cumulative swap fees collected in token 1
+  totalSwapFee0: bigint; // Total fees collected from token0 swaps
+  totalSwapFee1: bigint; // Total fees collected from token1 swaps
+  feeRate: number; // Fee rate as decimal (e.g., 0.003 for 0.3%)
+  protocolFeeShareNumerator: bigint; // Protocol fee share numerator
+  protocolFeeShareDenominator: bigint; // Protocol fee share denominator
 
-  constructor(feeRate: number, tickSpacing: number, feeRatePpm: bigint = 0n) {
+  constructor(feeRatePpm: bigint = 100n, tickSpacing: number = 60) {
     this.reserveA = 0n;
     this.reserveB = 0n;
     this.sqrtPriceX64 = 0n;
     this.liquidity = 0n;
     this.tickCurrent = 0;
-    this.feeRate = feeRate;
     this.tickSpacing = tickSpacing;
     this.feeRatePpm = feeRatePpm;
-    this.protocolFeeShareNumerator = 1n; // default 20% share (1/5)
-    this.protocolFeeShareDenominator = 5n;
     this.ticks = new Map();
     this.tickBitmap = new Set();
     this.feeGrowthGlobal0X64 = 0n;
     this.feeGrowthGlobal1X64 = 0n;
     this.totalSwapFee0 = 0n;
     this.totalSwapFee1 = 0n;
+    this.feeRate = Number(feeRatePpm) / 1_000_000; // Convert ppm to decimal
+    this.protocolFeeShareNumerator = 1n; // Default 1/5 = 20% protocol fee
+    this.protocolFeeShareDenominator = 5n;
   }
+
   get price(): number {
     // Convert Q64.64 sqrtPrice to actual price
     // sqrtPriceX64 is sqrt(price) * 2^64
@@ -127,8 +131,23 @@ class Pool {
     reserveX?: bigint,
     reserveY?: bigint
   ): void {
-    // Flash swap repayment adjusts reserves based on the actual amounts paid
+    // Flash swap repayment: collect fees and update tick data
     // The debt amounts represent what was borrowed, paid amounts represent what was returned
+
+    // Calculate the fee collected from the flash swap repayment
+    // Fee is the difference between what was paid back and what was borrowed
+    const feeX = paidX > amountXDebt ? paidX - amountXDebt : 0n;
+    const feeY = paidY > amountYDebt ? paidY - amountYDebt : 0n;
+
+    // Collect fees and update global fee growth
+    if (feeX > 0n) {
+      this.updateFeeGrowth(feeX, true); // true = zeroForOne (token0)
+      this.totalSwapFee0 += feeX;
+    }
+    if (feeY > 0n) {
+      this.updateFeeGrowth(feeY, false); // false = oneForZero (token1)
+      this.totalSwapFee1 += feeY;
+    }
 
     // Update reserves if provided in the event data
     if (reserveX !== undefined) {
@@ -138,9 +157,14 @@ class Pool {
       this.reserveB = reserveY;
     }
 
+    // Update tick data for fee tracking
+    // Flash swaps may have crossed ticks during the repayment process
+    // We need to ensure tick fee growth outside values are properly updated
+    this.updateTickFeeGrowthForFlashSwap();
+
     // Note: Flash swaps don't change the pool's price or liquidity directly
-    // They only affect reserves. The actual swap mechanics are handled separately
-    // if there was a swap involved in the flash loan repayment.
+    // They only affect reserves and fee collection. The actual swap mechanics
+    // are handled separately if there was a swap involved in the flash loan repayment.
   }
 
   applySwap(amountIn: bigint, zeroForOne: boolean): bigint {
@@ -544,6 +568,20 @@ class Pool {
       tickData.feeGrowthOutside0X64 = globalFeeGrowth;
     } else {
       tickData.feeGrowthOutside1X64 = globalFeeGrowth;
+    }
+  }
+
+  // Update tick fee growth for flash swap repayments
+  // This ensures that tick fee tracking is properly maintained after flash swaps
+  private updateTickFeeGrowthForFlashSwap() {
+    // For flash swaps, we need to ensure that all active ticks have their
+    // fee growth outside values properly updated to reflect the current global state
+
+    for (const [tick, tickData] of this.ticks) {
+      // Update fee growth outside for both tokens
+      // This ensures that future fee calculations are accurate
+      tickData.feeGrowthOutside0X64 = this.feeGrowthGlobal0X64;
+      tickData.feeGrowthOutside1X64 = this.feeGrowthGlobal1X64;
     }
   }
 
@@ -1216,6 +1254,8 @@ class Pool {
       protocolFeeShareDenominator: this.protocolFeeShareDenominator.toString(),
       feeGrowthGlobal0X64: this.feeGrowthGlobal0X64.toString(),
       feeGrowthGlobal1X64: this.feeGrowthGlobal1X64.toString(),
+      totalSwapFee0: this.totalSwapFee0.toString(),
+      totalSwapFee1: this.totalSwapFee1.toString(),
       ticks: Array.from(this.ticks.entries()).map(([tick, data]) => ({
         tick,
         liquidityNet: data.liquidityNet.toString(),
@@ -1231,23 +1271,24 @@ class Pool {
   // Deserialize pool state from JSON
   static deserialize(json: string): Pool {
     const state = JSON.parse(json);
-    const pool = new Pool(
-      state.feeRate,
-      state.tickSpacing,
-      BigInt(state.feeRatePpm)
-    );
+    const pool = new Pool(BigInt(state.feeRatePpm), state.tickSpacing);
 
     pool.reserveA = BigInt(state.reserveA);
     pool.reserveB = BigInt(state.reserveB);
     pool.sqrtPriceX64 = BigInt(state.sqrtPriceX64);
     pool.liquidity = BigInt(state.liquidity);
     pool.tickCurrent = state.tickCurrent;
-    pool.protocolFeeShareNumerator = BigInt(state.protocolFeeShareNumerator);
+    pool.feeRate = state.feeRate;
+    pool.protocolFeeShareNumerator = BigInt(
+      state.protocolFeeShareNumerator || 1
+    );
     pool.protocolFeeShareDenominator = BigInt(
-      state.protocolFeeShareDenominator
+      state.protocolFeeShareDenominator || 5
     );
     pool.feeGrowthGlobal0X64 = BigInt(state.feeGrowthGlobal0X64);
     pool.feeGrowthGlobal1X64 = BigInt(state.feeGrowthGlobal1X64);
+    pool.totalSwapFee0 = BigInt(state.totalSwapFee0 || 0);
+    pool.totalSwapFee1 = BigInt(state.totalSwapFee1 || 0);
 
     // Restore ticks
     pool.ticks = new Map();

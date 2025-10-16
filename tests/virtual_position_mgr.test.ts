@@ -58,8 +58,8 @@ describe("VirtualPositionManager", () => {
       expect(position).toBeDefined();
       expect(position?.tickLower).toBe(-100);
       expect(position?.tickUpper).toBe(100);
-      expect(position?.amountA).toBe(10000n);
-      expect(position?.amountB).toBe(20000n);
+      expect(position?.amount0).toBe(10000n);
+      expect(position?.amount1).toBe(20000n);
     });
 
     it("should remove positions", () => {
@@ -278,8 +278,8 @@ describe("VirtualPositionManager", () => {
 
       // Verify ascending order
       for (let i = 0; i < sortedByAmountA.length - 1; i++) {
-        expect(sortedByAmountA[i]!.amountA).toBeLessThanOrEqual(
-          sortedByAmountA[i + 1]!.amountA
+        expect(sortedByAmountA[i]!.amount0).toBeLessThanOrEqual(
+          sortedByAmountA[i + 1]!.amount0
         );
       }
     });
@@ -352,8 +352,8 @@ describe("VirtualPositionManager", () => {
       expect(success).toBe(true);
 
       const position = positionManager.getPosition(positionId);
-      expect(position?.amountA).toBe(11000n);
-      expect(position?.amountB).toBe(22000n);
+      expect(position?.amount0).toBe(11000n);
+      expect(position?.amount1).toBe(22000n);
     });
 
     it("should calculate position fees", () => {
@@ -521,8 +521,12 @@ describe("VirtualPositionManager", () => {
       );
 
       expect(result.liquidity).toBeGreaterThan(simple.liquidity);
-      expect(result.swappedFromTokenA + result.swappedFromTokenB).toBeGreaterThan(0n);
-      expect(result.swappedToTokenA + result.swappedToTokenB).toBeGreaterThan(0n);
+      expect(
+        result.swappedFromTokenA + result.swappedFromTokenB
+      ).toBeGreaterThan(0n);
+      expect(result.swappedToTokenA + result.swappedToTokenB).toBeGreaterThan(
+        0n
+      );
       expect(typeof result.slippageHit).toBe("boolean");
     });
 

@@ -19,9 +19,10 @@ const LN_1_0001 = D(1.0001).ln();
 export type Address = string;
 
 export interface PoolConfig {
-  feeRatePpm: bigint; // 300 / 1000000 = 0.0003 for 0.03%
+  feeRate: number; // 3 = 0.03%
   tickSpacing: number; // e.g., 1 or 10 or 60
-  initPrice: Decimal; // token1/token0 price
+  sqrtPriceX64: bigint; // Q64.64
+  feeDenominator?: number; // optional; default 10000 (bps). Some pools use 100000
 }
 
 export interface SwapArgs {
@@ -36,6 +37,13 @@ export interface MintByAmountsArgs {
   upper: number;
   amount0: Decimal; // token0 budget
   amount1: Decimal; // token1 budget
+}
+
+export interface MintExactLiquidityArgs {
+  owner: Address;
+  lower: number;
+  upper: number;
+  liquidity: Decimal; // exact liquidity from event
 }
 
 export interface BurnArgs {
@@ -58,7 +66,7 @@ class TickInfo {
   }
 }
 
-class PositionKey {
+export class PositionKey {
   owner: Address;
   lower: number;
   upper: number;
@@ -85,6 +93,15 @@ class Position {
 }
 
 /***************** Math helpers *****************/
+// Convert signed 32-bit integer to proper tick value
+export function convertSigned32BitToTick(bits: number): number {
+  // Convert unsigned 32-bit to signed 32-bit
+  if (bits >= 0x80000000) {
+    return bits - 0x100000000;
+  }
+  return bits;
+}
+
 export function tickToPrice(tick: number): Decimal {
   return D(1.0001).pow(tick);
 }
@@ -130,26 +147,40 @@ function amountsForLiquidity(
   sqrtB: bigint,
   L: Decimal
 ): { amount0: Decimal; amount1: Decimal } {
-  const sa = Decimal.min(D(sqrtA.toString()), D(sqrtB.toString()));
-  const sb = Decimal.max(D(sqrtA.toString()), D(sqrtB.toString()));
-  const sp = D(sqrtP.toString());
-  const saR = sa.div(Q64),
-    sbR = sb.div(Q64),
-    spR = sp.div(Q64);
+  const sa = sqrtA < sqrtB ? sqrtA : sqrtB;
+  const sb = sqrtA < sqrtB ? sqrtB : sqrtA;
+  const sp = sqrtP;
+  const LBig = BigInt(L.toFixed(0));
 
-  if (sp.lte(sa)) {
-    // all in token0
-    const amount0 = L.mul(sbR.sub(saR)).div(saR.mul(sbR));
-    return { amount0, amount1: D(0) };
-  } else if (sp.gte(sb)) {
-    // all in token1
-    const amount1 = L.mul(sbR.sub(saR));
-    return { amount0: D(0), amount1 };
+  if (sp <= sa) {
+    // all in token0: amount0 = L * (sb - sa) / (sa * sb)
+    const deltaSqrt = sb - sa;
+    const sqrtProduct = sa * sb;
+    const amount0Big = mulDivFloor(LBig * (1n << 64n), deltaSqrt, sqrtProduct);
+    return { amount0: D(amount0Big.toString()), amount1: D(0) };
+  } else if (sp >= sb) {
+    // all in token1: amount1 = L * (sb - sa)
+    const deltaSqrt = sb - sa;
+    const amount1Big = mulDivFloor(LBig, deltaSqrt, 1n << 64n);
+    return { amount0: D(0), amount1: D(amount1Big.toString()) };
   } else {
-    // both
-    const amount0 = L.mul(sbR.sub(spR)).div(spR.mul(sbR));
-    const amount1 = L.mul(spR.sub(saR));
-    return { amount0, amount1 };
+    // both tokens
+    // amount0 = L * (sb - sp) / (sp * sb)
+    // All sqrt prices are Q64.64, so we need to be careful with the math
+    // amount0 = L * (sb - sp) / (sp * sb / 2^64)
+    // = L * (sb - sp) * 2^64 / (sp * sb)
+    const deltaSqrt0 = sb - sp;
+    const sqrtProduct = sp * sb;
+    const amount0Big = mulDivFloor(LBig * (1n << 64n), deltaSqrt0, sqrtProduct);
+
+    // amount1 = L * (sp - sa) / 2^64
+    const deltaSqrt1 = sp - sa;
+    const amount1Big = mulDivFloor(LBig, deltaSqrt1, 1n << 64n);
+
+    return {
+      amount0: D(amount0Big.toString()),
+      amount1: D(amount1Big.toString()),
+    };
   }
 }
 
@@ -180,11 +211,12 @@ function liquidityForAmounts(
 /***************** Pool core *****************/
 export class CLMM {
   // State
-  feeRatePpm: bigint;
-  tickSpacing: number;
-  sqrtPriceX64: bigint;
-  currentTick: number;
-  liquidity: Decimal; // active liquidity in current tick
+  feeRate: number = 0; // fee rate, 3 = 0.03%,
+  tickSpacing: number = 1;
+  sqrtPriceX64: bigint = 0n; // Q64.64
+  currentTick: number = 0;
+  feeDenominator: number = 10000; // default bps; some pools use 100000
+  liquidity: Decimal = D(0); // active liquidity in current tick
   feeGrowthGlobal0X128: bigint = 0n; // Q128.128-like accumulators via bigint ratio (numerator)
   feeGrowthGlobal1X128: bigint = 0n;
 
@@ -192,18 +224,23 @@ export class CLMM {
   ticks: Map<number, TickInfo> = new Map();
   positions: Map<string, Position> = new Map();
 
+  // Track min/max initialized ticks for efficient boundary checking
+  minInitializedTick: number = 887272;
+  maxInitializedTick: number = -887272;
+
   static make(cfg: PoolConfig): CLMM {
     const c = new CLMM();
-    c.feeBps = cfg.feeBps;
+    c.feeRate = cfg.feeRate;
     c.tickSpacing = cfg.tickSpacing;
-    c.sqrtPriceX64 = priceToSqrtPriceX64(cfg.initPrice);
-    c.currentTick = priceToTick(cfg.initPrice);
+    c.sqrtPriceX64 = cfg.sqrtPriceX64;
+    c.currentTick = priceToTick(sqrtPriceX64ToPrice(cfg.sqrtPriceX64));
+    if (cfg.feeDenominator) c.feeDenominator = cfg.feeDenominator;
     c.liquidity = D(0);
     return c;
   }
 
   // ----- Mint -----
-  mint(args: MintByAmountsArgs): string {
+  mint(args: MintByAmountsArgs): { id: string; liquidity: Decimal } {
     this._validateRange(args.lower, args.upper);
     const sa = tickToSqrtPriceX64(args.lower);
     const sb = tickToSqrtPriceX64(args.upper);
@@ -229,6 +266,10 @@ export class CLMM {
     tL.liquidityNet = tL.liquidityNet.add(L);
     tU.liquidityNet = tU.liquidityNet.sub(L);
 
+    // Update tick boundaries
+    this.minInitializedTick = Math.min(this.minInitializedTick, args.lower);
+    this.maxInitializedTick = Math.max(this.maxInitializedTick, args.upper);
+
     // if inside active range, add to pool active liquidity
     if (this.currentTick >= args.lower && this.currentTick < args.upper) {
       this.liquidity = this.liquidity.add(L);
@@ -248,7 +289,47 @@ export class CLMM {
     }
     pos.liquidity = pos.liquidity.add(L);
 
-    return key.id();
+    return { id: key.id(), liquidity: L };
+  }
+
+  // ----- Mint with exact liquidity (for event replay) -----
+  mintExactLiquidity(args: MintExactLiquidityArgs): {
+    id: string;
+    liquidity: Decimal;
+  } {
+    this._validateRange(args.lower, args.upper);
+    const L = args.liquidity;
+
+    // update tick liquidityNet
+    const tL = this._getOrCreateTick(args.lower);
+    const tU = this._getOrCreateTick(args.upper);
+    tL.liquidityNet = tL.liquidityNet.add(L);
+    tU.liquidityNet = tU.liquidityNet.sub(L);
+
+    // Update tick boundaries
+    this.minInitializedTick = Math.min(this.minInitializedTick, args.lower);
+    this.maxInitializedTick = Math.max(this.maxInitializedTick, args.upper);
+
+    // if inside active range, add to pool active liquidity
+    if (this.currentTick >= args.lower && this.currentTick < args.upper) {
+      this.liquidity = this.liquidity.add(L);
+    }
+
+    // position
+    const key = new PositionKey(args.owner, args.lower, args.upper);
+    const pos = this._getOrCreatePosition(key);
+    // initialize fee growth inside baselines
+    const { feeInside0X128, feeInside1X128 } = this._feeGrowthInsideX128(
+      args.lower,
+      args.upper
+    );
+    if (pos.liquidity.eq(0)) {
+      pos.feeGrowthInside0LastX128 = feeInside0X128;
+      pos.feeGrowthInside1LastX128 = feeInside1X128;
+    }
+    pos.liquidity = pos.liquidity.add(L);
+
+    return { id: key.id(), liquidity: L };
   }
 
   // ----- Burn -----
@@ -270,6 +351,7 @@ export class CLMM {
     // compute amounts returned (no fee) for removing L
     const sa = tickToSqrtPriceX64(a.lower);
     const sb = tickToSqrtPriceX64(a.upper);
+
     const { amount0, amount1 } = amountsForLiquidity(
       this.sqrtPriceX64,
       sa,
@@ -310,6 +392,64 @@ export class CLMM {
     return { fees0: f0, fees1: f1 };
   }
 
+  // ----- Increase global fee growth (for flash swap repayments) -----
+  increaseFee(feeAmount0: Decimal, feeAmount1: Decimal): void {
+    // Add fees to global fee growth accumulators
+    // This is used when flash swaps repay with fees in the same token
+
+    // Safety check: ensure fee amounts are non-negative
+    if (feeAmount0.lt(0) || feeAmount1.lt(0)) {
+      console.error(
+        `⚠️  Warning: Negative fee amounts in increaseFee: fee0=${feeAmount0.toString()}, fee1=${feeAmount1.toString()}`
+      );
+      return;
+    }
+
+    if (this.liquidity.gt(0)) {
+      if (feeAmount0.gt(0)) {
+        const feeGrowth0 = feeAmount0
+          .mul(D(Q128n.toString()))
+          .div(this.liquidity);
+        this.feeGrowthGlobal0X128 += BigInt(feeGrowth0.floor().toFixed(0));
+      }
+      if (feeAmount1.gt(0)) {
+        const feeGrowth1 = feeAmount1
+          .mul(D(Q128n.toString()))
+          .div(this.liquidity);
+        this.feeGrowthGlobal1X128 += BigInt(feeGrowth1.floor().toFixed(0));
+      }
+    } else if (feeAmount0.gt(0) || feeAmount1.gt(0)) {
+      // Log warning if trying to add fees when liquidity is zero
+      console.error(
+        `⚠️  Warning: Attempting to add fees with zero liquidity: fee0=${feeAmount0.toString()}, fee1=${feeAmount1.toString()}`
+      );
+    }
+  }
+
+  // ----- Estimate fees for a position by liquidity and tick range -----
+  estimateFees(
+    lower: number,
+    upper: number,
+    liquidity: Decimal
+  ): { fees0: Decimal; fees1: Decimal } {
+    // Get the fee growth inside the tick range
+    const { feeInside0X128, feeInside1X128 } = this._feeGrowthInsideX128(
+      lower,
+      upper
+    );
+
+    // Calculate fees: feeGrowthInside * liquidity / 2^128
+    const fees0 = D(feeInside0X128.toString())
+      .mul(liquidity)
+      .div(D(Q128n.toString()));
+
+    const fees1 = D(feeInside1X128.toString())
+      .mul(liquidity)
+      .div(D(Q128n.toString()));
+
+    return { fees0, fees1 };
+  }
+
   // ----- Swap core (exact in; no flash/observations) -----
   swap(a: SwapArgs): {
     amountIn: Decimal;
@@ -317,7 +457,7 @@ export class CLMM {
     feePaid: Decimal;
     ticksCrossed: number;
   } {
-    if (this.liquidity.lte(0)) throw new Error("no active liquidity");
+    // Note: Allow swaps even with 0 liquidity - swap will cross ticks to find liquidity
 
     const priceLimitX64 = a.priceLimit
       ? priceToSqrtPriceX64(a.priceLimit)
@@ -330,8 +470,26 @@ export class CLMM {
     let amountOut = D(0);
     let feePaid = D(0);
     let ticksCrossed = 0;
+    let loopCount = 0;
+    const MAX_LOOP = 5000000; // Safety limit to prevent infinite loops (5M should handle extreme swaps)
 
-    while (amountSpecifiedRemaining.gt(0)) {
+    while (amountSpecifiedRemaining.gt(0) && loopCount < MAX_LOOP) {
+      loopCount++;
+
+      // If no liquidity, immediately cross to next tick
+      if (this.liquidity.lte(0)) {
+        const nextTick = a.zeroForOne
+          ? this._nextInitializedTickLeft(this.currentTick)
+          : this._nextInitializedTickRight(this.currentTick);
+
+        ticksCrossed++;
+        this._crossTick(nextTick);
+
+        // If we reached boundary ticks, we've exhausted all liquidity
+        // The price will be at the boundary, continue the loop to consume remaining amount
+        continue;
+      }
+
       const nextTick = a.zeroForOne
         ? this._nextInitializedTickLeft(this.currentTick)
         : this._nextInitializedTickRight(this.currentTick);
@@ -352,7 +510,7 @@ export class CLMM {
         this.sqrtPriceX64,
         sqrtTargetX64,
         this.liquidity,
-        this.feeBps,
+        this.feeRate,
         a.zeroForOne,
         amountSpecifiedRemaining
       );
@@ -362,6 +520,18 @@ export class CLMM {
       amountOut = amountOut.add(step.amountOut);
       feePaid = feePaid.add(step.feeAmount);
       amountSpecifiedRemaining = amountSpecifiedRemaining.sub(step.consumed);
+
+      // Update global fee growth accumulators
+      if (this.liquidity.gt(0)) {
+        const feeGrowth = D(step.feeAmount.toString())
+          .mul(D(Q128n.toString()))
+          .div(this.liquidity);
+        if (a.zeroForOne) {
+          this.feeGrowthGlobal0X128 += BigInt(feeGrowth.floor().toFixed(0));
+        } else {
+          this.feeGrowthGlobal1X128 += BigInt(feeGrowth.floor().toFixed(0));
+        }
+      }
 
       if (
         this.sqrtPriceX64 === sqrtTargetX64 &&
@@ -374,6 +544,16 @@ export class CLMM {
         // reached price limit or fully consumed
         break;
       }
+    }
+
+    if (loopCount >= MAX_LOOP) {
+      console.error(
+        `⚠️  Swap loop exceeded MAX_LOOP (${MAX_LOOP}), possible infinite loop. ` +
+          `Remaining: ${amountSpecifiedRemaining.toString()}, ` +
+          `Ticks crossed: ${ticksCrossed}, ` +
+          `Current tick: ${this.currentTick}, ` +
+          `Current liquidity: ${this.liquidity.toString()}`
+      );
     }
 
     return { amountIn, amountOut, feePaid, ticksCrossed };
@@ -472,29 +652,47 @@ export class CLMM {
   private _nextInitializedTickRight(fromTick: number): number {
     // naive scan; optimize with bitmaps in production
     let t = fromTick + this.tickSpacing;
-    let best = fromTick + this.tickSpacing;
+
+    // If already at or beyond max initialized tick, return a very large tick to signal boundary
+    if (t > this.maxInitializedTick) {
+      return 887272; // Max possible tick
+    }
+
     for (let i = 0; i < 500000; i++) {
       // safety bound for tests
+      if (t > this.maxInitializedTick) {
+        // No more initialized ticks, return max tick as boundary
+        return 887272;
+      }
       if (this.ticks.has(t)) {
-        best = t;
-        break;
+        return t;
       }
       t += this.tickSpacing;
     }
-    return best;
+    // If we exhausted the loop, return the last position we checked
+    return t;
   }
 
   private _nextInitializedTickLeft(fromTick: number): number {
     let t = fromTick - this.tickSpacing;
-    let best = fromTick - this.tickSpacing;
+
+    // If already at or beyond min initialized tick, return a very small tick to signal boundary
+    if (t < this.minInitializedTick) {
+      return -887272; // Min possible tick
+    }
+
     for (let i = 0; i < 500000; i++) {
+      if (t < this.minInitializedTick) {
+        // No more initialized ticks, return min tick as boundary
+        return -887272;
+      }
       if (this.ticks.has(t)) {
-        best = t;
-        break;
+        return t;
       }
       t -= this.tickSpacing;
     }
-    return best;
+    // If we exhausted the loop, return the last position we checked
+    return t;
   }
 
   private _computeSwapStep(
@@ -517,8 +715,8 @@ export class CLMM {
     const s0 = D(sqrtPStartX64.toString()).div(Q64);
     const sT = D(sqrtPTargetX64.toString()).div(Q64);
 
-    // fee fraction
-    const fee = D(feeBps).div(10000);
+    // fee fraction (use instance settings; feeBps param kept for signature stability)
+    const fee = D(this.feeRate).div(this.feeDenominator);
 
     // How much input to move from s0 to sT inside this tick-range?
     // Formulas:
@@ -547,7 +745,10 @@ export class CLMM {
 
     if (amountRemaining.lt(amountInWithFee)) {
       // we cannot reach target; solve for next sqrt given partial input
-      const effectiveIn = amountRemaining.mul(D(1).sub(fee)); // after fee
+      // On-chain calculates fee FIRST, then uses net amount
+      const feeAmt = amountRemaining.mul(fee).ceil();
+      const effectiveIn = amountRemaining.sub(feeAmt); // net after fee deduction
+
       let nextSqrt: Decimal;
       if (zeroForOne) {
         // effectiveIn = L * (s0 - s1) / (s1*s0) => solve for s1
@@ -560,29 +761,59 @@ export class CLMM {
         nextSqrt = s0.add(effectiveIn.div(L));
       }
 
-      const nextSqrtX64 = BigInt(nextSqrt.mul(Q64).toFixed(0));
-      // recompute realized amounts between s0 and nextSqrt
+      // Use floor rounding to match on-chain behavior (not round-to-nearest)
+      const nextSqrtX64 = BigInt(nextSqrt.mul(Q64).floor().toFixed(0));
+
+      // Recompute amounts using the floored sqrt to match on-chain precision
+      const nextSqrtFloored = D(nextSqrtX64.toString()).div(Q64);
+
       if (zeroForOne) {
-        const dx = L.mul(s0.sub(nextSqrt)).div(nextSqrt.mul(s0));
-        const dy = L.mul(s0.sub(nextSqrt));
-        const feeAmt = dx.mul(fee).div(D(1).sub(fee)); // input side fee gross-up
+        // Compute amounts using bigint for exact floor behavior
+        const LBig = BigInt(L.toFixed(0));
+        const s0X64 = BigInt(s0.mul(Q64).toFixed(0));
+        const deltaSqrt = s0X64 - nextSqrtX64;
+        const sqrtProduct = nextSqrtX64 * s0X64;
+
+        // dx = mulDiv(L, deltaSqrt, sqrtProduct) with Q64.64 adjustment
+        const dxBig = mulDivFloor(LBig * (1n << 64n), deltaSqrt, sqrtProduct);
+        const dx = D(dxBig.toString());
+
+        // dy = mulDiv(L, deltaSqrt, 2^64)
+        const dyBig = mulDivFloor(LBig, deltaSqrt, 1n << 64n);
+        const dy = D(dyBig.toString());
+
         return {
           nextSqrtPriceX64: nextSqrtX64,
           amountIn: dx.add(feeAmt),
           amountOut: dy, // token1 out
           feeAmount: feeAmt,
-          consumed: dx.add(feeAmt),
+          consumed: amountRemaining,
         };
       } else {
-        const dyIn = L.mul(nextSqrt.sub(s0));
-        const dxOut = L.mul(nextSqrt.sub(s0)).div(nextSqrt.mul(s0));
-        const feeAmt = dyIn.mul(fee).div(D(1).sub(fee));
+        // Compute amounts using bigint for exact floor behavior
+        const LBig = BigInt(L.toFixed(0));
+        const s0X64 = BigInt(s0.mul(Q64).toFixed(0));
+        const deltaSqrt = nextSqrtX64 - s0X64;
+        const sqrtProduct = nextSqrtX64 * s0X64;
+
+        // dyIn = mulDiv(L, deltaSqrt, 2^64)
+        const dyInBig = mulDivFloor(LBig, deltaSqrt, 1n << 64n);
+        const dyIn = D(dyInBig.toString());
+
+        // dxOut = mulDiv(L, deltaSqrt, sqrtProduct) with Q64.64 adjustment
+        const dxOutBig = mulDivFloor(
+          LBig * (1n << 64n),
+          deltaSqrt,
+          sqrtProduct
+        );
+        const dxOut = D(dxOutBig.toString());
+
         return {
           nextSqrtPriceX64: nextSqrtX64,
           amountIn: dyIn.add(feeAmt),
           amountOut: dxOut, // token0 out
           feeAmount: feeAmt,
-          consumed: dyIn.add(feeAmt),
+          consumed: amountRemaining,
         };
       }
     } else {
@@ -615,7 +846,7 @@ export class CLMM {
       owed1: p.tokensOwed1.toString(),
     }));
     return {
-      feeBps: this.feeBps,
+      feeBps: this.feeRate,
       tickSpacing: this.tickSpacing,
       price: sqrtPriceX64ToPrice(this.sqrtPriceX64).toString(),
       sqrtPriceX64: this.sqrtPriceX64.toString(),

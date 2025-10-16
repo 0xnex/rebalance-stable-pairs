@@ -358,7 +358,7 @@ export class ThreeBandRebalancerStrategy {
     };
   }
 
-  private rotateUp(timestamp: number): boolean {
+  private rotateUp(timestamp: number, targetTick?: number): boolean {
     if (this.segments.length === 0 || this.segmentWidth === null) {
       return false;
     }
@@ -374,12 +374,32 @@ export class ThreeBandRebalancerStrategy {
     }
 
     const lastSegment = this.segments[this.segments.length - 1];
-    const baseLower =
-      this.segments.length > 0 && lastSegment
-        ? lastSegment.tickUpper
-        : removed.tickUpper;
-    const newLower = baseLower;
-    const newUpper = newLower + this.segmentWidth;
+    let newLower: number;
+    let newUpper: number;
+
+    if (targetTick !== undefined && lastSegment) {
+      // Smart placement: ensure new band covers the target tick
+      const currentTick = targetTick;
+
+      // If price is way above our bands, place new band to cover it
+      if (currentTick >= lastSegment.tickUpper) {
+        // Center the new band around current tick
+        newLower = currentTick - Math.floor(this.segmentWidth / 2);
+        newUpper = newLower + this.segmentWidth;
+      } else {
+        // Normal contiguous placement
+        newLower = lastSegment.tickUpper;
+        newUpper = newLower + this.segmentWidth;
+      }
+    } else {
+      // Fallback: contiguous placement
+      const baseLower =
+        this.segments.length > 0 && lastSegment
+          ? lastSegment.tickUpper
+          : removed.tickUpper;
+      newLower = baseLower;
+      newUpper = newLower + this.segmentWidth;
+    }
 
     try {
       const replacement = this.openSegment(newLower, newUpper, timestamp);
@@ -406,7 +426,7 @@ export class ThreeBandRebalancerStrategy {
     }
   }
 
-  private rotateDown(timestamp: number): boolean {
+  private rotateDown(timestamp: number, targetTick?: number): boolean {
     if (this.segments.length === 0 || this.segmentWidth === null) {
       return false;
     }
@@ -422,12 +442,32 @@ export class ThreeBandRebalancerStrategy {
     }
 
     const firstSegment = this.segments[0];
-    const baseUpper =
-      this.segments.length > 0 && firstSegment
-        ? firstSegment.tickLower
-        : removed.tickLower;
-    const newUpper = baseUpper;
-    const newLower = newUpper - this.segmentWidth;
+    let newLower: number;
+    let newUpper: number;
+
+    if (targetTick !== undefined && firstSegment) {
+      // Smart placement: ensure new band covers the target tick
+      const currentTick = targetTick;
+
+      // If price is way below our bands, place new band to cover it
+      if (currentTick < firstSegment.tickLower) {
+        // Center the new band around current tick
+        newLower = currentTick - Math.floor(this.segmentWidth / 2);
+        newUpper = newLower + this.segmentWidth;
+      } else {
+        // Normal contiguous placement
+        newUpper = firstSegment.tickLower;
+        newLower = newUpper - this.segmentWidth;
+      }
+    } else {
+      // Fallback: contiguous placement
+      const baseUpper =
+        this.segments.length > 0 && firstSegment
+          ? firstSegment.tickLower
+          : removed.tickLower;
+      newUpper = baseUpper;
+      newLower = newUpper - this.segmentWidth;
+    }
 
     try {
       const replacement = this.openSegment(newLower, newUpper, timestamp);
@@ -700,10 +740,40 @@ export class ThreeBandRebalancerStrategy {
       };
     }
 
-    const rotated =
-      direction === "up" ? this.rotateUp(now) : this.rotateDown(now);
+    // Rotate multiple times if needed to catch up with price
+    let rotationCount = 0;
+    const maxRotations = this.segments.length * 2; // Safety limit
 
-    if (!rotated) {
+    while (rotationCount < maxRotations) {
+      const firstSeg = this.segments[0];
+      const lastSeg = this.segments[this.segments.length - 1];
+
+      if (!firstSeg || !lastSeg) break;
+
+      // Check if we're now in range
+      const priceAbove = currentTick >= lastSeg.tickUpper;
+      const priceBelow = currentTick < firstSeg.tickLower;
+
+      if (!priceAbove && !priceBelow) {
+        // We've caught up - at least one band covers the price
+        break;
+      }
+
+      // Continue rotating in the same direction, passing target tick for smart placement
+      const rotated =
+        direction === "up"
+          ? this.rotateUp(now, currentTick)
+          : this.rotateDown(now, currentTick);
+
+      if (!rotated) {
+        // If rotation fails, stop trying
+        break;
+      }
+
+      rotationCount++;
+    }
+
+    if (rotationCount === 0) {
       if (isFast) this.lastFastCheck = now;
       if (!isFast || slowDue) this.lastSlowCheck = now;
       return {
@@ -723,9 +793,14 @@ export class ThreeBandRebalancerStrategy {
 
     this.captureFeeBaseline();
 
+    const rotationMsg =
+      rotationCount === 1
+        ? `Rotated ${direction} 1 band to cover tick ${currentTick}`
+        : `Rotated ${direction} ${rotationCount} bands to catch up with tick ${currentTick}`;
+
     return {
       action: "rebalance",
-      message: `Rotated ${direction} segment to cover tick ${currentTick}`,
+      message: rotationMsg,
       segments: this.getSegments(),
     };
   }

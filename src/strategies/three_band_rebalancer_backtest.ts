@@ -536,17 +536,56 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     async onFinish(ctx) {
       manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
+
+      // Log state before closing positions
+      const beforeTotals = manager.getTotals();
+      ctx.logger?.log?.(
+        `[three-band] before closing: positions=${beforeTotals.positions} amountA=${beforeTotals.amountA} amountB=${beforeTotals.amountB} cashA=${beforeTotals.cashAmountA} cashB=${beforeTotals.cashAmountB}`
+      );
+      ctx.logger?.log?.(
+        `[three-band] initial investment: initialA=${beforeTotals.initialAmountA} initialB=${beforeTotals.initialAmountB}`
+      );
+
+      // Close all positions
       for (const segment of strategy.getSegments()) {
         manager.removePosition(segment.id, {
           tokenA: env.actionCostTokenA > 0 ? env.actionCostTokenA : undefined,
           tokenB: env.actionCostTokenB > 0 ? env.actionCostTokenB : undefined,
         });
       }
+
+      // Log final state after closing positions
       const totals = manager.getTotals();
+      ctx.logger?.log?.(`[three-band] FINISH TOTALS:`);
       ctx.logger?.log?.(
-        `[three-band] finish totals amountA=${totals.amountA.toString()} amountB=${totals.amountB.toString()} feesOwed0=${totals.feesOwed0.toString()} feesOwed1=${totals.feesOwed1.toString()} collected0=${totals.collectedFees0.toString()} collected1=${totals.collectedFees1.toString()} costA=${totals.totalCostTokenA.toFixed(
+        `  Positions (in open positions): amountA=${totals.amountA} amountB=${totals.amountB}`
+      );
+      ctx.logger?.log?.(
+        `  Cash (free balance): cashA=${totals.cashAmountA} cashB=${totals.cashAmountB}`
+      );
+      ctx.logger?.log?.(
+        `  Fees Owed: feesOwed0=${totals.feesOwed0} feesOwed1=${totals.feesOwed1}`
+      );
+      ctx.logger?.log?.(
+        `  Fees Collected: collected0=${totals.collectedFees0} collected1=${totals.collectedFees1}`
+      );
+      ctx.logger?.log?.(
+        `  Costs: costA=${totals.totalCostTokenA.toFixed(
           4
         )} costB=${totals.totalCostTokenB.toFixed(4)}`
+      );
+      ctx.logger?.log?.(
+        `  TOTAL VALUE: ${
+          Number(totals.cashAmountA) +
+          Number(totals.amountA) +
+          Number(totals.collectedFees0) +
+          Number(totals.feesOwed0)
+        } A + ${
+          Number(totals.cashAmountB) +
+          Number(totals.amountB) +
+          Number(totals.collectedFees1) +
+          Number(totals.feesOwed1)
+        } B`
       );
     },
   };
