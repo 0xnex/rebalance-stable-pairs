@@ -220,7 +220,27 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const tick = pool.tickCurrent;
         const price = pool.price;
         const totals = manager.getTotals();
-        const positions = manager.getAllPositions();
+        // Ensure Position 1 in CSV refers to the band covering current price
+        // Sort positions so index 0 is the in-range band (or the closest to current tick)
+        let positions = manager.getAllPositions();
+        try {
+            const currentTick = pool.tickCurrent;
+            positions = positions
+                .slice()
+                .sort((a, b) => {
+                    const aIn = currentTick >= a.tickLower && currentTick < a.tickUpper ? 1 : 0;
+                    const bIn = currentTick >= b.tickLower && currentTick < b.tickUpper ? 1 : 0;
+                    if (aIn !== bIn) return bIn - aIn; // in-range first
+                    const aMid = Math.floor((a.tickLower + a.tickUpper) / 2);
+                    const bMid = Math.floor((b.tickLower + b.tickUpper) / 2);
+                    const aDist = Math.abs(currentTick - aMid);
+                    const bDist = Math.abs(currentTick - bMid);
+                    if (aDist !== bDist) return aDist - bDist; // closer first
+                    return a.tickLower - b.tickLower; // stable sort
+                });
+        } catch {
+            // ignore sorting errors, keep original order
+        }
 
         // Calculate total value and breakdown (keep raw values)
         const amountA = Number(totals.amountA);
