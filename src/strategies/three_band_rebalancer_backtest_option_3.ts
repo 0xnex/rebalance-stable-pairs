@@ -34,6 +34,7 @@ type EnvConfig = {
     volatilityWindowMs: number;
     momentumWindowSize: number;
     activeBandWeightPercent: number;
+    autoCollectIntervalMs: number;
     // Option 3 specific configs
     enableHierarchicalRebalancing: boolean;
     hierarchicalCooldownMs: number;
@@ -103,6 +104,7 @@ function readEnvConfig(): EnvConfig {
         volatilityWindowMs: 600_000,
         momentumWindowSize: 5,
         activeBandWeightPercent: 33.33, // Not used when enableDynamicAllocation=false
+        autoCollectIntervalMs: toNumber(process.env.THREEBAND_AUTO_COLLECT_MS, 0),
 
         // Option 3 specific configurations
         enableHierarchicalRebalancing: toNumber(process.env.THREEBAND_HIERARCHICAL, 1) === 1,
@@ -134,6 +136,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     let lastRebalanceTime = 0;
     let dailyRebalanceCount = 0;
     let lastRebalanceDate = new Date().toDateString();
+    let lastAutoCollectTime = 0;
 
     const config: Partial<ThreeBandRebalancerConfig> = {
         segmentCount: env.segmentCount,
@@ -159,6 +162,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         volatilityWindowMs: env.volatilityWindowMs,
         momentumWindowSize: env.momentumWindowSize,
         activeBandWeightPercent: env.activeBandWeightPercent,
+        autoCollectIntervalMs: Number(process.env.THREEBAND_AUTO_COLLECT_MS, 0),
     };
 
     const strategy = new ThreeBandRebalancerStrategy(manager, pool, config);
@@ -261,22 +265,13 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             }
         }
 
-        // Calculate fees using live per-position snapshot to avoid stale/zero totals
-        let liveFeesA = 0n;
-        let liveFeesB = 0n;
-        try {
-            for (const p of positions) {
-                const f = manager.calculatePositionFees(p.id);
-                liveFeesA += f.fee0;
-                liveFeesB += f.fee1;
-            }
-        } catch {
-            // ignore
-        }
+        // Calculate fees as (uncollected owed + collected) to avoid undercounting after updates
+        const feesOwedA = totals.feesOwed0 ?? 0n;
+        const feesOwedB = totals.feesOwed1 ?? 0n;
         const feesCollectedA = totals.collectedFees0 ?? 0n;
         const feesCollectedB = totals.collectedFees1 ?? 0n;
-        const totalFeesA = liveFeesA + feesCollectedA;
-        const totalFeesB = liveFeesB + feesCollectedB;
+        const totalFeesA = feesOwedA + feesCollectedA;
+        const totalFeesB = feesOwedB + feesCollectedB;
 
         // Determine rebalancing case for Option 3
         const rebalancingCase = getRebalancingCase(price);
@@ -344,16 +339,9 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 const pos = positions[i]!;
                 const posInRange =
                     tick >= pos.tickLower && tick < pos.tickUpper ? "1" : "0";
-                // Use live fee calculation snapshot to avoid stale owed fields
-                let posFeesA = "0";
-                let posFeesB = "0";
-                try {
-                    const fees = manager.calculatePositionFees(pos.id);
-                    posFeesA = fees.fee0.toString();
-                    posFeesB = fees.fee1.toString();
-                } catch {
-                    // ignore calculation errors; keep zeros
-                }
+                // Use tokensOwed which is updated by updateAllPositionFees() for accurate uncollected fees
+                const posFeesA = pos.tokensOwed0.toString();
+                const posFeesB = pos.tokensOwed1.toString();
                 const allocation = i === 0 ? env.position1AllocationPercent :
                     i === 1 ? env.position2AllocationPercent :
                         env.position3AllocationPercent;
@@ -513,6 +501,26 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         lastTimestamp = ctx.timestamp;
         manager.updateAllPositionFees();
         strategy.setCurrentTime(ctx.timestamp);
+
+        // Periodic auto-collection to realize fees even without rebalances
+        if (env.autoCollectIntervalMs > 0 && (ctx.timestamp - lastAutoCollectTime) >= env.autoCollectIntervalMs) {
+            const segments = strategy.getSegments();
+            let collectedAny = false;
+            for (const segment of segments) {
+                try {
+                    const fees = manager.collectFees(segment.id);
+                    if (fees && (fees.fee0 > 0n || fees.fee1 > 0n)) {
+                        collectedAny = true;
+                    }
+                } catch {
+                    // ignore failed collections
+                }
+            }
+            lastAutoCollectTime = ctx.timestamp;
+            if (collectedAny) {
+                log(ctx, "collect", `auto-collect executed every ${env.autoCollectIntervalMs}ms`);
+            }
+        }
 
         // Check Option 3 constraints before executing strategy
         const rebalanceCheck = canRebalance(ctx);

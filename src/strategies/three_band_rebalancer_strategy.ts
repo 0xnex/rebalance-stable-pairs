@@ -26,6 +26,7 @@ export interface ThreeBandRebalancerConfig {
   volatilityWindowMs?: number;
   momentumWindowSize?: number;
   activeBandWeightPercent?: number;
+  autoCollectIntervalMs?: number;
 }
 
 type SegmentState = {
