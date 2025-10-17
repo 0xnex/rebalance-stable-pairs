@@ -1,7 +1,7 @@
 import { Pool } from "../pool";
 import { VirtualPositionManager } from "../virtual_position_mgr";
 
-export interface ThreeBandRebalancerConfig {
+export interface ThreeBandRebalancerConfigOptionThree {
   segmentCount: number;
   segmentRangePercent: number;
   maxSwapSlippageBps: number;
@@ -26,6 +26,7 @@ export interface ThreeBandRebalancerConfig {
   volatilityWindowMs?: number;
   momentumWindowSize?: number;
   activeBandWeightPercent?: number;
+  autoCollectIntervalMs?: number;
 }
 
 type SegmentState = {
@@ -38,18 +39,18 @@ type SegmentState = {
   lastFeeCheckTime?: number;
 };
 
-export type ThreeBandAction =
+type ThreeBandAction =
   | { action: "none" | "wait"; message: string }
   | {
-      action: "create" | "rebalance";
-      message: string;
-      segments: SegmentState[];
-    };
+    action: "create" | "rebalance";
+    message: string;
+    segments: SegmentState[];
+  };
 
-export class ThreeBandRebalancerStrategy {
+export class ThreeBandRebalancerStrategyOptionThree {
   private readonly manager: VirtualPositionManager;
   private readonly pool: Pool;
-  private config: ThreeBandRebalancerConfig;
+  private config: ThreeBandRebalancerConfigOptionThree;
 
   private segments: SegmentState[] = [];
   private segmentWidth: number | null = null;
@@ -65,11 +66,42 @@ export class ThreeBandRebalancerStrategy {
   private volatilityWindow: Array<{ tick: number; timestamp: number }> = [];
   private tickHistory: number[] = [];
   private lastCompoundingCheck = 0;
+  private lastRepairAttempt = 0; // throttle repairs to avoid spamming opens
+
+  // Remove surplus segments, keeping exactly 3 closest to current tick
+  private trimToThreeSegments(now: number, currentTick: number) {
+    if (this.segments.length <= 3) return false;
+    const keep = this.segments
+      .slice()
+      .sort((a, b) => {
+        const amid = this.segmentMid(a);
+        const bmid = this.segmentMid(b);
+        return Math.abs(currentTick - amid) - Math.abs(currentTick - bmid);
+      })
+      .slice(0, 3)
+      .map((s) => s.id);
+
+    let changed = false;
+    const toRemove = this.segments.filter((s) => !keep.includes(s.id));
+    for (const seg of toRemove) {
+      try {
+        this.manager.removePosition(seg.id, this.getActionCost());
+        changed = true;
+      } catch {
+        // ignore failures
+      }
+    }
+    if (changed) {
+      this.segments = this.segments.filter((s) => keep.includes(s.id));
+      for (const s of this.segments) this.updateSegmentFeeTracking(s.id);
+    }
+    return changed;
+  }
 
   constructor(
     manager: VirtualPositionManager,
     pool: Pool,
-    config: Partial<ThreeBandRebalancerConfig> & {
+    config: Partial<ThreeBandRebalancerConfigOptionThree> & {
       checkIntervalMs?: number;
     } = {}
   ) {
@@ -134,6 +166,42 @@ export class ThreeBandRebalancerStrategy {
     const now = this.now();
     const currentTick = this.pool.tickCurrent;
 
+    // Hard guarantee: always maintain 3 bands. If fewer, try to repair first.
+    if (this.segments.length < 3) {
+      const cooldownMs = 300_000; // 5 minutes
+      const sinceLast = now - this.lastRepairAttempt;
+      if (sinceLast >= cooldownMs) {
+        this.lastRepairAttempt = now;
+        const repaired = this.ensureThreeBands(now, currentTick);
+        if (repaired) {
+          this.captureFeeBaseline();
+          return {
+            action: "rebalance",
+            message: `Restored missing bands to maintain 3 positions`,
+            segments: this.getSegments(),
+          };
+        }
+      }
+      const remaining = Math.max(0, (this.lastRepairAttempt + 300_000) - now);
+      return {
+        action: "wait",
+        message: `Repair cooldown ${Math.ceil(remaining / 1000)}s before retry to open missing bands`,
+      };
+    }
+
+    // If we somehow have more than 3, trim to 3 closest to price
+    if (this.segments.length > 3) {
+      const trimmed = this.trimToThreeSegments(now, currentTick);
+      if (trimmed) {
+        this.captureFeeBaseline();
+        return {
+          action: "rebalance",
+          message: `Trimmed surplus bands to maintain exactly 3 positions`,
+          segments: this.getSegments(),
+        };
+      }
+    }
+
     // Update tracking data
     this.updateVolatilityTracking(currentTick, now);
     this.updateTickHistory(currentTick);
@@ -181,6 +249,84 @@ export class ThreeBandRebalancerStrategy {
     }
 
     if (!priceAbove && !priceBelow) {
+      // Case 3: Position 1 (middle) still in-range -> No rebalance.
+      // Case 1: Only middle band out-of-range -> Rebalance middle band only.
+
+      // When we have at least 3 bands, treat the middle index as Position 1
+      if (this.segments.length >= 3 && this.segmentWidth !== null) {
+        const midIndex = Math.floor(this.segments.length / 2);
+        const middle = this.segments[midIndex];
+        if (middle) {
+          const middleInRange =
+            currentTick >= middle.tickLower && currentTick < middle.tickUpper;
+          if (!middleInRange) {
+            // Dwell guard for the middle band
+            if (now - middle.lastMoved < this.config.minSegmentDwellMs) {
+              const remaining =
+                this.config.minSegmentDwellMs - (now - middle.lastMoved);
+              return {
+                action: "wait",
+                message: `Middle band dwell guard active, ${Math.ceil(
+                  Math.max(0, remaining) / 1000
+                )}s remaining before middle rebalance`,
+              };
+            }
+
+            // Rebalance only the middle band to cover current tick.
+            // Also ensure the new range overlaps both neighbors so middle is always the band covering price.
+            // Compute contiguous layout around current tick using fixed segmentWidth.
+            const newMiddleLower = currentTick - Math.floor(this.segmentWidth / 2);
+            const newMiddleUpper = newMiddleLower + this.segmentWidth;
+            const newLowerBand = { lower: newMiddleLower - this.segmentWidth, upper: newMiddleLower };
+            const newUpperBand = { lower: newMiddleUpper, upper: newMiddleUpper + this.segmentWidth };
+
+            try {
+              // remove and reopen the middle position
+              this.manager.removePosition(middle.id, this.getActionCost());
+              const replacement = this.openSegment(
+                newMiddleLower,
+                newMiddleUpper,
+                now
+              );
+              // Replace middle segment in-place to preserve ordering
+              this.segments[midIndex] = replacement;
+
+              // Case 1 requirement: do not touch positions 2 and 3
+
+              // Update fee tracking for all segments after rebalance
+              for (const segment of this.segments) {
+                this.updateSegmentFeeTracking(segment.id);
+              }
+
+              this.captureFeeBaseline();
+              return {
+                action: "rebalance",
+                message: `Rebalanced middle band to cover tick ${currentTick}`,
+                segments: this.getSegments(),
+              };
+            } catch (err) {
+              return {
+                action: "none",
+                message: `Failed to rebalance middle band: ${(err as Error).message
+                  }`,
+              };
+            }
+          } else {
+            // Middle in range: ensure we still have 3 contiguous bands.
+            // If some bands were missing due to previous failures, try to restore them
+            const repaired = this.ensureThreeBands(now, currentTick);
+            if (repaired) {
+              this.captureFeeBaseline();
+              return {
+                action: "rebalance",
+                message: `Restored missing bands around middle to maintain 3 positions`,
+                segments: this.getSegments(),
+              };
+            }
+          }
+        }
+      }
+
       // Check for predictive rotation
       if (this.config.enablePredictiveRotation) {
         const predictiveDirection = this.shouldPreemptivelyRotate(currentTick);
@@ -325,8 +471,7 @@ export class ThreeBandRebalancerStrategy {
       } catch (error) {
         // Log but continue - allows partial deployment if some positions fail
         console.warn(
-          `[three-band] Failed to open position [${descriptor.lower},${
-            descriptor.upper
+          `[three-band] Failed to open position [${descriptor.lower},${descriptor.upper
           }]: ${error instanceof Error ? error.message : String(error)}`
         );
         // Continue trying to open other positions
@@ -336,20 +481,37 @@ export class ThreeBandRebalancerStrategy {
     this.segments = opened.sort((a, b) => a.tickLower - b.tickLower);
     this.segmentWidth = width;
 
+    // Try to ensure we end with 3 bands even if some opens failed
+    if (opened.length < segmentCount) {
+      // Apply the same 5-minute cooldown between repair attempts during seed
+      const cooldownMs = 300_000; // 5 minutes
+      const sinceLast = now - this.lastRepairAttempt;
+      if (sinceLast >= cooldownMs) {
+        this.lastRepairAttempt = now;
+        const repaired = this.ensureThreeBands(now, this.pool.tickCurrent);
+        if (repaired) {
+          this.segments.sort((a, b) => a.tickLower - b.tickLower);
+        }
+      }
+    }
+
     // Check if we opened at least one position
-    if (opened.length === 0) {
+    if (this.segments.length === 0) {
       return {
         action: "none",
         message: `Failed to open any positions - slippage too high or insufficient capital`,
       };
     }
 
+    // Ensure we never exceed 3 after seed/repair
+    if (this.segments.length > 3) {
+      this.trimToThreeSegments(now, this.pool.tickCurrent);
+    }
+
     const successMessage =
-      opened.length < segmentCount
-        ? `Seeded ${opened.length}/${segmentCount} bands (some failed due to slippage/capital)`
-        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
-            6
-          )} (width: ${rangePercent.toFixed(4)}%)`;
+      this.segments.length < segmentCount
+        ? `Seeded ${this.segments.length}/${segmentCount} bands (will keep repairing to reach 3)`
+        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(6)} (width: ${rangePercent.toFixed(4)}%)`;
 
     return {
       action: "create",
@@ -515,69 +677,99 @@ export class ThreeBandRebalancerStrategy {
   ): SegmentState {
     const slippages = this.buildSlippageAttempts();
     const totals = this.manager.getTotals();
-    let availableA = totals.cashAmountA ?? totals.amountA;
-    let availableB = totals.cashAmountB ?? totals.amountB;
+    const baseAvailableA = totals.cashAmountA ?? totals.amountA;
+    const baseAvailableB = totals.cashAmountB ?? totals.amountB;
 
-    // Always apply weight for equal allocation across segments
-    // Use initial capital if provided (for equal funding), otherwise use remaining cash
-    if (weight !== undefined) {
-      const baseA = initialCapitalA ?? availableA;
-      const baseB = initialCapitalB ?? availableB;
-      availableA = (baseA * BigInt(Math.floor(weight * 10000))) / 10000n;
-      availableB = (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
-    }
+    // Apply desired weight (equal allocation across segments) against initial capital if provided
+    const weightedA = (() => {
+      const baseA = initialCapitalA ?? baseAvailableA;
+      if (weight === undefined) return baseAvailableA;
+      return (baseA * BigInt(Math.floor(weight * 10000))) / 10000n;
+    })();
+    const weightedB = (() => {
+      const baseB = initialCapitalB ?? baseAvailableB;
+      if (weight === undefined) return baseAvailableB;
+      return (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
+    })();
+
+    // Size backoff factors to increase success probability under tight bands/slippage
+    const sizeBackoff: number[] = [1.0, 0.5, 0.25];
 
     let lastError: Error | null = null;
 
-    for (const slippage of slippages) {
-      try {
-        const preSwapTick = this.pool.tickCurrent;
-        const preSwapPrice = this.pool.price;
+    for (const scale of sizeBackoff) {
+      const scaledA = (weightedA * BigInt(Math.floor(scale * 100))) / 100n;
+      const scaledB = (weightedB * BigInt(Math.floor(scale * 100))) / 100n;
 
-        const result = this.manager.addLiquidityWithSwap(
-          tickLower,
-          tickUpper,
-          availableA,
-          availableB,
-          slippage,
-          this.getActionCost()
-        );
+      for (const slippage of slippages) {
+        try {
+          const preSwapTick = this.pool.tickCurrent;
+          const preSwapPrice = this.pool.price;
 
-        const postSwapTick = this.pool.tickCurrent;
-        const postSwapPrice = this.pool.price;
-        const inRange = postSwapTick >= tickLower && postSwapTick < tickUpper;
-
-        // Log price movement from swap
-        if (postSwapTick !== preSwapTick) {
-          console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
-          console.log(
-            `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
+          const result = this.manager.addLiquidityWithSwap(
+            tickLower,
+            tickUpper,
+            scaledA,
+            scaledB,
+            slippage,
+            this.getActionCost()
           );
-          console.log(
-            `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(6)}`
+
+          const postSwapTick = this.pool.tickCurrent;
+          const postSwapPrice = this.pool.price;
+          const inRange = postSwapTick >= tickLower && postSwapTick < tickUpper;
+
+          // Validate the created position actually has liquidity; otherwise, clean up and retry
+          const created = this.manager.getPosition(result.positionId);
+          if (!created || created.liquidity === 0n) {
+            try {
+              this.manager.removePosition(result.positionId, this.getActionCost());
+            } catch {
+              // ignore cleanup failures
+            }
+            lastError = new Error(
+              `Zero-liquidity open for [${tickLower}, ${tickUpper}] at slippage=${slippage} scale=${scale}`
+            );
+            console.warn(
+              `[three-band] Zero-liquidity open; retrying with backoff. slippage=${slippage} scale=${scale}`
+            );
+            continue;
+          }
+
+          // Log price movement from swap
+          if (postSwapTick !== preSwapTick) {
+            console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
+            console.log(
+              `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
+            );
+            console.log(
+              `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(6)}`
+            );
+            console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
+            console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
+            console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
+          }
+
+          return {
+            id: result.positionId,
+            tickLower,
+            tickUpper,
+            lastMoved: timestamp,
+            lastFeesCollected0: 0n,
+            lastFeesCollected1: 0n,
+            lastFeeCheckTime: timestamp,
+          };
+        } catch (err) {
+          lastError = err as Error;
+          console.warn(
+            `[three-band] Failed to open [${tickLower}, ${tickUpper}] slippage=${slippage} scale=${scale}: ${lastError.message}`
           );
-          console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
-          console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
-          console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
         }
-
-        return {
-          id: result.positionId,
-          tickLower,
-          tickUpper,
-          lastMoved: timestamp,
-          lastFeesCollected0: 0n,
-          lastFeesCollected1: 0n,
-          lastFeeCheckTime: timestamp,
-        };
-      } catch (err) {
-        lastError = err as Error;
       }
     }
 
     throw new Error(
-      `Failed to open segment [${tickLower}, ${tickUpper}]: ${
-        lastError?.message ?? "unknown error"
+      `Failed to open segment [${tickLower}, ${tickUpper}]: ${lastError?.message ?? "unknown error"
       }`
     );
   }
@@ -942,7 +1134,39 @@ export class ThreeBandRebalancerStrategy {
     descriptors: Array<{ lower: number; upper: number; mid: number }>,
     currentTick: number
   ): number[] {
-    // Always use equal weights for simplicity
+    // Option 3: If we have three segments, allocate 60%/25%/15%
+    if (descriptors.length === 3) {
+      // Find middle descriptor (whose range contains or is closest to current tick)
+      const midIdx = (() => {
+        const contains = descriptors.map((d) =>
+          currentTick >= d.lower && currentTick < d.upper ? 1 : 0
+        );
+        const idx = contains.findIndex((v) => v === 1);
+        if (idx !== -1) return idx;
+        // Fallback: closest by mid
+        let best = 0;
+        const firstMid = descriptors[0]?.mid ?? currentTick;
+        let bestDist = Math.abs(currentTick - firstMid);
+        for (let i = 1; i < descriptors.length; i++) {
+          const mid = descriptors[i]?.mid ?? currentTick;
+          const dist = Math.abs(currentTick - mid);
+          if (dist < bestDist) {
+            best = i;
+            bestDist = dist;
+          }
+        }
+        return best;
+      })();
+
+      const weights = [0, 0, 0];
+      weights[midIdx] = 0.6; // Position 1 (middle)
+      // Upper is index midIdx+1, lower is midIdx-1, if present
+      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.20; // Position 2 (upper)
+      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.20; // Position 3 (lower)
+      return weights;
+    }
+
+    // Fallback: equal weights
     const equalWeight = 1.0 / descriptors.length;
     return descriptors.map(() => equalWeight);
   }
@@ -1146,6 +1370,53 @@ export class ThreeBandRebalancerStrategy {
       // Ignore tracking errors
     }
   }
+
+  // Ensure we maintain exactly three contiguous bands around current tick.
+  // Returns true if any repair/open was performed.
+  private ensureThreeBands(now: number, currentTick: number): boolean {
+    if (this.segmentWidth === null) return false;
+
+    // If we already have 3 bands, nothing to do
+    if (this.segments.length === 3) return false;
+
+    // If we have 0-2 bands, try to fill missing bands by opening around middle
+    // Determine desired contiguous layout centered on current tick
+    const middleLower = currentTick - Math.floor(this.segmentWidth / 2);
+    const middleUpper = middleLower + this.segmentWidth;
+
+    const desired: Array<{ lower: number; upper: number }> = [];
+    // Lower band
+    desired.push({ lower: middleLower - this.segmentWidth, upper: middleLower });
+    // Middle band
+    desired.push({ lower: middleLower, upper: middleUpper });
+    // Upper band
+    desired.push({ lower: middleUpper, upper: middleUpper + this.segmentWidth });
+
+    // Track existing ranges for quick check
+    const existing = new Set(
+      this.segments.map((s) => `${s.tickLower}:${s.tickUpper}`)
+    );
+
+    let changed = false;
+    for (const d of desired) {
+      const key = `${d.lower}:${d.upper}`;
+      if (existing.has(key)) continue;
+      try {
+        const seg = this.openSegment(d.lower, d.upper, now);
+        this.segments.push(seg);
+        changed = true;
+      } catch {
+        // If opening fails, continue; we'll try again later via backoff
+      }
+    }
+
+    if (changed) {
+      this.segments.sort((a, b) => a.tickLower - b.tickLower);
+      for (const s of this.segments) this.updateSegmentFeeTracking(s.id);
+    }
+
+    return changed;
+  }
 }
 
-export default ThreeBandRebalancerStrategy;
+export default ThreeBandRebalancerStrategyOptionThree;

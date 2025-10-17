@@ -1,11 +1,8 @@
 import type { BacktestStrategy, StrategyContext } from "../backtest_engine";
 import { VirtualPositionManager } from "../virtual_position_mgr";
 import { Pool } from "../pool";
-import {
-    ThreeBandRebalancerStrategy,
-    type ThreeBandRebalancerConfig,
-} from "./three_band_rebalancer_strategy";
 import * as fs from "fs";
+import ThreeBandRebalancerStrategyOptionThree, { type ThreeBandRebalancerConfigOptionThree } from "./three_band_rebalancer_strategy_option_3";
 
 type EnvConfig = {
     initialAmountA: bigint;
@@ -45,6 +42,8 @@ type EnvConfig = {
     position1TickWidth: number;
     position2TickWidth: number;
     position3TickWidth: number;
+    tokenADecimals: number;
+    tokenBDecimals: number;
 };
 
 function readEnvConfig(): EnvConfig {
@@ -104,7 +103,7 @@ function readEnvConfig(): EnvConfig {
         volatilityWindowMs: 600_000,
         momentumWindowSize: 5,
         activeBandWeightPercent: 33.33, // Not used when enableDynamicAllocation=false
-        autoCollectIntervalMs: toNumber(process.env.THREEBAND_AUTO_COLLECT_MS, 0),
+        autoCollectIntervalMs: toNumber(process.env.THREEBAND_AUTO_COLLECT_MS, 60 *1_000), // Default 1 minute
 
         // Option 3 specific configurations
         enableHierarchicalRebalancing: toNumber(process.env.THREEBAND_HIERARCHICAL, 1) === 1,
@@ -115,7 +114,9 @@ function readEnvConfig(): EnvConfig {
         position3AllocationPercent: toNumber(process.env.THREEBAND_POS3_ALLOCATION, 20), // 20%
         position1TickWidth: toNumber(process.env.THREEBAND_POS1_TICK_WIDTH, 2), // 2 ticks
         position2TickWidth: toNumber(process.env.THREEBAND_POS2_TICK_WIDTH, 4), // 4 ticks
-        position3TickWidth: toNumber(process.env.THREEBAND_POS3_TICK_WIDTH, 4), // 4 ticks
+        position3TickWidth: toNumber(process.env.THREEBAND_POS3_TICK_WIDTH, 4), // 4 ticks,
+        tokenADecimals: toNumber(process.env.TOKEN_A_DECIMALS, 9),
+        tokenBDecimals: toNumber(process.env.TOKEN_B_DECIMALS, 9),
     };
 }
 
@@ -130,15 +131,18 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     const initial_amount_a = process.env.THREEBAND_INITIAL_A;
     const initial_amount_b = process.env.THREEBAND_INITIAL_B;
     const csvFilePath = `three_band_option3_backtest_${token_a}_${token_b}_${initial_amount_a}_${initial_amount_b}_${Date.now()}.csv`;
+    const csvFilterFilePath = `three_band_option3_backtest_filter_${token_a}_${token_b}_${initial_amount_a}_${initial_amount_b}_${Date.now()}.csv`;
     let csvInitialized = false;
+    let csvFilterInitialized = false;
 
     // Track rebalancing history for Option 3 constraints
     let lastRebalanceTime = 0;
     let dailyRebalanceCount = 0;
     let lastRebalanceDate = new Date().toDateString();
     let lastAutoCollectTime = 0;
+    let lastFilterCollectTime = 0;
 
-    const config: Partial<ThreeBandRebalancerConfig> = {
+    const config: Partial<ThreeBandRebalancerConfigOptionThree> = {
         segmentCount: env.segmentCount,
         segmentRangePercent: env.segmentRangePercent,
         maxSwapSlippageBps: env.maxSwapSlippageBps,
@@ -162,10 +166,10 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         volatilityWindowMs: env.volatilityWindowMs,
         momentumWindowSize: env.momentumWindowSize,
         activeBandWeightPercent: env.activeBandWeightPercent,
-        autoCollectIntervalMs: Number(process.env.THREEBAND_AUTO_COLLECT_MS, 0),
+        autoCollectIntervalMs: env.autoCollectIntervalMs,
     };
 
-    const strategy = new ThreeBandRebalancerStrategy(manager, pool, config);
+    const strategy = new ThreeBandRebalancerStrategyOptionThree(manager, pool, config);
     let lastTimestamp = -1;
     let lastLogKey: string | null = null;
 
@@ -219,10 +223,22 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         }
     };
 
-    const log = (ctx: StrategyContext, action: string, message: string) => {
+    // Helper function to format raw amount to decimal string
+    const formatAmount = (rawAmount: bigint | string, decimals: number): string => {
+        const amount = typeof rawAmount === "string" ? BigInt(rawAmount) : rawAmount;
+        const divisor = Math.pow(10, decimals);
+        const decimalValue = Number(amount) / divisor;
+        return decimalValue.toFixed(decimals);
+    };
+
+    const log = (ctx: StrategyContext, action: string, message: string, csvPath: string = csvFilePath, isFilter= false) => {
         const key = `${action}:${message}`;
         if (lastLogKey === key) return;
         lastLogKey = key;
+
+        if(isFilter) {
+            lastFilterCollectTime = ctx.timestamp;
+        }
 
         // Get current state for detailed logging
         const tick = pool.tickCurrent;
@@ -367,13 +383,19 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                     const { currentAmountA, currentAmountB } =
                         manager.calculatePositionAmounts(pos.id);
 
+                    // Convert raw amounts to decimal format using helper function
+                    const decimalAmountA = formatAmount(currentAmountA, env.tokenADecimals);
+                    const decimalAmountB = formatAmount(currentAmountB, env.tokenBDecimals);
+                    const decimalFeesA = formatAmount(posFeesA, env.tokenADecimals);
+                    const decimalFeesB = formatAmount(posFeesB, env.tokenBDecimals);
+
                     csvParts.push(
                         pos.tickLower.toString(),
                         pos.tickUpper.toString(),
-                        currentAmountA.toString(),
-                        currentAmountB.toString(),
-                        posFeesA.toString(),
-                        posFeesB.toString(),
+                        decimalAmountA,
+                        decimalAmountB,
+                        decimalFeesA,
+                        decimalFeesB,
                         posInRange,
                         allocation.toString()
                     );
@@ -402,14 +424,14 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
         // Add totals (sum of actual position amounts + cash)
         csvParts.push(
-            totalCurrentA.toString(),
-            totalCurrentB.toString(),
-            totalFeesA.toString(),
-            totalFeesB.toString()
+            formatAmount(totalCurrentA, env.tokenADecimals),
+            formatAmount(totalCurrentB, env.tokenBDecimals),
+            formatAmount(totalFeesA, env.tokenADecimals),
+            formatAmount(totalFeesB, env.tokenBDecimals),
         );
 
         // Write CSV to separate file
-        if (!csvInitialized) {
+        if (!csvInitialized || (isFilter && !csvFilterInitialized)) {
             // Write header with Option 3 specific columns
             const csvHeader = [
                 "timestamp",
@@ -449,13 +471,16 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 "total_fee_a",
                 "total_fee_b",
             ];
-            fs.writeFileSync(csvFilePath, csvHeader.join(",") + "\n");
+            fs.writeFileSync(csvPath, csvHeader.join(",") + "\n");
             csvInitialized = true;
-            ctx.logger?.log?.(`[three-band-option3] CSV output file: ${csvFilePath}`);
+            if (isFilter) {
+                csvFilterInitialized = true;
+            }
+            ctx.logger?.log?.(`[three-band-option3] CSV output file: ${csvPath}`);
         }
 
         // Append data row
-        fs.appendFileSync(csvFilePath, csvParts.join(",") + "\n");
+        fs.appendFileSync(csvPath, csvParts.join(",") + "\n");
 
         // Additional details for Option 3 specific logging
         if (action === "wait" || action === "rebalance") {
@@ -518,7 +543,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             }
             lastAutoCollectTime = ctx.timestamp;
             if (collectedAny) {
-                log(ctx, "collect", `auto-collect executed every ${env.autoCollectIntervalMs}ms`);
+                log(ctx, "collect", `auto-collect executed every ${env.autoCollectIntervalMs}ms`, csvFilterFilePath, true);
             }
         }
 
