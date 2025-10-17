@@ -131,8 +131,7 @@ async function main() {
     `⚡ Enhanced Fees: ${config.enableEnhancedFees ? "Enabled" : "Disabled"}`
   );
   console.log(
-    `📋 Detailed Report: ${
-      config.enableDetailedReport ? "Enabled" : "Disabled"
+    `📋 Detailed Report: ${config.enableDetailedReport ? "Enabled" : "Disabled"
     }`
   );
 

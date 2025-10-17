@@ -816,14 +816,14 @@ export class VirtualPositionManager {
       }
     );
 
-    // Initialize fee growth checkpoints using pool's real fee growth
-    // This ensures fees start accumulating correctly from creation
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    // Initialize fee growth checkpoints using virtual position manager's calculation
+    // This ensures fees start accumulating correctly from creation using virtual tick data
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       1
@@ -971,14 +971,14 @@ export class VirtualPositionManager {
       };
     }
 
-    // In range: Use pool's fee calculation directly
-    // Pool now uses clamping (not wrapping) so it's safe
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    // In range: Use virtual position manager's fee calculation for consistency
+    // This ensures fees are calculated using virtual tick data
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
@@ -1014,14 +1014,14 @@ export class VirtualPositionManager {
       return true;
     }
 
-    // Use pool's real fee growth (not virtual ticks) for accurate tracking
-    // This ensures fees accumulate as pool swaps happen
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    // Use virtual position manager's fee growth calculation for consistency
+    // This ensures fees accumulate correctly using virtual tick data
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
