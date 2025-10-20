@@ -140,7 +140,13 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     let dailyRebalanceCount = 0;
     let lastRebalanceDate = new Date().toDateString();
     let lastAutoCollectTime = 0;
-    let lastFilterCollectTime = 0;
+
+    // Track accumulated fees per position across rebalances
+    const accumulatedFeesA: Record<number, bigint> = {};
+    const accumulatedFeesB: Record<number, bigint> = {};
+    // Track previous fees to detect when fees are collected/reset
+    const previousFeesA: Record<number, bigint> = {};
+    const previousFeesB: Record<number, bigint> = {};
 
     const config: Partial<ThreeBandRebalancerConfigOptionThree> = {
         segmentCount: env.segmentCount,
@@ -235,10 +241,6 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const key = `${action}:${message}`;
         if (lastLogKey === key) return;
         lastLogKey = key;
-
-        if(isFilter) {
-            lastFilterCollectTime = ctx.timestamp;
-        }
 
         // Get current state for detailed logging
         const tick = pool.tickCurrent;
@@ -376,6 +378,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                         "0",
                         "0",
                         "0",
+                        "0",
+                        "0",
                         allocation.toString()
                     );
                 } else {
@@ -386,8 +390,45 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                     // Convert raw amounts to decimal format using helper function
                     const decimalAmountA = formatAmount(currentAmountA, env.tokenADecimals);
                     const decimalAmountB = formatAmount(currentAmountB, env.tokenBDecimals);
-                    const decimalFeesA = formatAmount(posFeesA, env.tokenADecimals);
-                    const decimalFeesB = formatAmount(posFeesB, env.tokenBDecimals);
+                    
+                    // Track accumulated fees across rebalances
+                    const currentFeesA = BigInt(posFeesA);
+                    const currentFeesB = BigInt(posFeesB);
+                    
+                    // Initialize accumulated fees if not exists
+                    if (accumulatedFeesA[i] === undefined) {
+                        accumulatedFeesA[i] = 0n;
+                        previousFeesA[i] = 0n;
+                    }
+                    if (accumulatedFeesB[i] === undefined) {
+                        accumulatedFeesB[i] = 0n;
+                        previousFeesB[i] = 0n;
+                    }
+                    
+                    // Detect if fees were collected (current < previous) or position was rebalanced
+                    // In both cases, add previous fees to accumulated before reset
+                    const prevA = previousFeesA[i]!;
+                    const prevB = previousFeesB[i]!;
+                    
+                    if (currentFeesA < prevA) {
+                        accumulatedFeesA[i]! += prevA;
+                    }
+                    if (currentFeesB < prevB) {
+                        accumulatedFeesB[i]! += prevB;
+                    }
+                    
+                    // Update previous fees for next comparison
+                    previousFeesA[i] = currentFeesA;
+                    previousFeesB[i] = currentFeesB;
+                    
+                    // Calculate total fees (accumulated + current)
+                    const totalAccumulatedFeesA = accumulatedFeesA[i]! + currentFeesA;
+                    const totalAccumulatedFeesB = accumulatedFeesB[i]! + currentFeesB;
+                    
+                    const decimalFeesA = formatAmount(currentFeesA, env.tokenADecimals);
+                    const decimalFeesB = formatAmount(currentFeesB, env.tokenBDecimals);
+                    const decimalTotalFeesA = formatAmount(totalAccumulatedFeesA, env.tokenADecimals);
+                    const decimalTotalFeesB = formatAmount(totalAccumulatedFeesB, env.tokenBDecimals);
 
                     csvParts.push(
                         pos.tickLower.toString(),
@@ -395,14 +436,16 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                         decimalAmountA,
                         decimalAmountB,
                         decimalFeesA,
+                        decimalTotalFeesA,
                         decimalFeesB,
+                        decimalTotalFeesB,
                         posInRange,
                         allocation.toString()
                     );
                 }
             } else {
                 // Empty fields for missing positions
-                csvParts.push("", "", "", "", "", "", "", "");
+                csvParts.push("", "", "", "", "", "", "", "", "", "");
             }
         }
 
@@ -419,15 +462,23 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         // Add cash balances to get true total
         const cashA = totals.cashAmountA ?? 0n;
         const cashB = totals.cashAmountB ?? 0n;
-        const totalCurrentA = sumAmountA + cashA;
-        const totalCurrentB = sumAmountB + cashB;
+        const totalCurrentA = formatAmount(sumAmountA + cashA, env.tokenADecimals);
+        const totalCurrentB = formatAmount(sumAmountB + cashB, env.tokenBDecimals);
+        const totalFeesADecimal = formatAmount(totalFeesA, env.tokenADecimals);
+        const totalFeesBDecimal = formatAmount(totalFeesB, env.tokenBDecimals);
+        const totalFeeDecimal = Number(totalFeesADecimal) * price + Number(totalFeesBDecimal);
+        const totalTokenDecimal = Number(totalCurrentA) * price + Number(totalCurrentB);
+        const totalValueDecimal = totalFeeDecimal + totalTokenDecimal;
 
         // Add totals (sum of actual position amounts + cash)
         csvParts.push(
-            formatAmount(totalCurrentA, env.tokenADecimals),
-            formatAmount(totalCurrentB, env.tokenBDecimals),
-            formatAmount(totalFeesA, env.tokenADecimals),
-            formatAmount(totalFeesB, env.tokenBDecimals),
+            totalCurrentA,
+            totalCurrentB,
+            totalFeesADecimal,
+            totalFeesBDecimal,
+            totalFeeDecimal.toString(),
+            totalTokenDecimal.toString(),
+            totalValueDecimal.toString(),
         );
 
         // Write CSV to separate file
@@ -447,7 +498,9 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 "pos1_amount_a",
                 "pos1_amount_b",
                 "pos1_fee_a",
+                "pos1_total_fee_a",
                 "pos1_fee_b",
+                "pos1_total_fee_b",
                 "pos1_in_range",
                 "pos1_allocation_percent",
                 "pos2_tick_lower",
@@ -455,7 +508,9 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 "pos2_amount_a",
                 "pos2_amount_b",
                 "pos2_fee_a",
+                "pos2_total_fee_a",
                 "pos2_fee_b",
+                "pos2_total_fee_b",
                 "pos2_in_range",
                 "pos2_allocation_percent",
                 "pos3_tick_lower",
@@ -463,13 +518,18 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 "pos3_amount_a",
                 "pos3_amount_b",
                 "pos3_fee_a",
+                "pos3_total_fee_a",
                 "pos3_fee_b",
+                "pos3_total_fee_b",
                 "pos3_in_range",
                 "pos3_allocation_percent",
                 "total_amount_a",
                 "total_amount_b",
                 "total_fee_a",
                 "total_fee_b",
+                "total_fee",
+                "total_token",
+                "total_value",
             ];
             fs.writeFileSync(csvPath, csvHeader.join(",") + "\n");
             csvInitialized = true;
