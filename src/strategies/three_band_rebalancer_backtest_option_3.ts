@@ -373,13 +373,17 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                     csvParts.push(
                         pos.tickLower.toString(),
                         pos.tickUpper.toString(),
-                        "0",
-                        "0",
-                        "0",
-                        "0",
-                        "0",
-                        "0",
-                        "0",
+                        "0", // Raw amount A
+                        "0", // Decimal amount A
+                        "0", // Raw amount B
+                        "0", // Decimal amount B
+                        "0", // Raw fee A
+                        "0", // Decimal fee A
+                        "0", // Total fee A
+                        "0", // Raw fee B
+                        "0", // Decimal fee B
+                        "0", // Total fee B
+                        "0", // In range
                         allocation.toString()
                     );
                 } else {
@@ -433,11 +437,15 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                     csvParts.push(
                         pos.tickLower.toString(),
                         pos.tickUpper.toString(),
-                        decimalAmountA,
-                        decimalAmountB,
-                        decimalFeesA,
+                        currentAmountA.toString(), // Raw amount
+                        decimalAmountA, // Decimal amount
+                        currentAmountB.toString(), // Raw amount
+                        decimalAmountB, // Decimal amount
+                        currentFeesA.toString(), // Raw fee
+                        decimalFeesA, // Decimal fee
                         decimalTotalFeesA,
-                        decimalFeesB,
+                        currentFeesB.toString(), // Raw fee
+                        decimalFeesB, // Decimal fee
                         decimalTotalFeesB,
                         posInRange,
                         allocation.toString()
@@ -445,7 +453,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 }
             } else {
                 // Empty fields for missing positions
-                csvParts.push("", "", "", "", "", "", "", "", "", "");
+                csvParts.push("", "", "", "", "", "", "", "", "", "", "", "", "", "");
             }
         }
 
@@ -462,20 +470,28 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         // Add cash balances to get true total
         const cashA = totals.cashAmountA ?? 0n;
         const cashB = totals.cashAmountB ?? 0n;
-        const totalCurrentA = formatAmount(sumAmountA + cashA, env.tokenADecimals);
-        const totalCurrentB = formatAmount(sumAmountB + cashB, env.tokenBDecimals);
-        const totalFeesADecimal = formatAmount(totalFeesA, env.tokenADecimals);
-        const totalFeesBDecimal = formatAmount(totalFeesB, env.tokenBDecimals);
+        const totalCurrentARaw = sumAmountA + cashA;
+        const totalCurrentBRaw = sumAmountB + cashB;
+        const totalCurrentA = formatAmount(totalCurrentARaw, env.tokenADecimals);
+        const totalCurrentB = formatAmount(totalCurrentBRaw, env.tokenBDecimals);
+        const totalFeesARaw = totalFeesA;
+        const totalFeesBRaw = totalFeesB;
+        const totalFeesADecimal = formatAmount(totalFeesARaw, env.tokenADecimals);
+        const totalFeesBDecimal = formatAmount(totalFeesBRaw, env.tokenBDecimals);
         const totalFeeDecimal = Number(totalFeesADecimal) * price + Number(totalFeesBDecimal);
         const totalTokenDecimal = Number(totalCurrentA) * price + Number(totalCurrentB);
         const totalValueDecimal = totalFeeDecimal + totalTokenDecimal;
 
         // Add totals (sum of actual position amounts + cash)
         csvParts.push(
-            totalCurrentA,
-            totalCurrentB,
-            totalFeesADecimal,
-            totalFeesBDecimal,
+            totalCurrentARaw.toString(), // Raw total amount A
+            totalCurrentA, // Decimal total amount A
+            totalCurrentBRaw.toString(), // Raw total amount B
+            totalCurrentB, // Decimal total amount B
+            totalFeesARaw.toString(), // Raw total fee A
+            totalFeesADecimal, // Decimal total fee A
+            totalFeesBRaw.toString(), // Raw total fee B
+            totalFeesBDecimal, // Decimal total fee B
             totalFeeDecimal.toString(),
             totalTokenDecimal.toString(),
             totalValueDecimal.toString(),
@@ -496,37 +512,53 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
                 "pos1_tick_lower",
                 "pos1_tick_upper",
                 "pos1_amount_a",
+                "pos1_amount_a_decimal",
                 "pos1_amount_b",
+                "pos1_amount_b_decimal",
                 "pos1_fee_a",
+                "pos1_fee_a_decimal",
                 "pos1_total_fee_a",
                 "pos1_fee_b",
+                "pos1_fee_b_decimal",
                 "pos1_total_fee_b",
                 "pos1_in_range",
                 "pos1_allocation_percent",
                 "pos2_tick_lower",
                 "pos2_tick_upper",
                 "pos2_amount_a",
+                "pos2_amount_a_decimal",
                 "pos2_amount_b",
+                "pos2_amount_b_decimal",
                 "pos2_fee_a",
+                "pos2_fee_a_decimal",
                 "pos2_total_fee_a",
                 "pos2_fee_b",
+                "pos2_fee_b_decimal",
                 "pos2_total_fee_b",
                 "pos2_in_range",
                 "pos2_allocation_percent",
                 "pos3_tick_lower",
                 "pos3_tick_upper",
                 "pos3_amount_a",
+                "pos3_amount_a_decimal",
                 "pos3_amount_b",
+                "pos3_amount_b_decimal",
                 "pos3_fee_a",
+                "pos3_fee_a_decimal",
                 "pos3_total_fee_a",
                 "pos3_fee_b",
+                "pos3_fee_b_decimal",
                 "pos3_total_fee_b",
                 "pos3_in_range",
                 "pos3_allocation_percent",
                 "total_amount_a",
+                "total_amount_a_decimal",
                 "total_amount_b",
+                "total_amount_b_decimal",
                 "total_fee_a",
+                "total_fee_a_decimal",
                 "total_fee_b",
+                "total_fee_b_decimal",
                 "total_fee",
                 "total_token",
                 "total_value",
