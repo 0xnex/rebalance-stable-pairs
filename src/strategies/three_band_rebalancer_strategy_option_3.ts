@@ -1,5 +1,16 @@
 import { Pool } from "../pool";
 import { VirtualPositionManager } from "../virtual_position_mgr";
+import {
+  FeeCollectionManager,
+  createPositionManagerAdapter,
+  createPriceProviderAdapter,
+} from "../fee_collection";
+import type {
+  FeeCollectionConfig,
+  FeeCollectionAction,
+  FeeCollectionAnalytics,
+  CustomReinvestmentStrategy,
+} from "../fee_collection";
 
 export interface ThreeBandRebalancerConfigOptionThree {
   segmentCount: number;
@@ -27,6 +38,9 @@ export interface ThreeBandRebalancerConfigOptionThree {
   momentumWindowSize?: number;
   activeBandWeightPercent?: number;
   autoCollectIntervalMs?: number;
+
+  // Enhanced fee collection configuration
+  feeCollection?: FeeCollectionConfig;
 }
 
 type SegmentState = {
@@ -42,10 +56,11 @@ type SegmentState = {
 type ThreeBandAction =
   | { action: "none" | "wait"; message: string }
   | {
-    action: "create" | "rebalance";
-    message: string;
-    segments: SegmentState[];
-  };
+      action: "create" | "rebalance";
+      message: string;
+      segments: SegmentState[];
+    }
+  | FeeCollectionAction; // Include fee collection actions
 
 export class ThreeBandRebalancerStrategyOptionThree {
   private readonly manager: VirtualPositionManager;
@@ -67,6 +82,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
   private tickHistory: number[] = [];
   private lastCompoundingCheck = 0;
   private lastRepairAttempt = 0; // throttle repairs to avoid spamming opens
+
+  // Fee collection manager
+  private feeCollectionManager?: FeeCollectionManager;
 
   // Remove surplus segments, keeping exactly 3 closest to current tick
   private trimToThreeSegments(now: number, currentTick: number) {
@@ -141,7 +159,15 @@ export class ThreeBandRebalancerStrategyOptionThree {
       volatilityWindowMs: config.volatilityWindowMs ?? 600_000, // 10 minutes
       momentumWindowSize: config.momentumWindowSize ?? 5,
       activeBandWeightPercent: config.activeBandWeightPercent ?? 60,
+
+      // Fee collection configuration
+      feeCollection: config.feeCollection,
     };
+
+    // Initialize fee collection if configured
+    if (config.feeCollection) {
+      this.initializeFeeCollection(config.feeCollection);
+    }
   }
 
   initialize(): ThreeBandAction {
@@ -154,16 +180,27 @@ export class ThreeBandRebalancerStrategyOptionThree {
   }
 
   execute(): ThreeBandAction {
+    const now = this.now();
+
+    // Process fee collection first (if enabled)
+    if (
+      this.config.feeCollection?.enablePeriodicFeeCollection &&
+      this.feeCollectionManager
+    ) {
+      const feeAction = this.feeCollectionManager.execute(now);
+      if (feeAction && feeAction.action !== "none") {
+        return feeAction;
+      }
+    }
+
     if (this.segments.length === 0) {
       const result = this.reseedSegments();
-      const now = this.now();
       this.lastFastCheck = now;
       this.lastSlowCheck = now;
       this.captureFeeBaseline();
       return result;
     }
 
-    const now = this.now();
     const currentTick = this.pool.tickCurrent;
 
     // Hard guarantee: always maintain 3 bands. If fewer, try to repair first.
@@ -182,10 +219,12 @@ export class ThreeBandRebalancerStrategyOptionThree {
           };
         }
       }
-      const remaining = Math.max(0, (this.lastRepairAttempt + 300_000) - now);
+      const remaining = Math.max(0, this.lastRepairAttempt + 300_000 - now);
       return {
         action: "wait",
-        message: `Repair cooldown ${Math.ceil(remaining / 1000)}s before retry to open missing bands`,
+        message: `Repair cooldown ${Math.ceil(
+          remaining / 1000
+        )}s before retry to open missing bands`,
       };
     }
 
@@ -275,10 +314,17 @@ export class ThreeBandRebalancerStrategyOptionThree {
             // Rebalance only the middle band to cover current tick.
             // Also ensure the new range overlaps both neighbors so middle is always the band covering price.
             // Compute contiguous layout around current tick using fixed segmentWidth.
-            const newMiddleLower = currentTick - Math.floor(this.segmentWidth / 2);
+            const newMiddleLower =
+              currentTick - Math.floor(this.segmentWidth / 2);
             const newMiddleUpper = newMiddleLower + this.segmentWidth;
-            const newLowerBand = { lower: newMiddleLower - this.segmentWidth, upper: newMiddleLower };
-            const newUpperBand = { lower: newMiddleUpper, upper: newMiddleUpper + this.segmentWidth };
+            const newLowerBand = {
+              lower: newMiddleLower - this.segmentWidth,
+              upper: newMiddleLower,
+            };
+            const newUpperBand = {
+              lower: newMiddleUpper,
+              upper: newMiddleUpper + this.segmentWidth,
+            };
 
             try {
               // remove and reopen the middle position
@@ -307,8 +353,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
             } catch (err) {
               return {
                 action: "none",
-                message: `Failed to rebalance middle band: ${(err as Error).message
-                  }`,
+                message: `Failed to rebalance middle band: ${
+                  (err as Error).message
+                }`,
               };
             }
           } else {
@@ -471,7 +518,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       } catch (error) {
         // Log but continue - allows partial deployment if some positions fail
         console.warn(
-          `[three-band] Failed to open position [${descriptor.lower},${descriptor.upper
+          `[three-band] Failed to open position [${descriptor.lower},${
+            descriptor.upper
           }]: ${error instanceof Error ? error.message : String(error)}`
         );
         // Continue trying to open other positions
@@ -511,7 +559,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const successMessage =
       this.segments.length < segmentCount
         ? `Seeded ${this.segments.length}/${segmentCount} bands (will keep repairing to reach 3)`
-        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(6)} (width: ${rangePercent.toFixed(4)}%)`;
+        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
+            6
+          )} (width: ${rangePercent.toFixed(4)}%)`;
 
     return {
       action: "create",
@@ -723,7 +773,10 @@ export class ThreeBandRebalancerStrategyOptionThree {
           const created = this.manager.getPosition(result.positionId);
           if (!created || created.liquidity === 0n) {
             try {
-              this.manager.removePosition(result.positionId, this.getActionCost());
+              this.manager.removePosition(
+                result.positionId,
+                this.getActionCost()
+              );
             } catch {
               // ignore cleanup failures
             }
@@ -743,7 +796,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
               `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
             );
             console.log(
-              `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(6)}`
+              `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(
+                6
+              )}`
             );
             console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
             console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
@@ -769,7 +824,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     throw new Error(
-      `Failed to open segment [${tickLower}, ${tickUpper}]: ${lastError?.message ?? "unknown error"
+      `Failed to open segment [${tickLower}, ${tickUpper}]: ${
+        lastError?.message ?? "unknown error"
       }`
     );
   }
@@ -1161,8 +1217,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       const weights = [0, 0, 0];
       weights[midIdx] = 0.6; // Position 1 (middle)
       // Upper is index midIdx+1, lower is midIdx-1, if present
-      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.20; // Position 2 (upper)
-      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.20; // Position 3 (lower)
+      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.2; // Position 2 (upper)
+      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.2; // Position 3 (lower)
       return weights;
     }
 
@@ -1324,9 +1380,11 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     try {
-      // Get current fees for the position
-      const fees = this.manager.calculatePositionFees(candidate.id);
-      const totalFees = fees.fee0 + fees.fee1;
+      // Get current fees for the position using position data
+      const position = this.manager.getPosition(candidate.id);
+      if (!position) return true;
+
+      const totalFees = position.tokensOwed0 + position.tokensOwed1;
       const lastTotalFees =
         candidate.lastFeesCollected0 + candidate.lastFeesCollected1;
 
@@ -1362,10 +1420,12 @@ export class ThreeBandRebalancerStrategyOptionThree {
     if (!segment) return;
 
     try {
-      const fees = this.manager.calculatePositionFees(segmentId);
-      segment.lastFeesCollected0 = fees.fee0;
-      segment.lastFeesCollected1 = fees.fee1;
-      segment.lastFeeCheckTime = this.now();
+      const position = this.manager.getPosition(segmentId);
+      if (position) {
+        segment.lastFeesCollected0 = position.tokensOwed0;
+        segment.lastFeesCollected1 = position.tokensOwed1;
+        segment.lastFeeCheckTime = this.now();
+      }
     } catch (err) {
       // Ignore tracking errors
     }
@@ -1386,11 +1446,17 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     const desired: Array<{ lower: number; upper: number }> = [];
     // Lower band
-    desired.push({ lower: middleLower - this.segmentWidth, upper: middleLower });
+    desired.push({
+      lower: middleLower - this.segmentWidth,
+      upper: middleLower,
+    });
     // Middle band
     desired.push({ lower: middleLower, upper: middleUpper });
     // Upper band
-    desired.push({ lower: middleUpper, upper: middleUpper + this.segmentWidth });
+    desired.push({
+      lower: middleUpper,
+      upper: middleUpper + this.segmentWidth,
+    });
 
     // Track existing ranges for quick check
     const existing = new Set(
@@ -1416,6 +1482,151 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     return changed;
+  }
+
+  // ============================================================================
+  // Fee Collection Methods
+  // ============================================================================
+
+  /**
+   * Initialize fee collection with configuration
+   */
+  initializeFeeCollection(config: FeeCollectionConfig = {}) {
+    const positionManager = createPositionManagerAdapter(
+      (id: string) => this.manager.getPosition(id),
+      (id: string) => this.manager.collectFees(id),
+      (id: string, amount0: bigint, amount1: bigint) => {
+        // For reinvestment, we'll use addLiquidityWithSwap with the existing position range
+        const position = this.manager.getPosition(id);
+        if (!position) {
+          throw new Error(`Position ${id} not found for reinvestment`);
+        }
+        return this.manager.addLiquidityWithSwap(
+          position.tickLower,
+          position.tickUpper,
+          amount0,
+          amount1,
+          this.config.maxSwapSlippageBps,
+          this.getActionCost()
+        );
+      },
+      () => this.manager.getTotals(),
+      () => Array.from((this.manager as any)["positions"]?.values() || []),
+      () =>
+        Array.from((this.manager as any)["positions"]?.values() || []).filter(
+          (pos: any) => pos.liquidity > 0n
+        )
+    );
+
+    const priceProvider = createPriceProviderAdapter(
+      () => this.pool.price,
+      () => this.pool.tickCurrent
+    );
+
+    this.feeCollectionManager = new FeeCollectionManager(
+      positionManager,
+      priceProvider,
+      config
+    );
+  }
+
+  /**
+   * Process fee collection - call this from your strategy's execute() method
+   */
+  processFeeCollection(currentTime: number = Date.now()): FeeCollectionAction {
+    if (!this.feeCollectionManager) {
+      return { action: "none", message: "Fee collection not initialized" };
+    }
+
+    return this.feeCollectionManager.execute(currentTime);
+  }
+
+  /**
+   * Get comprehensive fee collection analytics
+   */
+  getFeeCollectionAnalytics(): FeeCollectionAnalytics {
+    if (!this.feeCollectionManager) {
+      throw new Error("Fee collection not initialized");
+    }
+
+    return this.feeCollectionManager.getAnalytics();
+  }
+
+  /**
+   * Register a custom reinvestment strategy
+   */
+  registerCustomReinvestmentStrategy(strategy: CustomReinvestmentStrategy) {
+    if (!this.feeCollectionManager) {
+      throw new Error("Fee collection not initialized");
+    }
+
+    this.feeCollectionManager.registerCustomStrategy(strategy);
+  }
+
+  /**
+   * Update fee collection configuration at runtime
+   */
+  updateFeeCollectionConfig(config: Partial<FeeCollectionConfig>) {
+    if (!this.feeCollectionManager) {
+      throw new Error("Fee collection not initialized");
+    }
+
+    this.feeCollectionManager.updateConfig(config);
+  }
+
+  /**
+   * Force fee collection (manual trigger)
+   */
+  forceCollectFees(currentTime: number = Date.now()): FeeCollectionAction {
+    if (!this.feeCollectionManager) {
+      throw new Error("Fee collection not initialized");
+    }
+
+    return this.feeCollectionManager.forceCollectFees(currentTime);
+  }
+
+  /**
+   * Force reinvestment (manual trigger)
+   */
+  forceReinvestment(currentTime: number = Date.now()): FeeCollectionAction {
+    if (!this.feeCollectionManager) {
+      throw new Error("Fee collection not initialized");
+    }
+
+    return this.feeCollectionManager.forceReinvestment(currentTime);
+  }
+
+  /**
+   * Get fee collection history
+   */
+  getFeeCollectionHistory() {
+    if (!this.feeCollectionManager) {
+      return [];
+    }
+
+    return this.feeCollectionManager.getFeeCollectionHistory();
+  }
+
+  /**
+   * Get reinvestment history
+   */
+  getReinvestmentHistory() {
+    if (!this.feeCollectionManager) {
+      return [];
+    }
+
+    return this.feeCollectionManager.getReinvestmentHistory();
+  }
+
+  /**
+   * Get current fee collection configuration
+   */
+  getFeeCollectionConfig() {
+    if (!this.feeCollectionManager) {
+      return null;
+    }
+
+    return this.feeCollectionManager.getConfig();
   }
 }
 

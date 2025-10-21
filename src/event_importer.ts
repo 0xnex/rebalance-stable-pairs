@@ -148,8 +148,6 @@ async function importEvents(
   const logger = options?.silent ? undefined : console;
 
   // Output CSV header for validation mismatches
-  console.log("\n=== CSV Validation Report ===");
-  console.log("文件,tx,序号,事件,对比字段,期望值,实际值");
   // If dataDir is falsy, import from DB
   if (!options?.dataDir) {
     console.log("options.dataDir is falsy, importing from DB");
