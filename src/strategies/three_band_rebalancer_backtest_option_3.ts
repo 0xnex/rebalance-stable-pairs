@@ -31,7 +31,6 @@ type EnvConfig = {
     volatilityWindowMs: number;
     momentumWindowSize: number;
     activeBandWeightPercent: number;
-    autoCollectIntervalMs: number;
     // Option 3 specific configs
     enableHierarchicalRebalancing: boolean;
     hierarchicalCooldownMs: number;
@@ -103,7 +102,6 @@ function readEnvConfig(): EnvConfig {
         volatilityWindowMs: 600_000,
         momentumWindowSize: 5,
         activeBandWeightPercent: 33.33, // Not used when enableDynamicAllocation=false
-        autoCollectIntervalMs: toNumber(process.env.THREEBAND_AUTO_COLLECT_MS, 60 *1_000), // Default 1 minute
 
         // Option 3 specific configurations
         enableHierarchicalRebalancing: toNumber(process.env.THREEBAND_HIERARCHICAL, 1) === 1,
@@ -172,7 +170,6 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         volatilityWindowMs: env.volatilityWindowMs,
         momentumWindowSize: env.momentumWindowSize,
         activeBandWeightPercent: env.activeBandWeightPercent,
-        autoCollectIntervalMs: env.autoCollectIntervalMs,
     };
 
     const strategy = new ThreeBandRebalancerStrategyOptionThree(manager, pool, config);
@@ -618,26 +615,6 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         lastTimestamp = ctx.timestamp;
         manager.updateAllPositionFees();
         strategy.setCurrentTime(ctx.timestamp);
-
-        // Periodic auto-collection to realize fees even without rebalances
-        if (env.autoCollectIntervalMs > 0 && (ctx.timestamp - lastAutoCollectTime) >= env.autoCollectIntervalMs) {
-            const segments = strategy.getSegments();
-            let collectedAny = false;
-            for (const segment of segments) {
-                try {
-                    const fees = manager.collectFees(segment.id);
-                    if (fees && (fees.fee0 > 0n || fees.fee1 > 0n)) {
-                        collectedAny = true;
-                    }
-                } catch {
-                    // ignore failed collections
-                }
-            }
-            lastAutoCollectTime = ctx.timestamp;
-            if (collectedAny) {
-                log(ctx, "collect", `auto-collect executed every ${env.autoCollectIntervalMs}ms`, csvFilterFilePath, true);
-            }
-        }
 
         // Check Option 3 constraints before executing strategy
         const rebalanceCheck = canRebalance(ctx);
