@@ -779,11 +779,11 @@ export class VirtualPositionManager {
       ).toFixed(2);
       throw new Error(
         `Cannot create position: total virtual liquidity (${totalAfterCreation.toString()}) ` +
-          `would exceed ${(this.maxLiquidityRatio * 100).toFixed(
-            0
-          )}% of pool liquidity (${poolLiquidity.toString()}). ` +
-          `This would be ${ratio}% of pool. Current virtual: ${currentActiveLiquidity.toString()}, ` +
-          `new position: ${liquidity.toString()}.`
+        `would exceed ${(this.maxLiquidityRatio * 100).toFixed(
+          0
+        )}% of pool liquidity (${poolLiquidity.toString()}). ` +
+        `This would be ${ratio}% of pool. Current virtual: ${currentActiveLiquidity.toString()}, ` +
+        `new position: ${liquidity.toString()}.`
       );
     }
 
@@ -791,7 +791,7 @@ export class VirtualPositionManager {
     if (liquidity > poolLiquidity / 10n) {
       console.warn(
         `⚠️  Warning: Single position liquidity (${liquidity.toString()}) is >10% of pool liquidity (${poolLiquidity.toString()}). ` +
-          `Consider splitting into smaller positions for more accurate fee tracking.`
+        `Consider splitting into smaller positions for more accurate fee tracking.`
       );
     }
 
@@ -849,14 +849,14 @@ export class VirtualPositionManager {
       }
     );
 
-    // Initialize fee growth checkpoints using pool's real fee growth
-    // This ensures fees start accumulating correctly from creation
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    // Initialize fee growth checkpoints using virtual position manager's calculation
+    // This ensures fees start accumulating correctly from creation using virtual tick data
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       tickLower,
       tickUpper,
       1
@@ -1027,14 +1027,14 @@ export class VirtualPositionManager {
       };
     }
 
-    // In range: Use pool's fee calculation directly
-    // Pool now uses clamping (not wrapping) so it's safe
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    // In range: Use virtual position manager's fee calculation for consistency
+    // This ensures fees are calculated using virtual tick data
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
@@ -1073,14 +1073,14 @@ export class VirtualPositionManager {
       return true;
     }
 
-    // Use pool's real fee growth (not virtual ticks) for accurate tracking
-    // This ensures fees accumulate as pool swaps happen
-    const feeGrowthInside0 = this.pool.calculateFeeGrowthInside(
+    // Use virtual position manager's fee growth calculation for consistency
+    // This ensures fees accumulate correctly using virtual tick data
+    const feeGrowthInside0 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       0
     );
-    const feeGrowthInside1 = this.pool.calculateFeeGrowthInside(
+    const feeGrowthInside1 = this.calculateFeeGrowthInside(
       position.tickLower,
       position.tickUpper,
       1
@@ -1788,18 +1788,22 @@ export class VirtualPositionManager {
     const position = this.positions.get(positionId);
     if (!position) return null;
 
-    // Calculate current total fees
-    const fees = this.calculatePositionFees(positionId);
+    // Calculate current fees to collect. When in-range, calculatePositionFees returns
+    // only the delta since last checkpoint, so we must add tokensOwed. When out-of-range,
+    // calculatePositionFees already returns tokensOwed.
+    const inRange =
+      this.pool.tickCurrent >= position.tickLower &&
+      this.pool.tickCurrent < position.tickUpper;
+
+    const snapshot = this.calculatePositionFees(positionId);
+    const totalFee0 = inRange ? position.tokensOwed0 + snapshot.fee0 : snapshot.fee0;
+    const totalFee1 = inRange ? position.tokensOwed1 + snapshot.fee1 : snapshot.fee1;
 
     // Reset tokensOwed (we've now collected them)
     position.tokensOwed0 = 0n;
     position.tokensOwed1 = 0n;
 
     // Update checkpoint to current feeGrowthInside so we don't double-count
-    const inRange =
-      this.pool.tickCurrent >= position.tickLower &&
-      this.pool.tickCurrent < position.tickUpper;
-
     if (inRange) {
       position.feeGrowthInside0LastX64 = this.pool.calculateFeeGrowthInside(
         position.tickLower,
@@ -1814,12 +1818,12 @@ export class VirtualPositionManager {
     }
 
     // Add to cash and total collected
-    this.amount0 += fees.fee0;
-    this.amount1 += fees.fee1;
-    this.totalFeesCollected0 += fees.fee0;
-    this.totalFeesCollected1 += fees.fee1;
+    this.amount0 += totalFee0;
+    this.amount1 += totalFee1;
+    this.totalFeesCollected0 += totalFee0;
+    this.totalFeesCollected1 += totalFee1;
 
-    return fees;
+    return { fee0: totalFee0, fee1: totalFee1 };
   }
 
   recordSwap(

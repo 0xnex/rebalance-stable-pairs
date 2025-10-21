@@ -371,9 +371,9 @@ export class ReportGenerator {
 
     // Calculate per-day and per-hour rates
     const feesPerDay =
-      duration > 0 ? totalFeesEarned / BigInt(Math.floor(duration)) : 0n;
+      duration > 0 ? totalFeesEarned / BigInt(Math.max(1, Math.floor(duration))) : 0n;
     const feesPerHour =
-      duration > 0 ? totalFeesEarned / BigInt(Math.floor(duration * 24)) : 0n;
+      duration > 0 ? totalFeesEarned / BigInt(Math.max(1, Math.floor(duration * 24))) : 0n;
 
     // Use pool's fee rate as the average (since we don't have position-level detail anymore)
     const averageFeeRate = this.pool ? this.pool.feeRate || 0.002 : 0.002;
@@ -452,127 +452,126 @@ export class ReportGenerator {
 ║ Stoploss                        │ ${formatNumber(
       report.config.stoploss
     ).padEnd(47)} ║
-║ Testing Dates                   │ ${
-      report.config.testingDates.start
-    } - ${report.config.testingDates.end.padEnd(25)} ║
+║ Testing Dates                   │ ${report.config.testingDates.start
+      } - ${report.config.testingDates.end.padEnd(25)} ║
 ║ Test Duration                   │ ${report.config.testDuration
-      .toString()
-      .padEnd(47)} ║
+        .toString()
+        .padEnd(47)} ║
 ╠════════════════════════════════════════════════════════════════════════════════════════╣
 ║ Market Condition                │ ${report.marketCondition.description.padEnd(
-      47
-    )} ║
+          47
+        )} ║
 ║ Initial Investment              │ ${formatCurrency(
-      report.investment.initialInvestment
-    ).padEnd(47)} ║
+          report.investment.initialInvestment
+        ).padEnd(47)} ║
 ║ Initial NDLP Supply             │ ${formatNumber(
-      report.investment.initialNDLPSupply,
-      4
-    ).padEnd(47)} ║
+          report.investment.initialNDLPSupply,
+          4
+        ).padEnd(47)} ║
 ║ Initial NDLP Price              │ ${formatNumber(
-      report.investment.initialNDLPPrice,
-      4
-    ).padEnd(47)} ║
+          report.investment.initialNDLPPrice,
+          4
+        ).padEnd(47)} ║
 ║ Collateral                      │ ${report.investment.collateralType.padEnd(
-      47
-    )} ║
+          47
+        )} ║
 ║ Starting Collateral Price       │ ${formatCurrency(
-      report.investment.startingCollateralPrice
-    ).padEnd(47)} ║
+          report.investment.startingCollateralPrice
+        ).padEnd(47)} ║
 ║ Ending Collateral Price         │ ${formatCurrency(
-      report.investment.endingCollateralPrice
-    ).padEnd(47)} ║
+          report.investment.endingCollateralPrice
+        ).padEnd(47)} ║
 ║ Starting SUI Price              │ ${formatCurrency(
-      report.investment.startingSUIPrice
-    ).padEnd(47)} ║
+          report.investment.startingSUIPrice
+        ).padEnd(47)} ║
 ║ Ending SUI Price                │ ${formatCurrency(
-      report.investment.endingSUIPrice
-    ).padEnd(47)} ║
+          report.investment.endingSUIPrice
+        ).padEnd(47)} ║
 ╠════════════════════════════════════════════════════════════════════════════════════════╣
 ║ Net Profit                      │ ${formatCurrency(
-      report.performance.netProfit
-    ).padEnd(47)} ║
+          report.performance.netProfit
+        ).padEnd(47)} ║
 ║ Fee Earned (30 Days)            │ ${formatCurrency(
-      report.performance.feeEarned30Days
-    ).padEnd(47)} ║
+          report.performance.feeEarned30Days
+        ).padEnd(47)} ║
 ║ Backtest at                     │ ${report.performance.backtest.padEnd(47)} ║
 ║ Return Percentage               │ ${formatPercentage(
-      report.performance.returnPercentage
-    ).padEnd(47)} ║
+          report.performance.returnPercentage
+        ).padEnd(47)} ║
 ║ Highest profit                  │ ${formatCurrency(
-      report.performance.highestProfit
-    ).padEnd(47)} ║
+          report.performance.highestProfit
+        ).padEnd(47)} ║
 ║ Lowest profit                   │ ${formatCurrency(
-      report.performance.lowestProfit
-    ).padEnd(47)} ║
+          report.performance.lowestProfit
+        ).padEnd(47)} ║
 ║ Final Value                     │ ${formatCurrency(
-      report.performance.finalValue
-    ).padEnd(47)} ║
+          report.performance.finalValue
+        ).padEnd(47)} ║
 ║ Fee Tier                        │ ${formatNumber(
-      report.performance.feeTier,
-      4
-    ).padEnd(47)} ║
+          report.performance.feeTier,
+          4
+        ).padEnd(47)} ║
 ║ Total Fee Return                │ ${formatPercentage(
-      report.performance.totalFeeReturn
-    ).padEnd(47)} ║
+          report.performance.totalFeeReturn
+        ).padEnd(47)} ║
 ║ Net APR                         │ ${formatPercentage(
-      report.performance.netAPR
-    ).padEnd(47)} ║
+          report.performance.netAPR
+        ).padEnd(47)} ║
 ║ Average price range (last 30 days) │ ${formatNumber(
-      report.performance.averagePriceRange,
-      4
-    ).padEnd(43)} ║
+          report.performance.averagePriceRange,
+          4
+        ).padEnd(43)} ║
 ║ Daily out-of-range count        │ ${formatNumber(
-      report.performance.dailyOutOfRangeCount,
-      0
-    ).padEnd(47)} ║
+          report.performance.dailyOutOfRangeCount,
+          0
+        ).padEnd(47)} ║
 ║ Total Gas Fees                  │ ${formatCurrency(
-      report.performance.totalGasFees
-    ).padEnd(47)} ║
+          report.performance.totalGasFees
+        ).padEnd(47)} ║
 ║ Total Slippage Fees             │ ${formatCurrency(
-      report.performance.totalSlippageFees
-    ).padEnd(47)} ║
+          report.performance.totalSlippageFees
+        ).padEnd(47)} ║
 ║ Total Trading Fees              │ ${formatCurrency(
-      report.performance.totalTradingFees
-    ).padEnd(47)} ║
+          report.performance.totalTradingFees
+        ).padEnd(47)} ║
 ║ Trading Fees per day            │ ${formatCurrency(
-      report.performance.tradingFeesPerDay
-    ).padEnd(47)} ║
+          report.performance.tradingFeesPerDay
+        ).padEnd(47)} ║
 ║ Total Positions                 │ ${formatNumber(
-      report.performance.totalPositions,
-      0
-    ).padEnd(47)} ║
+          report.performance.totalPositions,
+          0
+        ).padEnd(47)} ║
 ║ Time In-Range Percentage        │ ${formatPercentage(
-      report.performance.timeInRangePercentage
-    ).padEnd(47)} ║
+          report.performance.timeInRangePercentage
+        ).padEnd(47)} ║
 ║ Avg Time In-Range (hours)       │ ${formatNumber(
-      report.performance.avgTimeInRange,
-      2
-    ).padEnd(47)} ║
+          report.performance.avgTimeInRange,
+          2
+        ).padEnd(47)} ║
 ║ Total Time Out-Range (hours)    │ ${formatNumber(
-      report.performance.totalTimeOutRange,
-      4
-    ).padEnd(47)} ║
+          report.performance.totalTimeOutRange,
+          4
+        ).padEnd(47)} ║
 ╠════════════════════════════════════════════════════════════════════════════════════════╣
 ║ Enhanced Fee Metrics                                                                   ║
 ║ Total Fees Earned               │ ${formatCurrency(
-      Number(report.enhancedFees.totalFeesEarned) / 1e6
-    ).padEnd(47)} ║
+          Number(report.enhancedFees.totalFeesEarned) / 1e6
+        ).padEnd(47)} ║
 ║ Effective Fee Rate              │ ${formatPercentage(
-      report.enhancedFees.effectiveFeeRate * 100
-    ).padEnd(47)} ║
+          report.enhancedFees.effectiveFeeRate * 100
+        ).padEnd(47)} ║
 ║ Fees Per Day                    │ ${formatCurrency(
-      Number(report.enhancedFees.feesPerDay) / 1e6
-    ).padEnd(47)} ║
+          Number(report.enhancedFees.feesPerDay) / 1e6
+        ).padEnd(47)} ║
 ║ Compounded Fees                 │ ${formatCurrency(
-      Number(report.enhancedFees.compoundedFees) / 1e6
-    ).padEnd(47)} ║
+          Number(report.enhancedFees.compoundedFees) / 1e6
+        ).padEnd(47)} ║
 ║ Fee Accuracy                    │ ${formatPercentage(
-      report.enhancedFees.feeAccuracy * 100
-    ).padEnd(47)} ║
+          report.enhancedFees.feeAccuracy * 100
+        ).padEnd(47)} ║
 ║ Validation Score                │ ${formatPercentage(
-      report.validationScore * 100
-    ).padEnd(47)} ║
+          report.validationScore * 100
+        ).padEnd(47)} ║
 ╚════════════════════════════════════════════════════════════════════════════════════════╝
 
 Generated at: ${report.generatedAt}
