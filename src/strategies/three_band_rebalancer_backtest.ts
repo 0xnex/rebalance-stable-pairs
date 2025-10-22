@@ -34,6 +34,11 @@ type EnvConfig = {
   volatilityWindowMs: number;
   momentumWindowSize: number;
   activeBandWeightPercent: number;
+  tokenADecimals: number;
+  tokenBDecimals: number;
+  position1AllocationPercent: number;
+  position2AllocationPercent: number;
+  position3AllocationPercent: number;
 };
 
 function readEnvConfig(): EnvConfig {
@@ -93,6 +98,20 @@ function readEnvConfig(): EnvConfig {
     volatilityWindowMs: 600_000,
     momentumWindowSize: 5,
     activeBandWeightPercent: 33.33, // Not used when enableDynamicAllocation=false
+    tokenADecimals: toNumber(process.env.TOKEN_A_DECIMALS, 9),
+    tokenBDecimals: toNumber(process.env.TOKEN_B_DECIMALS, 9),
+    position1AllocationPercent: toNumber(
+      process.env.THREEBAND_POS1_ALLOCATION,
+      33.33
+    ),
+    position2AllocationPercent: toNumber(
+      process.env.THREEBAND_POS2_ALLOCATION,
+      33.33
+    ),
+    position3AllocationPercent: toNumber(
+      process.env.THREEBAND_POS3_ALLOCATION,
+      33.33
+    ),
   };
 }
 
@@ -137,6 +156,30 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
   let lastTimestamp = -1;
   let lastLogKey: string | null = null;
 
+  // Track accumulated fees per position across rebalances
+  const accumulatedFeesA: Record<number, bigint> = {};
+  const accumulatedFeesB: Record<number, bigint> = {};
+  // Track previous fees to detect when fees are collected/reset
+  const previousFeesA: Record<number, bigint> = {};
+  const previousFeesB: Record<number, bigint> = {};
+
+  // Helper function to format raw amount to decimal string
+  const formatAmount = (
+    rawAmount: bigint | string,
+    decimals: number
+  ): string => {
+    try {
+      const raw = typeof rawAmount === "string" ? BigInt(rawAmount) : rawAmount;
+      const divisor = BigInt(10 ** decimals);
+      const integerPart = raw / divisor;
+      const remainder = raw % divisor;
+      const fractionalPart = remainder.toString().padStart(decimals, "0");
+      return `${integerPart}.${fractionalPart}`;
+    } catch {
+      return "0";
+    }
+  };
+
   const log = (ctx: StrategyContext, action: string, message: string) => {
     const key = `${action}:${message}`;
     if (lastLogKey === key) return;
@@ -180,7 +223,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         6
       )} | value=${totalValue.toFixed(0)} (A:${valueA.toFixed(
         0
-      )} B:${valueB.toFixed(0)}) | positions=${positions.length
+      )} B:${valueB.toFixed(0)}) | positions=${
+        positions.length
       } inRange=${inRangeCount} | fees=(A:${totalFeesA} B:${totalFeesB})`
     );
 
@@ -193,10 +237,11 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             tick >= pos.tickLower && tick < pos.tickUpper
               ? "IN-RANGE"
               : tick < pos.tickLower
-                ? "BELOW"
-                : "ABOVE";
+              ? "BELOW"
+              : "ABOVE";
           ctx.logger?.log?.(
-            `[three-band]   Position ${i + 1}: [${pos.tickLower},${pos.tickUpper
+            `[three-band]   Position ${i + 1}: [${pos.tickLower},${
+              pos.tickUpper
             }] ${status} liquidity=${pos.liquidity}`
           );
         }
@@ -219,183 +264,163 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         const pos = positions[i]!;
         const posInRange =
           tick >= pos.tickLower && tick < pos.tickUpper ? "1" : "0";
+        // Use tokensOwed which is updated by updateAllPositionFees() for accurate uncollected fees
         const posFeesA = pos.tokensOwed0.toString();
         const posFeesB = pos.tokensOwed1.toString();
+        const allocation =
+          i === 0
+            ? env.position1AllocationPercent
+            : i === 1
+            ? env.position2AllocationPercent
+            : env.position3AllocationPercent;
 
         // Check if position has liquidity
         if (pos.liquidity === 0n) {
           // Position has no liquidity - treat as empty
           ctx.logger?.log?.(
-            `[three-band-warn] Position ${i + 1} [${pos.tickLower},${pos.tickUpper
+            `[three-band-warn] Position ${i + 1} [${pos.tickLower},${
+              pos.tickUpper
             }] has ZERO liquidity - failed to open or was fully closed`
           );
           csvParts.push(
             pos.tickLower.toString(),
             pos.tickUpper.toString(),
-            "0",
-            "0",
-            "0",
-            "0",
-            "0"
+            "0", // Raw amount A
+            "0", // Decimal amount A
+            "0", // Raw amount B
+            "0", // Decimal amount B
+            "0", // Raw fee A
+            "0", // Decimal fee A
+            "0", // Total fee A
+            "0", // Raw fee B
+            "0", // Decimal fee B
+            "0", // Total fee B
+            "0", // In range
+            allocation.toString()
           );
         } else {
           // Calculate actual current amounts based on position's liquidity and current price
           const { currentAmountA, currentAmountB } =
             manager.calculatePositionAmounts(pos.id);
 
-          // Debug: log if position has zero amounts but has liquidity
-          if (
-            currentAmountA === 0n &&
-            currentAmountB === 0n &&
-            pos.liquidity > 0n
-          ) {
-            ctx.logger?.log?.(
-              `[three-band-debug] Position ${i + 1} (${pos.id}) has liquidity ${pos.liquidity
-              } but shows 0,0 amounts. Range:[${pos.tickLower},${pos.tickUpper
-              }] CurrentTick:${tick}`
-            );
+          // Convert raw amounts to decimal format using helper function
+          const decimalAmountA = formatAmount(
+            currentAmountA,
+            env.tokenADecimals
+          );
+          const decimalAmountB = formatAmount(
+            currentAmountB,
+            env.tokenBDecimals
+          );
+
+          // Track accumulated fees across rebalances
+          const currentFeesA = BigInt(posFeesA);
+          const currentFeesB = BigInt(posFeesB);
+
+          // Initialize accumulated fees if not exists
+          if (accumulatedFeesA[i] === undefined) {
+            accumulatedFeesA[i] = 0n;
+            previousFeesA[i] = 0n;
+          }
+          if (accumulatedFeesB[i] === undefined) {
+            accumulatedFeesB[i] = 0n;
+            previousFeesB[i] = 0n;
           }
 
-          // Debug: detect and log unrealistic spikes
-          const MAX_REASONABLE_AMOUNT = 1e18; // 1 quintillion (1 ETH in wei)
-          const MAX_REASONABLE_FEES = 1e15;   // 1 quadrillion (reasonable fee limit)
+          // Detect if fees were collected (current < previous) or position was rebalanced
+          // In both cases, add previous fees to accumulated before reset
+          const prevA = previousFeesA[i]!;
+          const prevB = previousFeesB[i]!;
 
-          // Safe BigInt to Number conversion with overflow protection
-          const safeBigIntToNumber = (value: bigint): number => {
-            try {
-              const num = Number(value);
-              // Check for overflow (Number.MAX_SAFE_INTEGER = 2^53 - 1)
-              if (!Number.isFinite(num) || num > Number.MAX_SAFE_INTEGER) {
-                return Number.MAX_SAFE_INTEGER;
-              }
-              return num;
-            } catch {
-              return Number.MAX_SAFE_INTEGER;
-            }
-          };
-
-          const amountANum = safeBigIntToNumber(currentAmountA);
-          const amountBNum = safeBigIntToNumber(currentAmountB);
-
-          if (amountANum > MAX_REASONABLE_AMOUNT || amountBNum > MAX_REASONABLE_AMOUNT ||
-            posFeesA > MAX_REASONABLE_FEES || posFeesB > MAX_REASONABLE_FEES) {
-            ctx.logger?.log?.(
-              `[three-band-SPIKE] Position ${i + 1} UNREALISTIC VALUES: amountA=${currentAmountA} amountB=${currentAmountB} feesA=${posFeesA} feesB=${posFeesB} liquidity=${pos.liquidity} tick=${tick} range=[${pos.tickLower},${pos.tickUpper}]`
-            );
-
-            // Cap the values to prevent CSV corruption
-            const cappedAmountA = amountANum > MAX_REASONABLE_AMOUNT ? pos.amountA : currentAmountA;
-            const cappedAmountB = amountBNum > MAX_REASONABLE_AMOUNT ? pos.amountB : currentAmountB;
-            const cappedFeesA = posFeesA > MAX_REASONABLE_FEES ? 0 : posFeesA;
-            const cappedFeesB = posFeesB > MAX_REASONABLE_FEES ? 0 : posFeesB;
-
-            csvParts.push(
-              pos.tickLower.toString(),
-              pos.tickUpper.toString(),
-              cappedAmountA.toString(),
-              cappedAmountB.toString(),
-              cappedFeesA.toString(),
-              cappedFeesB.toString(),
-              posInRange
-            );
-          } else {
-            csvParts.push(
-              pos.tickLower.toString(),
-              pos.tickUpper.toString(),
-              currentAmountA.toString(),
-              currentAmountB.toString(),
-              posFeesA.toString(),
-              posFeesB.toString(),
-              posInRange
-            );
+          if (currentFeesA < prevA) {
+            accumulatedFeesA[i]! += prevA;
           }
+          if (currentFeesB < prevB) {
+            accumulatedFeesB[i]! += prevB;
+          }
+
+          // Update previous fees for next comparison
+          previousFeesA[i] = currentFeesA;
+          previousFeesB[i] = currentFeesB;
+
+          // Calculate total fees (accumulated + current)
+          const totalAccumulatedFeesA = accumulatedFeesA[i]! + currentFeesA;
+          const totalAccumulatedFeesB = accumulatedFeesB[i]! + currentFeesB;
+
+          const decimalFeesA = formatAmount(currentFeesA, env.tokenADecimals);
+          const decimalFeesB = formatAmount(currentFeesB, env.tokenBDecimals);
+          const decimalTotalFeesA = formatAmount(
+            totalAccumulatedFeesA,
+            env.tokenADecimals
+          );
+          const decimalTotalFeesB = formatAmount(
+            totalAccumulatedFeesB,
+            env.tokenBDecimals
+          );
+
+          csvParts.push(
+            pos.tickLower.toString(),
+            pos.tickUpper.toString(),
+            currentAmountA.toString(), // Raw amount
+            decimalAmountA, // Decimal amount
+            currentAmountB.toString(), // Raw amount
+            decimalAmountB, // Decimal amount
+            currentFeesA.toString(), // Raw fee
+            decimalFeesA, // Decimal fee
+            decimalTotalFeesA,
+            currentFeesB.toString(), // Raw fee
+            decimalFeesB, // Decimal fee
+            decimalTotalFeesB,
+            posInRange,
+            allocation.toString()
+          );
         }
       } else {
         // Empty fields for missing positions
-        csvParts.push("", "", "", "", "", "", "");
+        csvParts.push("", "", "", "", "", "", "", "", "", "", "", "", "", "");
       }
     }
 
-    // Calculate sum of position amounts (actual current amounts) with safety checks
+    // Calculate sum of position amounts (actual current amounts)
     let sumAmountA = 0n;
     let sumAmountB = 0n;
-    const MAX_TOTAL_AMOUNT = 1000000000000000000n; // 1e18 - realistic DeFi limit
-
     for (const pos of positions) {
-      try {
-        const { currentAmountA, currentAmountB } =
-          manager.calculatePositionAmounts(pos.id);
-
-        // Safety check to prevent overflow accumulation
-        if (currentAmountA < MAX_TOTAL_AMOUNT && currentAmountB < MAX_TOTAL_AMOUNT) {
-          sumAmountA += currentAmountA;
-          sumAmountB += currentAmountB;
-        } else {
-          // Fallback to stored amounts for unrealistic calculated amounts
-          sumAmountA += pos.amountA;
-          sumAmountB += pos.amountB;
-          ctx.logger?.log?.(
-            `[three-band-SPIKE] Position ${pos.id} calculated amounts too large, using stored amounts`
-          );
-        }
-      } catch (error) {
-        // Fallback to stored amounts if calculation fails
-        sumAmountA += pos.amountA;
-        sumAmountB += pos.amountB;
-        ctx.logger?.log?.(
-          `[three-band-error] Failed to calculate amounts for position ${pos.id}, using stored amounts`
-        );
-      }
+      const { currentAmountA, currentAmountB } =
+        manager.calculatePositionAmounts(pos.id);
+      sumAmountA += currentAmountA;
+      sumAmountB += currentAmountB;
     }
 
     // Add cash balances to get true total
     const cashA = totals.cashAmountA ?? 0n;
     const cashB = totals.cashAmountB ?? 0n;
-    const totalCurrentA = sumAmountA + cashA;
-    const totalCurrentB = sumAmountB + cashB;
-
-    // Safety check for total values before CSV output
-    const MAX_REASONABLE_TOTAL = 1e19; // 10 quintillion (allow for multiple positions)
-
-    // Safe BigInt to Number conversion for totals
-    const safeBigIntToNumber = (value: bigint): number => {
-      try {
-        const num = Number(value);
-        if (!Number.isFinite(num) || num > Number.MAX_SAFE_INTEGER) {
-          return Number.MAX_SAFE_INTEGER;
-        }
-        return num;
-      } catch {
-        return Number.MAX_SAFE_INTEGER;
-      }
-    };
-
-    const totalANum = safeBigIntToNumber(totalCurrentA);
-    const totalBNum = safeBigIntToNumber(totalCurrentB);
-
-    let finalTotalA = totalCurrentA;
-    let finalTotalB = totalCurrentB;
-
-    if (totalANum > MAX_REASONABLE_TOTAL || totalBNum > MAX_REASONABLE_TOTAL) {
-      ctx.logger?.log?.(
-        `[three-band-SPIKE] UNREALISTIC TOTALS: totalA=${totalCurrentA} totalB=${totalCurrentB} - using fallback`
-      );
-      // Fallback to sum of stored amounts + cash
-      finalTotalA = positions.reduce((sum, pos) => sum + pos.amountA, 0n) + cashA;
-      finalTotalB = positions.reduce((sum, pos) => sum + pos.amountB, 0n) + cashB;
-    }
+    const totalCurrentARaw = sumAmountA + cashA;
+    const totalCurrentBRaw = sumAmountB + cashB;
+    const totalCurrentA = formatAmount(totalCurrentARaw, env.tokenADecimals);
+    const totalCurrentB = formatAmount(totalCurrentBRaw, env.tokenBDecimals);
+    const totalFeesARaw = totalFeesA;
+    const totalFeesBRaw = totalFeesB;
+    const totalFeesADecimal = formatAmount(totalFeesARaw, env.tokenADecimals);
+    const totalFeesBDecimal = formatAmount(totalFeesBRaw, env.tokenBDecimals);
+    const totalFeeDecimal =
+      Number(totalFeesADecimal) * price + Number(totalFeesBDecimal);
+    const totalTokenDecimal =
+      Number(totalCurrentA) * price + Number(totalCurrentB);
+    const totalValueDecimal = totalFeeDecimal + totalTokenDecimal;
 
     // Add totals (sum of actual position amounts + cash)
     csvParts.push(
-      finalTotalA.toString(),
-      finalTotalB.toString(),
-      totalFeesA.toString(),
-      totalFeesB.toString()
-    );
-
-    // Debug: verify totals are reasonable
-    ctx.logger?.log?.(
-      `[three-band-debug] Sum of positions: A=${sumAmountA} B=${sumAmountB}, Cash: A=${cashA} B=${cashB}, Total: A=${totalCurrentA} B=${totalCurrentB}`
+      totalCurrentARaw.toString(), // Raw total amount A
+      totalCurrentA, // Decimal total amount A
+      totalCurrentBRaw.toString(), // Raw total amount B
+      totalCurrentB, // Decimal total amount B
+      totalFeesARaw.toString(), // Raw total fee A
+      totalFeesADecimal, // Decimal total fee A
+      totalFeesBRaw.toString(), // Raw total fee B
+      totalFeesBDecimal, // Decimal total fee B
+      totalFeeDecimal.toString(),
+      totalTokenDecimal.toString(),
+      totalValueDecimal.toString()
     );
 
     // Write CSV to separate file
@@ -410,28 +435,56 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         "pos1_tick_lower",
         "pos1_tick_upper",
         "pos1_amount_a",
+        "pos1_amount_a_decimal",
         "pos1_amount_b",
+        "pos1_amount_b_decimal",
         "pos1_fee_a",
+        "pos1_fee_a_decimal",
+        "pos1_total_fee_a",
         "pos1_fee_b",
+        "pos1_fee_b_decimal",
+        "pos1_total_fee_b",
         "pos1_in_range",
+        "pos1_allocation_percent",
         "pos2_tick_lower",
         "pos2_tick_upper",
         "pos2_amount_a",
+        "pos2_amount_a_decimal",
         "pos2_amount_b",
+        "pos2_amount_b_decimal",
         "pos2_fee_a",
+        "pos2_fee_a_decimal",
+        "pos2_total_fee_a",
         "pos2_fee_b",
+        "pos2_fee_b_decimal",
+        "pos2_total_fee_b",
         "pos2_in_range",
+        "pos2_allocation_percent",
         "pos3_tick_lower",
         "pos3_tick_upper",
         "pos3_amount_a",
+        "pos3_amount_a_decimal",
         "pos3_amount_b",
+        "pos3_amount_b_decimal",
         "pos3_fee_a",
+        "pos3_fee_a_decimal",
+        "pos3_total_fee_a",
         "pos3_fee_b",
+        "pos3_fee_b_decimal",
+        "pos3_total_fee_b",
         "pos3_in_range",
+        "pos3_allocation_percent",
         "total_amount_a",
+        "total_amount_a_decimal",
         "total_amount_b",
+        "total_amount_b_decimal",
         "total_fee_a",
+        "total_fee_a_decimal",
         "total_fee_b",
+        "total_fee_b_decimal",
+        "total_fee",
+        "total_token",
+        "total_value",
       ];
       fs.writeFileSync(csvFilePath, csvHeader.join(",") + "\n");
       csvInitialized = true;
@@ -490,7 +543,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             ctx.logger?.log?.(
               `[three-band]   → Conditions: minOutOfRangeMs=${(
                 config.minOutOfRangeMs! / 1000
-              ).toFixed(0)}s minProfitB=${minProfitB} rotationTickThreshold=${config.rotationTickThreshold
+              ).toFixed(0)}s minProfitB=${minProfitB} rotationTickThreshold=${
+                config.rotationTickThreshold
               }ticks`
             );
 
