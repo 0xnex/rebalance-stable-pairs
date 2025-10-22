@@ -50,7 +50,8 @@ type EnvConfig = {
   // Fee collection configuration
   enableEnhancedFeeCollection: boolean;
   feeCollectionIntervalMs: number;
-  feeCollectionThresholdPercent: number;
+  feeCollectionThresholdTokenA: bigint;
+  feeCollectionThresholdTokenB: bigint;
   enableSmartReinvestment: boolean;
   reinvestmentStrategy: string;
   minReinvestmentAmount: number;
@@ -142,23 +143,23 @@ function readEnvConfig(): EnvConfig {
 
     // Fee collection configuration
     enableEnhancedFeeCollection:
-      toNumber(process.env.THREEBAND_ENHANCED_FEE_COLLECTION, 0) === 1,
+      toNumber(process.env.ENHANCED_FEE_COLLECTION, 0) === 1,
     feeCollectionIntervalMs: toNumber(
-      process.env.THREEBAND_FEE_COLLECTION_INTERVAL_MS,
+      process.env.FEE_COLLECTION_INTERVAL_MS,
       3600000
     ), // 1 hour
-    feeCollectionThresholdPercent: toNumber(
-      process.env.THREEBAND_FEE_COLLECTION_THRESHOLD_PCT,
-      0.5
-    ), // 0.5%
-    enableSmartReinvestment:
-      toNumber(process.env.THREEBAND_SMART_REINVESTMENT, 1) === 1,
+    feeCollectionThresholdTokenA: toBigInt(
+      process.env.FEE_COLLECTION_THRESHOLD_TOKENA,
+      1000000n
+    ), // 1M raw units
+    feeCollectionThresholdTokenB: toBigInt(
+      process.env.FEE_COLLECTION_THRESHOLD_TOKENB,
+      1000000n
+    ), // 1M raw units
+    enableSmartReinvestment: toNumber(process.env.SMART_REINVESTMENT, 1) === 1,
     reinvestmentStrategy:
-      process.env.THREEBAND_REINVESTMENT_STRATEGY || "most_profitable",
-    minReinvestmentAmount: toNumber(
-      process.env.THREEBAND_MIN_REINVESTMENT_AMOUNT,
-      1.0
-    ),
+      process.env.REINVESTMENT_STRATEGY || "most_profitable",
+    minReinvestmentAmount: toNumber(process.env.MIN_REINVESTMENT_AMOUNT, 1.0),
   };
 }
 
@@ -196,7 +197,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       ? {
           enablePeriodicFeeCollection: true,
           feeCollectionIntervalMs: env.feeCollectionIntervalMs,
-          feeCollectionThresholdPercent: env.feeCollectionThresholdPercent,
+          feeCollectionThresholdTokenA: env.feeCollectionThresholdTokenA,
+          feeCollectionThresholdTokenB: env.feeCollectionThresholdTokenB,
           enableSmartReinvestment: env.enableSmartReinvestment,
           reinvestmentStrategy: env.reinvestmentStrategy as any,
           minReinvestmentAmount: env.minReinvestmentAmount,

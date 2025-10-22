@@ -30,7 +30,8 @@ export THREEBAND_POS3_TICK_WIDTH=4   # 4 ticks
 # Enhanced Fee Collection Settings
 ENHANCED_FEE_COLLECTION=1
 FEE_COLLECTION_INTERVAL_MS=3600000  # 1 hour
-FEE_COLLECTION_THRESHOLD_PCT=0.1    # 0.2%
+FEE_COLLECTION_THRESHOLD_TOKENA=10000  # 10K raw units of Token A
+FEE_COLLECTION_THRESHOLD_TOKENB=10000  # 10K raw units of Token B
 SMART_REINVESTMENT=1
 REINVESTMENT_STRATEGY="most_profitable"  # most_profitable, balanced, active_range
 

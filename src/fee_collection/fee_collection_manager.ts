@@ -36,6 +36,10 @@ export class FeeCollectionManager {
       feeCollectionIntervalMs: config.feeCollectionIntervalMs ?? 3600000, // 1 hour
       feeCollectionThresholdPercent:
         config.feeCollectionThresholdPercent ?? 0.5,
+      feeCollectionThresholdTokenA:
+        config.feeCollectionThresholdTokenA ?? 1000000n,
+      feeCollectionThresholdTokenB:
+        config.feeCollectionThresholdTokenB ?? 1000000n,
       enableSmartReinvestment: config.enableSmartReinvestment ?? true,
       reinvestmentStrategy: config.reinvestmentStrategy ?? "most_profitable",
       profitabilityWindowMs: config.profitabilityWindowMs ?? 86400000, // 24 hours
@@ -126,6 +130,22 @@ export class FeeCollectionManager {
       return false;
     }
 
+    // Use absolute token thresholds if configured, otherwise fall back to percentage
+    if (
+      this.config.feeCollectionThresholdTokenA &&
+      this.config.feeCollectionThresholdTokenB
+    ) {
+      const totals = this.positionManager.getTotals();
+      const unclaimedFees0 = totals.feesOwed0 ?? 0n;
+      const unclaimedFees1 = totals.feesOwed1 ?? 0n;
+
+      return (
+        unclaimedFees0 >= this.config.feeCollectionThresholdTokenA ||
+        unclaimedFees1 >= this.config.feeCollectionThresholdTokenB
+      );
+    }
+
+    // Fallback to percentage-based threshold
     const threshold =
       (totalValue *
         BigInt(Math.floor(this.config.feeCollectionThresholdPercent * 100))) /
@@ -363,7 +383,7 @@ export class FeeCollectionManager {
       return b.profitabilityScore - a.profitabilityScore; // Then by profitability
     });
 
-    return sorted[0].positionId;
+    return sorted[0]?.positionId || positions[0]?.positionId || "";
   }
 
   /**

@@ -7,6 +7,8 @@ export interface FeeCollectionConfig {
   enablePeriodicFeeCollection?: boolean;
   feeCollectionIntervalMs?: number;
   feeCollectionThresholdPercent?: number;
+  feeCollectionThresholdTokenA?: bigint;
+  feeCollectionThresholdTokenB?: bigint;
 
   // Smart reinvestment settings
   enableSmartReinvestment?: boolean;
