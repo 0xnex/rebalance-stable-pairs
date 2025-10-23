@@ -626,7 +626,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             // Block rebalancing due to constraints
             outcome = {
                 action: "wait" as const,
-                message: `Option 3 constraint: ${rebalanceCheck.reason}`
+                message: `Option 3 constraint: ${rebalanceCheck.reason} at time ${new Date(ctx.timestamp).toISOString()}`,
             };
         } else {
             // Execute normal strategy
