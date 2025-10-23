@@ -27,13 +27,11 @@ export THREEBAND_POS1_TICK_WIDTH=2   # 2 ticks
 export THREEBAND_POS2_TICK_WIDTH=4   # 4 ticks
 export THREEBAND_POS3_TICK_WIDTH=4   # 4 ticks
 
-# Enhanced Fee Collection Settings
+# Simple Fee Collection Settings
 ENHANCED_FEE_COLLECTION=1
 FEE_COLLECTION_INTERVAL_MS=3600000  # 1 hour
-FEE_COLLECTION_THRESHOLD_TOKENA=10000  # 10K raw units of Token A
-FEE_COLLECTION_THRESHOLD_TOKENB=10000  # 10K raw units of Token B
-SMART_REINVESTMENT=1
-REINVESTMENT_STRATEGY="most_profitable"  # most_profitable, balanced, active_range
+FEE_COLLECTION_THRESHOLD_TOKENA=10000  # 10K raw units of Token A (minimal amount)
+FEE_COLLECTION_THRESHOLD_TOKENB=10000  # 10K raw units of Token B (minimal amount)
 
 bun --expose-gc run src/enhanced_backtest_runner.ts \
     --poolId 0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \

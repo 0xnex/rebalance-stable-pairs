@@ -84,7 +84,7 @@ export class VirtualPositionManager {
 
   private static readonly Q64 = 1n << 64n;
 
-  constructor(private readonly pool: PoolPositionContext) { }
+  constructor(private readonly pool: PoolPositionContext) {}
 
   /**
    * Subtract with modulo wrap-around for fee growth calculations
@@ -167,7 +167,10 @@ export class VirtualPositionManager {
    * Calculate total fees for a position using monotonic, non-negative deltas.
    * Ensures we never return negative fees due to wrapped or decreasing checkpoints.
    */
-  private calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+  private calculatePositionFees(positionId: string): {
+    fee0: bigint;
+    fee1: bigint;
+  } {
     const position = this.positions.get(positionId);
     if (!position) {
       return { fee0: 0n, fee1: 0n };
@@ -177,8 +180,16 @@ export class VirtualPositionManager {
     this.processTickCrossings();
 
     // Compute feeGrowthInside using pool (preferred) with fallback to virtual ticks
-    const feeInside0 = this.calculateFeeGrowthInside(position.tickLower, position.tickUpper, 0);
-    const feeInside1 = this.calculateFeeGrowthInside(position.tickLower, position.tickUpper, 1);
+    const feeInside0 = this.calculateFeeGrowthInside(
+      position.tickLower,
+      position.tickUpper,
+      0
+    );
+    const feeInside1 = this.calculateFeeGrowthInside(
+      position.tickLower,
+      position.tickUpper,
+      1
+    );
 
     // Deltas since last checkpoint; clamp to >= 0 to avoid negative due to wrap or reorder
     let delta0 = feeInside0 - position.feeGrowthInside0LastX64;
@@ -187,8 +198,8 @@ export class VirtualPositionManager {
     if (delta1 < 0n) delta1 = 0n;
 
     // Newly accrued fees
-    const newFee0 = (position.liquidity * delta0) / (2n ** 64n);
-    const newFee1 = (position.liquidity * delta1) / (2n ** 64n);
+    const newFee0 = (position.liquidity * delta0) / 2n ** 64n;
+    const newFee1 = (position.liquidity * delta1) / 2n ** 64n;
 
     // Total owed = already owed + newly accrued; never negative
     let total0 = position.tokensOwed0 + newFee0;
@@ -206,11 +217,11 @@ export class VirtualPositionManager {
    */
   private getTickData(tick: number):
     | {
-      liquidityNet: bigint;
-      liquidityGross: bigint;
-      feeGrowthOutside0X64: bigint;
-      feeGrowthOutside1X64: bigint;
-    }
+        liquidityNet: bigint;
+        liquidityGross: bigint;
+        feeGrowthOutside0X64: bigint;
+        feeGrowthOutside1X64: bigint;
+      }
     | undefined {
     // Only use virtual ticks - pool ticks have wrapped values
     return this.virtualTicks.get(tick);
@@ -779,11 +790,11 @@ export class VirtualPositionManager {
       ).toFixed(2);
       throw new Error(
         `Cannot create position: total virtual liquidity (${totalAfterCreation.toString()}) ` +
-        `would exceed ${(this.maxLiquidityRatio * 100).toFixed(
-          0
-        )}% of pool liquidity (${poolLiquidity.toString()}). ` +
-        `This would be ${ratio}% of pool. Current virtual: ${currentActiveLiquidity.toString()}, ` +
-        `new position: ${liquidity.toString()}.`
+          `would exceed ${(this.maxLiquidityRatio * 100).toFixed(
+            0
+          )}% of pool liquidity (${poolLiquidity.toString()}). ` +
+          `This would be ${ratio}% of pool. Current virtual: ${currentActiveLiquidity.toString()}, ` +
+          `new position: ${liquidity.toString()}.`
       );
     }
 
@@ -791,7 +802,7 @@ export class VirtualPositionManager {
     if (liquidity > poolLiquidity / 10n) {
       console.warn(
         `⚠️  Warning: Single position liquidity (${liquidity.toString()}) is >10% of pool liquidity (${poolLiquidity.toString()}). ` +
-        `Consider splitting into smaller positions for more accurate fee tracking.`
+          `Consider splitting into smaller positions for more accurate fee tracking.`
       );
     }
 
@@ -962,13 +973,21 @@ export class VirtualPositionManager {
     let amount0 = 0n;
     let amount1 = 0n;
 
-    if (position.liquidity > 0n && sqrtLower > 0n && sqrtUpper > 0n && sqrtPriceX64 > 0n) {
+    if (
+      position.liquidity > 0n &&
+      sqrtLower > 0n &&
+      sqrtUpper > 0n &&
+      sqrtPriceX64 > 0n
+    ) {
       try {
         if (currentTick < position.tickLower) {
           // Position is above current price - all token0 (tokenA)
           // Safe division to prevent overflow
           if (sqrtLower > 0n && sqrtUpper > 0n) {
-            amount0 = (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) / sqrtLower / sqrtUpper;
+            amount0 =
+              (position.liquidity * Q64 * (sqrtUpper - sqrtLower)) /
+              sqrtLower /
+              sqrtUpper;
           }
           amount1 = 0n;
         } else if (currentTick >= position.tickUpper) {
@@ -978,7 +997,10 @@ export class VirtualPositionManager {
         } else {
           // Position is in range - mix of both tokens
           if (sqrtPriceX64 > 0n && sqrtUpper > 0n) {
-            amount0 = (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) / sqrtPriceX64 / sqrtUpper;
+            amount0 =
+              (position.liquidity * Q64 * (sqrtUpper - sqrtPriceX64)) /
+              sqrtPriceX64 /
+              sqrtUpper;
           }
           amount1 = (position.liquidity * (sqrtPriceX64 - sqrtLower)) / Q64;
         }
@@ -987,17 +1009,21 @@ export class VirtualPositionManager {
         // Use realistic DeFi limits instead of astronomical 2^96
         const MAX_REASONABLE_AMOUNT = 1000000000000000000n; // 1e18 (1 ETH in wei, reasonable for most tokens)
 
-        if (amount0 > MAX_REASONABLE_AMOUNT || amount1 > MAX_REASONABLE_AMOUNT) {
+        if (
+          amount0 > MAX_REASONABLE_AMOUNT ||
+          amount1 > MAX_REASONABLE_AMOUNT
+        ) {
           // Log the problematic calculation for debugging
-          console.warn(`[VirtualPositionManager] Calculated amount too large: amount0=${amount0} amount1=${amount1} liquidity=${position.liquidity} tick=${currentTick} range=[${position.tickLower},${position.tickUpper}]`);
-          amount0 = position.amountA;
-          amount1 = position.amountB;
+          console.warn(
+            `[VirtualPositionManager] Calculated amount too large: amount0=${amount0} amount1=${amount1} liquidity=${position.liquidity} tick=${currentTick} range=[${position.tickLower},${position.tickUpper}]`
+          );
+          amount0 = position.amount0;
+          amount1 = position.amount1;
         }
-
       } catch (error) {
         // Fallback to stored amounts if calculation fails
-        amount0 = position.amountA;
-        amount1 = position.amountB;
+        amount0 = position.amount0;
+        amount1 = position.amount1;
       }
     }
 
@@ -1010,7 +1036,10 @@ export class VirtualPositionManager {
   /**
    * Calculate newly accrued fees since last update (for internal use by updatePositionFees)
    */
-  private calculateNewPositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+  private calculateNewPositionFees(positionId: string): {
+    fee0: bigint;
+    fee1: bigint;
+  } {
     const position = this.positions.get(positionId);
     if (!position) return { fee0: 0n, fee1: 0n };
 
@@ -1796,8 +1825,12 @@ export class VirtualPositionManager {
       this.pool.tickCurrent < position.tickUpper;
 
     const snapshot = this.calculatePositionFees(positionId);
-    const totalFee0 = inRange ? position.tokensOwed0 + snapshot.fee0 : snapshot.fee0;
-    const totalFee1 = inRange ? position.tokensOwed1 + snapshot.fee1 : snapshot.fee1;
+    const totalFee0 = inRange
+      ? position.tokensOwed0 + snapshot.fee0
+      : snapshot.fee0;
+    const totalFee1 = inRange
+      ? position.tokensOwed1 + snapshot.fee1
+      : snapshot.fee1;
 
     // Reset tokensOwed (we've now collected them)
     position.tokensOwed0 = 0n;
@@ -1852,6 +1885,203 @@ export class VirtualPositionManager {
       position.amount1
     );
     return true;
+  }
+
+  /**
+   * Add liquidity to an existing position
+   * @param positionId The ID of the position to add liquidity to
+   * @param amount0 The amount of token0 to add
+   * @param amount1 The amount of token1 to add
+   * @param actionCost Optional action cost for the operation
+   * @returns Object containing liquidity information and amounts used
+   */
+  addLiquidity(
+    positionId: string,
+    amount0: bigint,
+    amount1: bigint,
+    actionCost?: ActionCost
+  ): {
+    success: boolean;
+    addedLiquidity: bigint;
+    totalLiquidity: bigint;
+    usedAmount0: bigint;
+    usedAmount1: bigint;
+    refundAmount0: bigint;
+    refundAmount1: bigint;
+    message?: string;
+  } {
+    const position = this.positions.get(positionId);
+    if (!position) {
+      return {
+        success: false,
+        addedLiquidity: 0n,
+        totalLiquidity: 0n,
+        usedAmount0: 0n,
+        usedAmount1: 0n,
+        refundAmount0: amount0,
+        refundAmount1: amount1,
+        message: "Position not found",
+      };
+    }
+
+    if (amount0 < 0n || amount1 < 0n) {
+      return {
+        success: false,
+        addedLiquidity: 0n,
+        totalLiquidity: position.liquidity,
+        usedAmount0: 0n,
+        usedAmount1: 0n,
+        refundAmount0: amount0,
+        refundAmount1: amount1,
+        message: "Amounts must be non-negative",
+      };
+    }
+
+    // Check if we have enough balance
+    if (amount0 > this.amount0 || amount1 > this.amount1) {
+      return {
+        success: false,
+        addedLiquidity: 0n,
+        totalLiquidity: position.liquidity,
+        usedAmount0: 0n,
+        usedAmount1: 0n,
+        refundAmount0: amount0,
+        refundAmount1: amount1,
+        message: `Insufficient balance: need ${amount0} token0, ${amount1} token1, have ${this.amount0} token0, ${this.amount1} token1`,
+      };
+    }
+
+    try {
+      // Calculate how much liquidity can be added with the provided amounts
+      const funding = this.computePositionFunding(
+        position.tickLower,
+        position.tickUpper,
+        amount0,
+        amount1
+      );
+
+      if (funding.liquidity <= 0n) {
+        return {
+          success: false,
+          addedLiquidity: 0n,
+          totalLiquidity: position.liquidity,
+          usedAmount0: 0n,
+          usedAmount1: 0n,
+          refundAmount0: amount0,
+          refundAmount1: amount1,
+          message: "Cannot derive liquidity from provided amounts",
+        };
+      }
+
+      // Store original position state for rollback if needed
+      const originalAmount0 = position.amount0;
+      const originalAmount1 = position.amount1;
+      const originalLiquidity = position.liquidity;
+      const originalCash0 = this.amount0;
+      const originalCash1 = this.amount1;
+
+      try {
+        // Update position amounts
+        position.amount0 += funding.usedA;
+        position.amount1 += funding.usedB;
+
+        // Calculate new total liquidity for the position
+        const newTotalLiquidity = this.calculateVirtualLiquidity(
+          position.tickLower,
+          position.tickUpper,
+          position.amount0,
+          position.amount1
+        );
+
+        // Validate that total virtual liquidity doesn't exceed pool liquidity ratio
+        const poolLiquidity = this.pool.liquidity;
+        const currentActiveLiquidity = this.getTotalActiveLiquidity();
+        const liquidityIncrease = newTotalLiquidity - originalLiquidity;
+        const totalAfterAddition =
+          currentActiveLiquidity - originalLiquidity + newTotalLiquidity;
+        const maxAllowed =
+          (poolLiquidity * BigInt(Math.floor(this.maxLiquidityRatio * 1000))) /
+          1000n;
+
+        if (totalAfterAddition > maxAllowed) {
+          // Rollback changes
+          position.amount0 = originalAmount0;
+          position.amount1 = originalAmount1;
+          position.liquidity = originalLiquidity;
+
+          const ratio = (
+            (Number(totalAfterAddition) / Number(poolLiquidity)) *
+            100
+          ).toFixed(2);
+          return {
+            success: false,
+            addedLiquidity: 0n,
+            totalLiquidity: originalLiquidity,
+            usedAmount0: 0n,
+            usedAmount1: 0n,
+            refundAmount0: amount0,
+            refundAmount1: amount1,
+            message: `Cannot add liquidity: total virtual liquidity would exceed ${(
+              this.maxLiquidityRatio * 100
+            ).toFixed(0)}% of pool liquidity. Would be ${ratio}% of pool.`,
+          };
+        }
+
+        // Update position liquidity
+        position.liquidity = newTotalLiquidity;
+
+        // Deduct used amounts from cash balance
+        this.amount0 -= funding.usedA;
+        this.amount1 -= funding.usedB;
+
+        // Apply action cost
+        this.applyActionCost(actionCost);
+
+        console.log(
+          `[VirtualPositionManager] Added liquidity to position ${positionId}: +${liquidityIncrease} L (total: ${newTotalLiquidity}), used ${funding.usedA} token0 + ${funding.usedB} token1`
+        );
+
+        return {
+          success: true,
+          addedLiquidity: liquidityIncrease,
+          totalLiquidity: newTotalLiquidity,
+          usedAmount0: funding.usedA,
+          usedAmount1: funding.usedB,
+          refundAmount0: funding.refundA,
+          refundAmount1: funding.refundB,
+          message: `Successfully added ${liquidityIncrease} liquidity to position`,
+        };
+      } catch (error) {
+        // Rollback all changes on any error
+        position.amount0 = originalAmount0;
+        position.amount1 = originalAmount1;
+        position.liquidity = originalLiquidity;
+        this.amount0 = originalCash0;
+        this.amount1 = originalCash1;
+
+        return {
+          success: false,
+          addedLiquidity: 0n,
+          totalLiquidity: originalLiquidity,
+          usedAmount0: 0n,
+          usedAmount1: 0n,
+          refundAmount0: amount0,
+          refundAmount1: amount1,
+          message: `Failed to add liquidity: ${(error as Error).message}`,
+        };
+      }
+    } catch (error) {
+      return {
+        success: false,
+        addedLiquidity: 0n,
+        totalLiquidity: position.liquidity,
+        usedAmount0: 0n,
+        usedAmount1: 0n,
+        refundAmount0: amount0,
+        refundAmount1: amount1,
+        message: `Error calculating liquidity: ${(error as Error).message}`,
+      };
+    }
   }
 
   private calculateVirtualLiquidity(

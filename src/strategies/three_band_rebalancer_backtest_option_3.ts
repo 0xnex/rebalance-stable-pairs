@@ -6,6 +6,11 @@ import ThreeBandRebalancerStrategyOptionThree, {
   type ThreeBandRebalancerConfigOptionThree,
 } from "./three_band_rebalancer_strategy_option_3";
 import type { FeeCollectionConfig } from "../fee_collection";
+import { FeeCollectionManager } from "../fee_collection/fee_collection_manager";
+import {
+  VirtualPositionManagerAdapter,
+  PoolPriceProviderAdapter,
+} from "../fee_collection/adapters";
 
 type EnvConfig = {
   initialAmountA: bigint;
@@ -50,11 +55,8 @@ type EnvConfig = {
   // Fee collection configuration
   enableEnhancedFeeCollection: boolean;
   feeCollectionIntervalMs: number;
-  feeCollectionThresholdTokenA: bigint;
-  feeCollectionThresholdTokenB: bigint;
-  enableSmartReinvestment: boolean;
-  reinvestmentStrategy: string;
-  minReinvestmentAmount: number;
+  minimalTokenAAmount: bigint;
+  minimalTokenBAmount: bigint;
 };
 
 function readEnvConfig(): EnvConfig {
@@ -148,18 +150,14 @@ function readEnvConfig(): EnvConfig {
       process.env.FEE_COLLECTION_INTERVAL_MS,
       3600000
     ), // 1 hour
-    feeCollectionThresholdTokenA: toBigInt(
+    minimalTokenAAmount: toBigInt(
       process.env.FEE_COLLECTION_THRESHOLD_TOKENA,
-      1000000n
-    ), // 1M raw units
-    feeCollectionThresholdTokenB: toBigInt(
+      10000n
+    ), // 10K raw units
+    minimalTokenBAmount: toBigInt(
       process.env.FEE_COLLECTION_THRESHOLD_TOKENB,
-      1000000n
-    ), // 1M raw units
-    enableSmartReinvestment: toNumber(process.env.SMART_REINVESTMENT, 1) === 1,
-    reinvestmentStrategy:
-      process.env.REINVESTMENT_STRATEGY || "most_profitable",
-    minReinvestmentAmount: toNumber(process.env.MIN_REINVESTMENT_AMOUNT, 1.0),
+      10000n
+    ), // 10K raw units
   };
 }
 
@@ -195,20 +193,28 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
   const feeCollectionConfig: FeeCollectionConfig | undefined =
     env.enableEnhancedFeeCollection
       ? {
-          enablePeriodicFeeCollection: true,
           feeCollectionIntervalMs: env.feeCollectionIntervalMs,
-          feeCollectionThresholdTokenA: env.feeCollectionThresholdTokenA,
-          feeCollectionThresholdTokenB: env.feeCollectionThresholdTokenB,
-          enableSmartReinvestment: env.enableSmartReinvestment,
-          reinvestmentStrategy: env.reinvestmentStrategy as any,
-          minReinvestmentAmount: env.minReinvestmentAmount,
-          enableRiskManagement: true,
-          maxPositionConcentration: 0.4, // 40% max concentration
-          reinvestmentCooldownMs: 300000, // 5 minutes cooldown
-          enableDetailedAnalytics: true,
-          analyticsRetentionDays: 30,
+          minimalTokenAAmount: env.minimalTokenAAmount,
+          minimalTokenBAmount: env.minimalTokenBAmount,
         }
       : undefined;
+
+  // Initialize simplified fee collection manager
+  let simpleFeeCollectionManager: FeeCollectionManager | undefined;
+  if (env.enableEnhancedFeeCollection) {
+    const positionManagerAdapter = new VirtualPositionManagerAdapter(manager);
+    const priceProviderAdapter = new PoolPriceProviderAdapter(pool);
+
+    simpleFeeCollectionManager = new FeeCollectionManager(
+      positionManagerAdapter,
+      priceProviderAdapter,
+      {
+        feeCollectionIntervalMs: env.feeCollectionIntervalMs,
+        minimalTokenAAmount: env.minimalTokenAAmount,
+        minimalTokenBAmount: env.minimalTokenBAmount,
+      }
+    );
+  }
 
   const config: Partial<ThreeBandRebalancerConfigOptionThree> = {
     segmentCount: env.segmentCount,
@@ -400,19 +406,27 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
     // Get fee collection analytics if available
     let feeCollectionInfo = "";
-    if (env.enableEnhancedFeeCollection && strategy.getFeeCollectionAnalytics) {
-      try {
-        const analytics = strategy.getFeeCollectionAnalytics();
-        const feeHistory = strategy.getFeeCollectionHistory();
-        const reinvestHistory = strategy.getReinvestmentHistory();
-        feeCollectionInfo = ` | FeeCollection: events=${
-          feeHistory.length
-        } reinvest=${reinvestHistory.length} efficiency=${(
-          analytics.feeCollectionEfficiency * 100
-        ).toFixed(1)}%`;
-      } catch (err) {
-        // Fee collection not initialized yet
-        feeCollectionInfo = ` | FeeCollection: not_initialized`;
+    if (env.enableEnhancedFeeCollection) {
+      if (simpleFeeCollectionManager) {
+        // Use simplified fee collection manager
+        const totals = manager.getTotals();
+        const unclaimedFeesA = totals.feesOwed0 ?? 0n;
+        const unclaimedFeesB = totals.feesOwed1 ?? 0n;
+        feeCollectionInfo = ` | SimpleFeeCollection: unclaimed_A=${unclaimedFeesA} unclaimed_B=${unclaimedFeesB} threshold_A=${env.minimalTokenAAmount} threshold_B=${env.minimalTokenBAmount}`;
+      } else if (strategy.getFeeCollectionAnalytics) {
+        try {
+          const analytics = strategy.getFeeCollectionAnalytics();
+          const feeHistory = strategy.getFeeCollectionHistory();
+          const reinvestHistory = strategy.getReinvestmentHistory();
+          feeCollectionInfo = ` | FeeCollection: events=${
+            feeHistory.length
+          } reinvest=${reinvestHistory.length} efficiency=${(
+            analytics.feeCollectionEfficiency * 100
+          ).toFixed(1)}%`;
+        } catch (err) {
+          // Fee collection not initialized yet
+          feeCollectionInfo = ` | FeeCollection: not_initialized`;
+        }
       }
     }
 
@@ -470,16 +484,34 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     let feeCollectionEvents = 0;
     let reinvestmentEvents = 0;
     let feeCollectionEfficiency = 0;
-    if (env.enableEnhancedFeeCollection && strategy.getFeeCollectionHistory) {
-      try {
-        const feeHistory = strategy.getFeeCollectionHistory();
-        const reinvestHistory = strategy.getReinvestmentHistory();
-        const analytics = strategy.getFeeCollectionAnalytics();
-        feeCollectionEvents = feeHistory.length;
-        reinvestmentEvents = reinvestHistory.length;
-        feeCollectionEfficiency = analytics.feeCollectionEfficiency;
-      } catch (err) {
-        // Fee collection not initialized yet
+    if (env.enableEnhancedFeeCollection) {
+      if (simpleFeeCollectionManager) {
+        // For simplified fee collection, we track basic metrics
+        const totals = manager.getTotals();
+        const unclaimedFeesA = totals.feesOwed0 ?? 0n;
+        const unclaimedFeesB = totals.feesOwed1 ?? 0n;
+
+        // Simple efficiency metric: 1 if fees are below threshold, 0 if above
+        feeCollectionEfficiency =
+          unclaimedFeesA < env.minimalTokenAAmount &&
+          unclaimedFeesB < env.minimalTokenBAmount
+            ? 1
+            : 0;
+
+        // Note: We don't track events in simplified version, but could add if needed
+        feeCollectionEvents = 0;
+        reinvestmentEvents = 0;
+      } else if (strategy.getFeeCollectionHistory) {
+        try {
+          const feeHistory = strategy.getFeeCollectionHistory();
+          const reinvestHistory = strategy.getReinvestmentHistory();
+          const analytics = strategy.getFeeCollectionAnalytics();
+          feeCollectionEvents = feeHistory.length;
+          reinvestmentEvents = reinvestHistory.length;
+          feeCollectionEfficiency = analytics.feeCollectionEfficiency;
+        } catch (err) {
+          // Fee collection not initialized yet
+        }
       }
     }
 
@@ -796,6 +828,27 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     manager.updateAllPositionFees();
     strategy.setCurrentTime(ctx.timestamp);
 
+    // Execute simplified fee collection if enabled
+    let feeCollectionOutcome: any = null;
+    if (simpleFeeCollectionManager) {
+      try {
+        feeCollectionOutcome = simpleFeeCollectionManager.execute(
+          ctx.timestamp
+        );
+
+        // Log fee collection activity
+        if (feeCollectionOutcome.action !== "none") {
+          log(
+            ctx,
+            `fee_collection_${feeCollectionOutcome.action}`,
+            feeCollectionOutcome.message
+          );
+        }
+      } catch (err) {
+        ctx.logger?.warn?.(`[FeeCollection] Error: ${(err as Error).message}`);
+      }
+    }
+
     // Check Option 3 constraints before executing strategy
     const rebalanceCheck = canRebalance(ctx);
     const rebalancingCase = getRebalancingCase(pool.price);
@@ -901,63 +954,94 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       );
 
       // Log fee collection summary if enabled
-      if (
-        env.enableEnhancedFeeCollection &&
-        strategy.getFeeCollectionAnalytics
-      ) {
-        try {
-          const analytics = strategy.getFeeCollectionAnalytics();
-          const feeHistory = strategy.getFeeCollectionHistory();
-          const reinvestHistory = strategy.getReinvestmentHistory();
+      if (env.enableEnhancedFeeCollection) {
+        if (simpleFeeCollectionManager) {
+          // Simplified fee collection summary
+          const totals = manager.getTotals();
+          const unclaimedFeesA = totals.feesOwed0 ?? 0n;
+          const unclaimedFeesB = totals.feesOwed1 ?? 0n;
+          const collectedFeesA = totals.collectedFees0 ?? 0n;
+          const collectedFeesB = totals.collectedFees1 ?? 0n;
 
-          ctx.logger?.log?.(`[three-band-option3] Fee Collection Summary:`);
           ctx.logger?.log?.(
-            `  Total Fee Collection Events: ${feeHistory.length}`
+            `[three-band-option3] Simplified Fee Collection Summary:`
           );
           ctx.logger?.log?.(
-            `  Total Reinvestment Events: ${reinvestHistory.length}`
+            `  Configuration: Interval=${env.feeCollectionIntervalMs}ms ThresholdA=${env.minimalTokenAAmount} ThresholdB=${env.minimalTokenBAmount}`
           );
           ctx.logger?.log?.(
-            `  Total Fees Collected: ${Number(
-              analytics.totalFeesCollected0
-            )} A + ${Number(analytics.totalFeesCollected1)} B`
+            `  Final Unclaimed Fees: ${Number(unclaimedFeesA)} A + ${Number(
+              unclaimedFeesB
+            )} B`
           );
           ctx.logger?.log?.(
-            `  Total Reinvested Value: ${analytics.totalReinvestedValue.toFixed(
-              4
-            )}`
+            `  Total Collected Fees: ${Number(collectedFeesA)} A + ${Number(
+              collectedFeesB
+            )} B`
           );
           ctx.logger?.log?.(
-            `  Fee Collection Efficiency: ${(
-              analytics.feeCollectionEfficiency * 100
-            ).toFixed(2)}%`
+            `  Fee Collection Status: ${
+              unclaimedFeesA < env.minimalTokenAAmount &&
+              unclaimedFeesB < env.minimalTokenBAmount
+                ? "EFFICIENT (below thresholds)"
+                : "PENDING (above thresholds)"
+            }`
           );
-          ctx.logger?.log?.(
-            `  Reinvestment Efficiency: ${(
-              analytics.reinvestmentEfficiency * 100
-            ).toFixed(2)}%`
-          );
-          ctx.logger?.log?.(
-            `  Average Profitability Score: ${analytics.averageProfitabilityScore.toFixed(
-              4
-            )}`
-          );
+        } else if (strategy.getFeeCollectionAnalytics) {
+          try {
+            const analytics = strategy.getFeeCollectionAnalytics();
+            const feeHistory = strategy.getFeeCollectionHistory();
+            const reinvestHistory = strategy.getReinvestmentHistory();
 
-          if (analytics.bestPerformingPosition) {
+            ctx.logger?.log?.(`[three-band-option3] Fee Collection Summary:`);
             ctx.logger?.log?.(
-              `  Best Performing Position: ${
-                analytics.bestPerformingPosition.positionId
-              } (Score: ${analytics.bestPerformingPosition.profitabilityScore.toFixed(
+              `  Total Fee Collection Events: ${feeHistory.length}`
+            );
+            ctx.logger?.log?.(
+              `  Total Reinvestment Events: ${reinvestHistory.length}`
+            );
+            ctx.logger?.log?.(
+              `  Total Fees Collected: ${Number(
+                analytics.totalFeesCollected0
+              )} A + ${Number(analytics.totalFeesCollected1)} B`
+            );
+            ctx.logger?.log?.(
+              `  Total Reinvested Value: ${analytics.totalReinvestedValue.toFixed(
                 4
-              )})`
+              )}`
+            );
+            ctx.logger?.log?.(
+              `  Fee Collection Efficiency: ${(
+                analytics.feeCollectionEfficiency * 100
+              ).toFixed(2)}%`
+            );
+            ctx.logger?.log?.(
+              `  Reinvestment Efficiency: ${(
+                analytics.reinvestmentEfficiency * 100
+              ).toFixed(2)}%`
+            );
+            ctx.logger?.log?.(
+              `  Average Profitability Score: ${analytics.averageProfitabilityScore.toFixed(
+                4
+              )}`
+            );
+
+            if (analytics.bestPerformingPosition) {
+              ctx.logger?.log?.(
+                `  Best Performing Position: ${
+                  analytics.bestPerformingPosition.positionId
+                } (Score: ${analytics.bestPerformingPosition.profitabilityScore.toFixed(
+                  4
+                )})`
+              );
+            }
+          } catch (err) {
+            ctx.logger?.log?.(
+              `[three-band-option3] Fee Collection Summary: Not available (${
+                (err as Error).message
+              })`
             );
           }
-        } catch (err) {
-          ctx.logger?.log?.(
-            `[three-band-option3] Fee Collection Summary: Not available (${
-              (err as Error).message
-            })`
-          );
         }
       }
     },
