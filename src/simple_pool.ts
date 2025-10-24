@@ -552,4 +552,12 @@ export class SimplePool implements IPool {
     const sqrtPrice = Number(this.sqrtPriceX64) / Number(SimplePool.Q64);
     return sqrtPrice * sqrtPrice;
   }
+
+  getTick(): number {
+    return this.tick;
+  }
+
+  getPrice(): number {
+    return this.price();
+  }
 }

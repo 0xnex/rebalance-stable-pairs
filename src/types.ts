@@ -55,6 +55,9 @@ export interface OptimizationResult {
 }
 
 export interface IPool extends SwapEventListener {
+  getTick(): number;
+  getPrice(): number;
+  
   swap(amountIn: bigint, xForY: boolean): SwapResult;
 
   optimizeForMaxL(
@@ -150,6 +153,27 @@ export interface IStrategy {
   onStart(context: BacktestContext): void;
   onEnd(context: BacktestContext): void;
   onTick(timestamp: number, context: BacktestContext): void;
+}
+
+/**
+ * Extended strategy interface with CLI parameter support
+ * Strategies can define their own CLI parameters
+ */
+export interface IStrategyFactory {
+  // Strategy metadata
+  name: string;
+  description: string;
+  
+  // CLI parameter definitions
+  cliParams?: {
+    name: string;           // e.g., "band1-width"
+    description: string;    // Help text
+    type: "number" | "string" | "boolean";
+    defaultValue?: any;
+  }[];
+  
+  // Factory method to create strategy with parsed params
+  create(params: Record<string, any>): IStrategy;
 }
 
 export interface FundPerformance {
