@@ -119,6 +119,11 @@ export interface IPositionManager {
   getPositions(): IPosition[];
   getActivePositions(): IPosition[];
   updateFee(id: string, fee0: bigint, fee1: bigint): void;
+  // Wallet access methods
+  getWallet(): IWallet;
+  getBalance0(): bigint;
+  getBalance1(): bigint;
+  getAllPositions(): IPosition[];
 }
 
 export interface IFeeDistributor extends SwapEventListener {
@@ -135,10 +140,16 @@ export interface IWallet {
   updateBalance(deltaAmount0: bigint, deltaAmount1: bigint): void;
 }
 
+export interface BacktestContext {
+  readonly pool: IPool;
+  readonly positionManager: IPositionManager;
+  readonly currentTime: number;
+}
+
 export interface IStrategy {
-  onStart(): void;
-  onEnd(): void;
-  onSwapEvent(swapEvent: SwapEvent): void;
+  onStart(context: BacktestContext): void;
+  onEnd(context: BacktestContext): void;
+  onTick(timestamp: number, context: BacktestContext): void;
 }
 
 export interface FundPerformance {

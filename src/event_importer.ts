@@ -25,6 +25,14 @@ const EventTypes: Record<EventType, string> = {
     "0x70285592c97965e811e0c6f98dccc3a9c2b4ad854b3594faab9597ada267b860::trade::RepayFlashSwapEvent",
 };
 
+export type SwapEventGeneratorOptions = {
+  poolId: string;
+  endTime: number; // Unix timestamp in milliseconds
+  dataDir?: string; // If not provided, load from DB
+  startTime: number; // Optional start time
+  silent?: boolean;
+};
+
 export type MomentumEvent = {
   id: {
     txDigest: string;
@@ -48,15 +56,6 @@ export type MomentumEventPage = {
   cursor: string | null;
   nextCursor: string | null;
   data: Transaction[];
-};
-
-export type EventImporterOptions = {
-  poolId: string;
-  endTime: number; // Unix timestamp in milliseconds
-  dataDir?: string; // If not provided, load from DB
-  startTime?: number; // Optional start time
-  onSwapEvent: (event: SwapEvent) => void; // Callback for each swap event
-  silent?: boolean;
 };
 
 import { rawEventService } from "./services/raw_event_service.js";
@@ -99,16 +98,15 @@ function sortTransactionsByTimestamp(
 }
 
 /**
- * Process SwapEvent and RepayFlashSwapEvent, emit combined SwapEvent
+ * Process SwapEvent and RepayFlashSwapEvent, return combined SwapEvent
  * 
  * If the next event is RepayFlashSwapEvent, use its final state.
  * Otherwise, use the SwapEvent state directly.
  */
 function processSwapTransaction(
   swapEvent: MomentumEvent,
-  nextEvent: MomentumEvent | undefined,
-  onSwapEvent: (event: SwapEvent) => void
-): void {
+  nextEvent: MomentumEvent | undefined
+): SwapEvent {
   const parsedJson = swapEvent.parsedJson;
   const timestamp = parseInt(swapEvent.id.txDigest.slice(0, 13), 16); // Extract timestamp from tx
 
@@ -142,8 +140,8 @@ function processSwapTransaction(
     const swapFeeY = zeroForOne ? 0n : feeAmount;
     const totalFee = (flashFeeX + swapFeeX) + (flashFeeY + swapFeeY);
 
-    // Emit SwapEvent with final state from RepayFlashSwap
-    onSwapEvent({
+    // Return SwapEvent with final state from RepayFlashSwap
+    return {
       timestamp,
       poolId: parsedJson.pool_id,
       amountIn,
@@ -158,7 +156,7 @@ function processSwapTransaction(
       ),
       reserveA: BigInt(flashData.reserve_x),
       reserveB: BigInt(flashData.reserve_y),
-    });
+    };
   } else {
     // Normal swap without flash swap (or flash swap for different pool)
     const amountIn = zeroForOne
@@ -168,7 +166,7 @@ function processSwapTransaction(
       ? BigInt(parsedJson.amount_y || 0)
       : BigInt(parsedJson.amount_x || 0);
 
-    onSwapEvent({
+    return {
       timestamp,
       poolId: parsedJson.pool_id,
       amountIn,
@@ -181,26 +179,24 @@ function processSwapTransaction(
       tick: convertSigned32BitToTick(parsedJson.tick_index?.bits || 0),
       reserveA: BigInt(parsedJson.reserve_x),
       reserveB: BigInt(parsedJson.reserve_y),
-    });
+    };
   }
 }
 
 // ============================================================================
-// Database Import
+// Database Import Generator
 // ============================================================================
 
 /**
- * Import events from database
+ * Generate events from database
  */
-async function importEventsFromDB(options: EventImporterOptions): Promise<number> {
+async function* generateEventsFromDB(options: SwapEventGeneratorOptions): AsyncGenerator<SwapEvent> {
   const logger = options.silent ? undefined : console;
-  logger?.log?.(`Importing events from database for pool ${options.poolId}`);
+  logger?.log?.(`Generating events from database for pool ${options.poolId}`);
 
-  let processedEvents = 0;
     let offset = 0;
-    let done = false;
 
-    while (!done) {
+  while (true) {
       const rawEvents = await rawEventService.getEvents({
         offset,
       poolAddress: options.poolId,
@@ -229,8 +225,7 @@ async function importEventsFromDB(options: EventImporterOptions): Promise<number
             event.parsedJson?.pool_id === options.poolId
           ) {
             const nextEvent = events[i + 1]; // Check immediate next event
-            processSwapTransaction(event, nextEvent, options.onSwapEvent);
-            processedEvents++;
+            yield processSwapTransaction(event, nextEvent);
           }
         }
       }
@@ -240,12 +235,11 @@ async function importEventsFromDB(options: EventImporterOptions): Promise<number
     offset += DB_PAGE_SIZE;
   }
 
-  logger?.log?.(`Processed ${processedEvents} swap events from database`);
-  return processedEvents;
+  logger?.log?.(`Finished generating swap events from database`);
 }
 
 // ============================================================================
-// File System Import
+// File System Import Generator
 // ============================================================================
 
 /**
@@ -314,9 +308,9 @@ function sortFilesByTimestamp(
 }
 
 /**
- * Import events from file system
+ * Generate events from file system
  */
-function importEventsFromFiles(options: EventImporterOptions): number {
+function* generateEventsFromFiles(options: SwapEventGeneratorOptions): Generator<SwapEvent> {
   const logger = options.silent ? undefined : console;
   const dir = resolveDataDirectory(options.dataDir!, options.poolId);
 
@@ -329,8 +323,6 @@ function importEventsFromFiles(options: EventImporterOptions): number {
   files = sortFilesByTimestamp(files, dir, logger);
 
   logger?.log?.(`Processing ${files.length} files for pool ${options.poolId}`);
-
-  let processedEvents = 0;
 
   for (const file of files) {
     try {
@@ -349,7 +341,7 @@ function importEventsFromFiles(options: EventImporterOptions): number {
           logger?.log?.(
             `Reached endTime: ${options.endTime}, stopping at ${transactionTimestamp}`
           );
-          return processedEvents;
+          return;
         }
 
         // Skip if before start time
@@ -370,8 +362,7 @@ function importEventsFromFiles(options: EventImporterOptions): number {
             event.parsedJson?.pool_id === options.poolId
           ) {
             const nextEvent = events[i + 1]; // Check immediate next event
-            processSwapTransaction(event, nextEvent, options.onSwapEvent);
-            processedEvents++;
+            yield processSwapTransaction(event, nextEvent);
           }
         }
       }
@@ -380,35 +371,34 @@ function importEventsFromFiles(options: EventImporterOptions): number {
     }
   }
 
-  logger?.log?.(`Processed ${processedEvents} swap events from files`);
-  return processedEvents;
+  logger?.log?.(`Finished generating swap events from files`);
 }
 
 // ============================================================================
-// Main Import Function
+// Main Generator Function
 // ============================================================================
 
 /**
- * Import swap events and emit them via callback
+ * Create a swap event generator from either database or files
  * 
- * @param options Configuration for event import
- * @returns Number of events processed
+ * @param options Configuration for event generation
+ * @returns AsyncGenerator of SwapEvent
  */
-export async function importEvents(
-  options: EventImporterOptions
-): Promise<number> {
+export async function* createSwapEventGenerator(
+  options: SwapEventGeneratorOptions
+): AsyncGenerator<SwapEvent> {
   const logger = options.silent ? undefined : console;
 
   logger?.log?.(
-    `Starting event import for pool ${options.poolId} until ${new Date(options.endTime).toISOString()}`
+    `Creating event generator for pool ${options.poolId} until ${new Date(options.endTime).toISOString()}`
   );
 
   // Determine import source: DB or file system
   if (!options.dataDir) {
-    return await importEventsFromDB(options);
+    yield* generateEventsFromDB(options);
+  } else {
+    yield* generateEventsFromFiles(options);
   }
-
-  return importEventsFromFiles(options);
 }
 
 // ============================================================================

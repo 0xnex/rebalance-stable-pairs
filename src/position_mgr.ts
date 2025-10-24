@@ -1,6 +1,27 @@
-import { type IPositionManager, type IPosition, type IPool, type SwapEvent, type FundPerformance, type PositionPerformance } from "./types";
+import { type IPositionManager, type IPosition, type IPool, type SwapEvent, type IWallet } from "./types";
 import { FeeDistributor } from "./fee_distributor";
-import { exportPerformanceToCSV } from "./performance_exporter";
+
+/**
+ * Wallet implementation to track fund's available balance
+ */
+class Wallet implements IWallet {
+  public amount0: bigint;
+  public amount1: bigint;
+
+  constructor(amount0: bigint, amount1: bigint) {
+    this.amount0 = amount0;
+    this.amount1 = amount1;
+  }
+
+  updateBalance(deltaAmount0: bigint, deltaAmount1: bigint): void {
+    this.amount0 += deltaAmount0;
+    this.amount1 += deltaAmount1;
+    
+    if (this.amount0 < 0n || this.amount1 < 0n) {
+      throw new Error(`[WALLET] [insufficient_balance] [amount0=${this.amount0}] [amount1=${this.amount1}]`);
+    }
+  }
+}
 
 class Position implements IPosition {
   public readonly id: string;
@@ -74,8 +95,7 @@ class Position implements IPosition {
 class PositionManager implements IPositionManager {
   private initialAmount0: bigint = 0n;
   private initialAmount1: bigint = 0n;
-  private balance0: bigint = 0n; // balance of token0
-  private balance1: bigint = 0n; // balance of token1
+  private wallet: Wallet; // Global fund wallet
   private accumulatedFee0: bigint = 0n;
   private accumulatedFee1: bigint = 0n;
   private positions: Map<string, IPosition> = new Map();
@@ -85,8 +105,7 @@ class PositionManager implements IPositionManager {
   constructor(amount0: bigint, amount1: bigint, pool: IPool) {
     this.initialAmount0 = amount0;
     this.initialAmount1 = amount1;
-    this.balance0 = amount0;
-    this.balance1 = amount1;
+    this.wallet = new Wallet(amount0, amount1); // Initialize wallet with initial balance
     this.pool = pool;
     this.feeDistributor = new FeeDistributor(this.positions);
   }
@@ -119,6 +138,15 @@ class PositionManager implements IPositionManager {
       throw new Error(`Position ${id} is closed`);
     }
 
+    // Check wallet has sufficient balance
+    if (this.wallet.amount0 < amount0 || this.wallet.amount1 < amount1) {
+      throw new Error(
+        `[POSITION_MGR] [insufficient_wallet_balance] ` +
+        `[requested_amount0=${amount0}] [available=${this.wallet.amount0}] ` +
+        `[requested_amount1=${amount1}] [available=${this.wallet.amount1}]`
+      );
+    }
+
     const optimizationResult = this.pool.optimizeForMaxL(
       amount0,
       amount1,
@@ -146,10 +174,21 @@ class PositionManager implements IPositionManager {
         position.slip0 += optimizationResult.swapResult?.slippage ?? 0n;
       }
     }
+    
     position.initialAmount0 += amount0;
     position.initialAmount1 += amount1;
     // Only update liquidity - amounts are calculated on demand
     position.L += optimizationResult.maxLResult.L;
+    
+    // Deduct used amounts from wallet (including swap fees and slippage)
+    const totalCost0 = optimizationResult.maxLResult.amount0Used + 
+                       optimizationResult.maxLResult.fee0 + 
+                       optimizationResult.maxLResult.slip0;
+    const totalCost1 = optimizationResult.maxLResult.amount1Used + 
+                       optimizationResult.maxLResult.fee1 + 
+                       optimizationResult.maxLResult.slip1;
+    
+    this.wallet.updateBalance(-totalCost0, -totalCost1);
     
     return {
       liquidity: optimizationResult.maxLResult.L,
@@ -174,6 +213,9 @@ class PositionManager implements IPositionManager {
     // Update position liquidity
     position.L -= liquidity;
     
+    // Return removed amounts to wallet
+    this.wallet.updateBalance(amounts.amount0, amounts.amount1);
+    
     return amounts;
   }
 
@@ -187,7 +229,15 @@ class PositionManager implements IPositionManager {
       throw new Error(`Position ${id} does not exist`);
     }
     const position = this.positions.get(id) as IPosition;
-    return position.close();
+    const result = position.close();
+    
+    // Return all amounts and fees to wallet
+    this.wallet.updateBalance(
+      result.amount0 + result.fee0,
+      result.amount1 + result.fee1
+    );
+    
+    return result;
   }
 
   fee(id: string): { fee0: bigint; fee1: bigint } {
@@ -206,6 +256,10 @@ class PositionManager implements IPositionManager {
     const fees = { fee0: position.fee0, fee1: position.fee1 };
     position.fee0 = 0n;
     position.fee1 = 0n;
+    
+    // Add claimed fees to wallet
+    this.wallet.updateBalance(fees.fee0, fees.fee1);
+    
     return fees;
   }
 
@@ -254,165 +308,32 @@ class PositionManager implements IPositionManager {
   }
 
   /**
-   * Get current pool price (token1 per token0)
+   * Get the fund's wallet
    */
-  private getCurrentPrice(): number {
-    // Assuming pool has a price() method like SimplePool
-    return (this.pool as any).price();
+  getWallet(): IWallet {
+    return this.wallet;
   }
 
   /**
-   * Convert amount0 to token1 terms using current price
+   * Get available balance of token0 in wallet
    */
-  private convertToToken1(amount0: bigint, price: number): bigint {
-    if (!isFinite(price) || price <= 0) {
-      return 0n; // Handle invalid price
-    }
-    const amount0Num = Number(amount0);
-    const valueInToken1 = amount0Num * price;
-    if (!isFinite(valueInToken1)) {
-      return 0n;
-    }
-    return BigInt(Math.floor(valueInToken1));
+  getBalance0(): bigint {
+    return this.wallet.amount0;
   }
 
   /**
-   * Calculate fund-level performance metrics
+   * Get available balance of token1 in wallet
    */
-  getFundPerformance(): FundPerformance {
-    const timestamp = Date.now();
-    const currentPrice = this.getCurrentPrice();
-
-    // Calculate initial value in token1
-    const initialValue = this.convertToToken1(this.initialAmount0, currentPrice) + this.initialAmount1;
-
-    // Calculate total position value
-    const positions = this.getPositions();
-    let totalPositionValue = 0n;
-    let totalFeeEarned = 0n;
-    let totalSlippageCost = 0n;
-    let totalSwapCost = 0n;
-
-    for (const pos of positions) {
-      const posValue = this.convertToToken1(pos.amount0, currentPrice) + pos.amount1;
-      const feeValue = this.convertToToken1(pos.fee0, currentPrice) + pos.fee1;
-      const slippageCost = this.convertToToken1(pos.slip0, currentPrice) + pos.slip1;
-      const swapCost = this.convertToToken1(pos.cost0, currentPrice) + pos.cost1;
-
-      totalPositionValue += posValue + feeValue;
-      totalFeeEarned += this.convertToToken1(pos.accumulatedFee0, currentPrice) + pos.accumulatedFee1;
-      totalSlippageCost += slippageCost;
-      totalSwapCost += swapCost;
-    }
-
-    // Calculate total value (balance + positions)
-    const balanceValue = this.convertToToken1(this.balance0, currentPrice) + this.balance1;
-    const totalValue = balanceValue + totalPositionValue;
-
-    // Calculate PnL and ROI
-    const pnl = totalValue - initialValue;
-    const roiPercent = initialValue > 0n 
-      ? Number((pnl * 10000n) / initialValue) / 100 
-      : 0;
-
-    return {
-      timestamp,
-      initialAmount0: this.initialAmount0,
-      initialAmount1: this.initialAmount1,
-      initialValue,
-      currentBalance0: this.balance0,
-      currentBalance1: this.balance1,
-      totalPositionValue,
-      totalFeeEarned,
-      totalValue,
-      pnl,
-      roiPercent,
-      totalSlippageCost,
-      totalSwapCost,
-      currentPrice,
-    };
+  getBalance1(): bigint {
+    return this.wallet.amount1;
   }
 
   /**
-   * Calculate position-level performance metrics
+   * Get all positions (including closed ones)
    */
-  getPositionsPerformance(): PositionPerformance[] {
-    const timestamp = Date.now();
-    const currentPrice = this.getCurrentPrice();
-    const currentTick = (this.pool as any).tick;
-
-    return this.getPositions().map((pos) => {
-      // Calculate initial value in token1
-      const initialValue = this.convertToToken1(pos.initialAmount0, currentPrice) + pos.initialAmount1;
-
-      // Calculate position value (amount + fees)
-      const currentAmount0 = pos.amount0;
-      const currentAmount1 = pos.amount1;
-      const positionValue = 
-        this.convertToToken1(currentAmount0, currentPrice) + 
-        currentAmount1 + 
-        this.convertToToken1(pos.fee0, currentPrice) + 
-        pos.fee1;
-
-      // Calculate total fee earned
-      const totalFeeEarned = this.convertToToken1(pos.accumulatedFee0, currentPrice) + pos.accumulatedFee1;
-
-      // Calculate costs
-      const slippageCost = this.convertToToken1(pos.slip0, currentPrice) + pos.slip1;
-      const swapCost = this.convertToToken1(pos.cost0, currentPrice) + pos.cost1;
-
-      // Calculate PnL and ROI
-      const pnl = positionValue - initialValue;
-      const roiPercent = initialValue > 0n 
-        ? Number((pnl * 10000n) / initialValue) / 100 
-        : 0;
-
-      return {
-        timestamp,
-        positionId: pos.id,
-        lowerTick: pos.lower,
-        upperTick: pos.upper,
-        status: pos.isClosed ? 'closed' : 'active',
-        isInRange: pos.isInRange(currentTick),
-        liquidity: pos.L,
-        initialAmount0: pos.initialAmount0,
-        initialAmount1: pos.initialAmount1,
-        initialValue,
-        currentAmount0,
-        currentAmount1,
-        positionValue,
-        fee0: pos.fee0,
-        fee1: pos.fee1,
-        totalFeeEarned,
-        pnl,
-        roiPercent,
-        slippage0: pos.slip0,
-        slippage1: pos.slip1,
-        slippageCost,
-        swapCost0: pos.cost0,
-        swapCost1: pos.cost1,
-        swapCost,
-        currentPrice,
-      };
-    });
-  }
-
-  /**
-   * Export performance data to CSV files
-   */
-  async exportPerformanceToCSV(outputDir: string): Promise<{
-    fundCsvPath: string;
-    positionsCsvPath: string;
-  }> {
-    const fundPerformance = this.getFundPerformance();
-    const positionPerformances = this.getPositionsPerformance();
-
-    return await exportPerformanceToCSV(
-      fundPerformance,
-      positionPerformances,
-      outputDir
-    );
+  getAllPositions(): IPosition[] {
+    return this.getPositions();
   }
 }
 
-export { PositionManager, Position };
+export { PositionManager, Position, Wallet };

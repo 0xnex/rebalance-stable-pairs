@@ -18,11 +18,12 @@
  *     --output ./results
  */
 
-import { importEvents } from "./event_importer";
+import { createSwapEventGenerator } from "./event_importer";
 import { SimplePool } from "./simple_pool";
 import { PositionManager } from "./position_mgr";
 import { FixedSlippageProvider, LinearSlippageEstimator } from "./slippage_estimator";
-import type { SwapEvent, IStrategy } from "./types";
+import { exportPerformanceToCSV, calculateFundPerformance, calculatePositionsPerformance } from "./performance_exporter";
+import type { SwapEvent, IStrategy, BacktestContext } from "./types";
 
 // ============================================================================
 // CLI Argument Parser
@@ -40,9 +41,6 @@ interface BacktestArgs {
   decimals1: number;
   dataDir?: string;
   output: string;
-  slippageModel: "fixed" | "linear";
-  slippageRate: number;
-  maxSlippage: number;
   tickSpacing: number;
   feeTier: number;
   tickIntervalMs: number;
@@ -60,9 +58,6 @@ function parseArgs(): BacktestArgs {
     decimals0: 6,
     decimals1: 6,
     output: "./backtest-results",
-    slippageModel: "fixed",
-    slippageRate: 0.001,
-    maxSlippage: 0.05,
     tickSpacing: 10,
     feeTier: 3000,
     tickIntervalMs: 1000,
@@ -164,27 +159,6 @@ function parseArgs(): BacktestArgs {
         }
         break;
 
-      case "--slippageModel":
-        if (next && (next === "fixed" || next === "linear")) {
-          parsed.slippageModel = next;
-          i++;
-        }
-        break;
-
-      case "--slippageRate":
-        if (next) {
-          parsed.slippageRate = parseFloat(next);
-          i++;
-        }
-        break;
-
-      case "--maxSlippage":
-        if (next) {
-          parsed.maxSlippage = parseFloat(next);
-          i++;
-        }
-        break;
-
       case "--tickSpacing":
         if (next) {
           parsed.tickSpacing = parseInt(next);
@@ -271,10 +245,6 @@ OPTIONAL ARGUMENTS:
   --dataDir, -d <path>       Events data directory (default: auto-detect)
   --output, -o <path>        Output directory (default: "./backtest-results")
 
-  --slippageModel <model>    Slippage model: "fixed" or "linear" (default: "fixed")
-  --slippageRate <float>     Base slippage rate (default: 0.001 = 0.1%)
-  --maxSlippage <float>      Maximum slippage cap (default: 0.05 = 5%)
-
   --tickSpacing <int>        Tick spacing (default: 10)
   --feeTier <int>            Fee tier in PPM (default: 3000 = 0.3%)
   --tickInterval <int>       Tick interval in ms (default: 1000 = 1 second)
@@ -323,7 +293,6 @@ interface BacktestEngine {
   pool: SimplePool;
   manager: PositionManager;
   strategy?: IStrategy;
-  events: SwapEvent[];
   currentTime: number;
   startTime: number;
   endTime: number;
@@ -332,9 +301,9 @@ interface BacktestEngine {
 }
 
 class NoOpStrategy implements IStrategy {
-  onStart(): void {}
-  onEnd(): void {}
-  onSwapEvent(swapEvent: SwapEvent): void {}
+  onStart(context: BacktestContext): void {}
+  onEnd(context: BacktestContext): void {}
+  onTick(timestamp: number, context: BacktestContext): void {}
 }
 
 async function runBacktest(args: BacktestArgs): Promise<void> {
@@ -349,15 +318,16 @@ async function runBacktest(args: BacktestArgs): Promise<void> {
     console.log(`[CONFIG] [initial.amount0] [${Number(args.initialAmount0)}]`);
     console.log(`[CONFIG] [initial.amount1] [${Number(args.initialAmount1)}]`);
     console.log(`[CONFIG] [tick_interval_ms] [${args.tickIntervalMs}]`);
-    console.log(`[CONFIG] [slippage_model] [${args.slippageModel}]`);
     console.log(`[CONFIG] [output_dir] [${args.output}]`);
   }
 
-  // Create slippage provider
-  const slippageProvider =
-    args.slippageModel === "linear"
-      ? new LinearSlippageEstimator(args.slippageRate, 1000000, args.maxSlippage)
-      : new FixedSlippageProvider(args.slippageRate);
+  // Create slippage provider with sensible defaults (internal implementation)
+  // Using linear model with 0.1% base rate and 5% max
+  const slippageProvider = new LinearSlippageEstimator(
+    0.001,    // 0.1% base slippage
+    1000000,  // reserve threshold
+    0.05      // 5% max slippage
+  );
 
   // Create pool with token names
   const pool = new SimplePool(
@@ -373,88 +343,116 @@ async function runBacktest(args: BacktestArgs): Promise<void> {
   // Create position manager
   const manager = new PositionManager(args.initialAmount0, args.initialAmount1, pool);
 
-  // Create strategy (no-op for now)
+  // ============================================================================
+  // STRATEGY SELECTION
+  // ============================================================================
+  // To test your strategy, replace NoOpStrategy with your strategy class:
+  //
+  // Example:
+  //   import { ExampleStrategy } from "./strategies/example_strategy";
+  //   const strategy = new ExampleStrategy();
+  //
+  // See STRATEGY_INTEGRATION_GUIDE.md for detailed instructions
+  // ============================================================================
   const strategy = new NoOpStrategy();
 
-  // Import all events first
+  // Create event generator
   if (!args.silent) {
-    console.log("\n[LOAD] [events] [loading]");
+    console.log("\n[INIT] [event_generator] [creating]");
   }
 
-  const events: SwapEvent[] = [];
   const startMs = args.startTime.getTime();
   const endMs = args.endTime.getTime();
 
-  await importEvents({
+  const eventGenerator = createSwapEventGenerator({
     poolId: args.poolId,
     endTime: endMs,
     startTime: startMs,
     dataDir: args.dataDir,
-    onSwapEvent: (event: SwapEvent) => {
-      events.push(event);
-      if (!args.silent && events.length % 1000 === 0) {
-        process.stdout.write(`\r[LOAD] [events] [loading] [count=${events.length}]`);
-      }
-    },
     silent: args.silent,
   });
 
   if (!args.silent) {
-    process.stdout.write(`\r[LOAD] [events] [loaded] [count=${events.length}]       \n`);
     console.log("[ENGINE] [backtest] [starting]");
   }
 
-  // Sort events by timestamp
-  events.sort((a, b) => a.timestamp - b.timestamp);
+  // Create backtest context for strategy
+  const createContext = (currentTime: number): BacktestContext => ({
+    pool,
+    positionManager: manager,
+    currentTime,
+  });
 
   // Initialize strategy
-  strategy.onStart();
+  strategy.onStart(createContext(startMs));
 
-  // Run backtest engine with per-second ticks
-  let eventIndex = 0;
+  // Stream events and emit time ticks
+  let eventCount = 0;
   let tickCount = 0;
+  let currentTime = startMs;
   const totalTicks = Math.floor((endMs - startMs) / args.tickIntervalMs);
+  const nextTickTime = () => currentTime + args.tickIntervalMs;
 
-  for (let currentTime = startMs; currentTime <= endMs; currentTime += args.tickIntervalMs) {
-    // Process all events that occurred before this tick
-    while (eventIndex < events.length) {
-      const event = events[eventIndex];
-      if (!event || event.timestamp > currentTime) {
-        break;
+  // Process events as they stream in
+  for await (const event of eventGenerator) {
+    // Emit all ticks that should have occurred before this event
+    while (currentTime <= endMs && event.timestamp >= nextTickTime()) {
+      strategy.onTick(currentTime, createContext(currentTime));
+      tickCount++;
+      currentTime += args.tickIntervalMs;
+
+      // Progress indicator
+      if (!args.silent && tickCount % 1000 === 0) {
+        const progress = (tickCount / totalTicks * 100).toFixed(1);
+        process.stdout.write(`\r[ENGINE] [backtest] [running] [progress=${progress}%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventCount}]`);
       }
-      
-      // Feed event to pool, manager, and strategy
-      pool.onSwapEvent(event);
-      manager.onSwapEvent(event);
-      strategy.onSwapEvent(event);
-      
-      eventIndex++;
     }
 
-    // Emit tick for strategy synchronization
-    // Strategy can check current time and make decisions
-    tickCount++;
+    // Update pool and manager state with event (internal state management)
+    pool.onSwapEvent(event);
+    manager.onSwapEvent(event);
+    eventCount++;
+  }
 
-    // Progress indicator
+  // Emit remaining ticks after all events processed
+  while (currentTime <= endMs) {
+    strategy.onTick(currentTime, createContext(currentTime));
+    tickCount++;
+    currentTime += args.tickIntervalMs;
+
     if (!args.silent && tickCount % 1000 === 0) {
       const progress = (tickCount / totalTicks * 100).toFixed(1);
-      process.stdout.write(`\r[ENGINE] [backtest] [running] [progress=${progress}%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventIndex}]`);
+      process.stdout.write(`\r[ENGINE] [backtest] [running] [progress=${progress}%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventCount}]`);
     }
   }
 
   if (!args.silent) {
-    process.stdout.write(`\r[ENGINE] [backtest] [completed] [progress=100.0%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventIndex}]       \n`);
+    process.stdout.write(`\r[ENGINE] [backtest] [completed] [progress=100.0%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventCount}]       \n`);
   }
 
   // Finalize strategy
-  strategy.onEnd();
+  strategy.onEnd(createContext(endMs));
 
   // Export performance CSVs
   if (!args.silent) {
     console.log("\n[EXPORT] [performance] [exporting]");
   }
 
-  const { fundCsvPath, positionsCsvPath } = await manager.exportPerformanceToCSV(args.output);
+  // Calculate performance metrics
+  const fundPerformance = calculateFundPerformance(
+    pool,
+    manager,
+    args.initialAmount0,
+    args.initialAmount1
+  );
+  const positionPerformances = calculatePositionsPerformance(pool, manager);
+
+  // Export to CSV
+  const { fundCsvPath, positionsCsvPath } = await exportPerformanceToCSV(
+    fundPerformance,
+    positionPerformances,
+    args.output
+  );
 
   if (!args.silent) {
     console.log(`[EXPORT] [performance] [exported]`);
@@ -462,15 +460,14 @@ async function runBacktest(args: BacktestArgs): Promise<void> {
     console.log(`[OUTPUT] [positions_csv] [${positionsCsvPath}]`);
 
     // Print summary
-    const fundPerf = manager.getFundPerformance();
     console.log("\n[SUMMARY] [backtest] [results]");
-    console.log(`[SUMMARY] [events.processed] [${eventIndex}]`);
+    console.log(`[SUMMARY] [events.processed] [${eventCount}]`);
     console.log(`[SUMMARY] [ticks.elapsed] [${tickCount}]`);
-    console.log(`[SUMMARY] [value.initial] [${fundPerf.initialValue}] [token=${args.token1Name}]`);
-    console.log(`[SUMMARY] [value.final] [${fundPerf.totalValue}] [token=${args.token1Name}]`);
-    console.log(`[SUMMARY] [pnl] [${fundPerf.pnl}] [token=${args.token1Name}]`);
-    console.log(`[SUMMARY] [roi_percent] [${fundPerf.roiPercent.toFixed(4)}]`);
-    console.log(`[SUMMARY] [fees.earned] [${fundPerf.totalFeeEarned}] [token=${args.token1Name}]`);
+    console.log(`[SUMMARY] [value.initial] [${fundPerformance.initialValue}] [token=${args.token1Name}]`);
+    console.log(`[SUMMARY] [value.final] [${fundPerformance.totalValue}] [token=${args.token1Name}]`);
+    console.log(`[SUMMARY] [pnl] [${fundPerformance.pnl}] [token=${args.token1Name}]`);
+    console.log(`[SUMMARY] [roi_percent] [${fundPerformance.roiPercent.toFixed(4)}]`);
+    console.log(`[SUMMARY] [fees.earned] [${fundPerformance.totalFeeEarned}] [token=${args.token1Name}]`);
     console.log("\n[COMPLETE] [backtest] [success]\n");
   }
 }

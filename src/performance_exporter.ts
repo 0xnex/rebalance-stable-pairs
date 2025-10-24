@@ -1,6 +1,169 @@
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { FundPerformance, PositionPerformance } from "./types";
+import type { FundPerformance, PositionPerformance, IPool, IPositionManager } from "./types";
+
+// ============================================================================
+// Performance Calculation Functions
+// ============================================================================
+
+/**
+ * Get current pool price (token1 per token0)
+ */
+function getCurrentPrice(pool: IPool): number {
+  return (pool as any).price();
+}
+
+/**
+ * Convert amount0 to token1 terms using current price
+ */
+function convertToToken1(amount0: bigint, price: number): bigint {
+  if (!isFinite(price) || price <= 0) {
+    return 0n;
+  }
+  const amount0Num = Number(amount0);
+  const valueInToken1 = amount0Num * price;
+  if (!isFinite(valueInToken1)) {
+    return 0n;
+  }
+  return BigInt(Math.floor(valueInToken1));
+}
+
+/**
+ * Calculate fund-level performance metrics
+ */
+export function calculateFundPerformance(
+  pool: IPool,
+  manager: IPositionManager,
+  initialAmount0: bigint,
+  initialAmount1: bigint
+): FundPerformance {
+  const timestamp = Date.now();
+  const currentPrice = getCurrentPrice(pool);
+
+  // Get current wallet balance
+  const balance0 = manager.getBalance0();
+  const balance1 = manager.getBalance1();
+
+  // Calculate initial value in token1
+  const initialValue = convertToToken1(initialAmount0, currentPrice) + initialAmount1;
+
+  // Calculate total position value
+  const positions = manager.getPositions();
+  let totalPositionValue = 0n;
+  let totalFeeEarned = 0n;
+  let totalSlippageCost = 0n;
+  let totalSwapCost = 0n;
+
+  for (const pos of positions) {
+    const posValue = convertToToken1(pos.amount0, currentPrice) + pos.amount1;
+    const feeValue = convertToToken1(pos.fee0, currentPrice) + pos.fee1;
+    const slippageCost = convertToToken1(pos.slip0, currentPrice) + pos.slip1;
+    const swapCost = convertToToken1(pos.cost0, currentPrice) + pos.cost1;
+
+    totalPositionValue += posValue + feeValue;
+    totalFeeEarned += convertToToken1(pos.accumulatedFee0, currentPrice) + pos.accumulatedFee1;
+    totalSlippageCost += slippageCost;
+    totalSwapCost += swapCost;
+  }
+
+  // Calculate total value (balance + positions)
+  const balanceValue = convertToToken1(balance0, currentPrice) + balance1;
+  const totalValue = balanceValue + totalPositionValue;
+
+  // Calculate PnL and ROI
+  const pnl = totalValue - initialValue;
+  const roiPercent = initialValue > 0n 
+    ? Number((pnl * 10000n) / initialValue) / 100 
+    : 0;
+
+  return {
+    timestamp,
+    initialAmount0,
+    initialAmount1,
+    initialValue,
+    currentBalance0: balance0,
+    currentBalance1: balance1,
+    totalPositionValue,
+    totalFeeEarned,
+    totalValue,
+    pnl,
+    roiPercent,
+    totalSlippageCost,
+    totalSwapCost,
+    currentPrice,
+  };
+}
+
+/**
+ * Calculate position-level performance metrics
+ */
+export function calculatePositionsPerformance(
+  pool: IPool,
+  manager: IPositionManager
+): PositionPerformance[] {
+  const timestamp = Date.now();
+  const currentPrice = getCurrentPrice(pool);
+  const currentTick = (pool as any).tick;
+
+  return manager.getPositions().map((pos) => {
+    // Calculate initial value in token1
+    const initialValue = convertToToken1(pos.initialAmount0, currentPrice) + pos.initialAmount1;
+
+    // Calculate position value (amount + fees)
+    const currentAmount0 = pos.amount0;
+    const currentAmount1 = pos.amount1;
+    const positionValue = 
+      convertToToken1(currentAmount0, currentPrice) + 
+      currentAmount1 + 
+      convertToToken1(pos.fee0, currentPrice) + 
+      pos.fee1;
+
+    // Calculate total fee earned
+    const totalFeeEarned = convertToToken1(pos.accumulatedFee0, currentPrice) + pos.accumulatedFee1;
+
+    // Calculate costs
+    const slippageCost = convertToToken1(pos.slip0, currentPrice) + pos.slip1;
+    const swapCost = convertToToken1(pos.cost0, currentPrice) + pos.cost1;
+
+    // Calculate PnL and ROI
+    const pnl = positionValue - initialValue;
+    const roiPercent = initialValue > 0n 
+      ? Number((pnl * 10000n) / initialValue) / 100 
+      : 0;
+
+    return {
+      timestamp,
+      positionId: pos.id,
+      lowerTick: pos.lower,
+      upperTick: pos.upper,
+      status: pos.isClosed ? 'closed' : 'active',
+      isInRange: pos.isInRange(currentTick),
+      liquidity: pos.L,
+      initialAmount0: pos.initialAmount0,
+      initialAmount1: pos.initialAmount1,
+      initialValue,
+      currentAmount0,
+      currentAmount1,
+      positionValue,
+      fee0: pos.fee0,
+      fee1: pos.fee1,
+      totalFeeEarned,
+      pnl,
+      roiPercent,
+      slippage0: pos.slip0,
+      slippage1: pos.slip1,
+      slippageCost,
+      swapCost0: pos.cost0,
+      swapCost1: pos.cost1,
+      swapCost,
+      currentPrice,
+    };
+  });
+}
+
+// ============================================================================
+// CSV Export Functions
+// ============================================================================
 
 /**
  * Converts a BigInt value to a string for CSV export

@@ -143,3 +143,4 @@ out
 mmt_txs/*
 snapshots/*
 data/
+test-output/

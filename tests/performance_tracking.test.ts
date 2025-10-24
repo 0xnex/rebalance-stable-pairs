@@ -2,6 +2,9 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { PositionManager } from "../src/position_mgr";
 import { SimplePool } from "../src/simple_pool";
 import { FixedSlippageProvider } from "../src/slippage_estimator";
+import { calculateFundPerformance, calculatePositionsPerformance, exportPerformanceToCSV } from "../src/performance_exporter";
+import type { SwapEvent } from "../src/types";
+import * as fs from "fs";
 
 describe("Performance Tracking", () => {
   let pool: SimplePool;
@@ -47,7 +50,7 @@ describe("Performance Tracking", () => {
 
   describe("Fund Performance", () => {
     it("should calculate initial fund performance with no positions", () => {
-      const perf = manager.getFundPerformance();
+      const perf = calculateFundPerformance(pool, manager, initialAmount0, initialAmount1);
 
       expect(perf.initialAmount0).toBe(initialAmount0);
       expect(perf.initialAmount1).toBe(initialAmount1);
@@ -65,7 +68,7 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 100000n, 100000n);
 
-      const perf = manager.getFundPerformance();
+      const perf = calculateFundPerformance(pool, manager, initialAmount0, initialAmount1);
 
       expect(perf.totalPositionValue).toBeGreaterThan(0n);
       expect(perf.initialAmount0).toBe(initialAmount0);
@@ -99,7 +102,7 @@ describe("Performance Tracking", () => {
 
       manager.onSwapEvent(swapEvent);
 
-      const perf = manager.getFundPerformance();
+      const perf = calculateFundPerformance(pool, manager, initialAmount0, initialAmount1);
 
       expect(perf.totalFeeEarned).toBeGreaterThan(0n);
       // PnL should be positive due to fees (minus any costs)
@@ -111,7 +114,7 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 500000n, 500000n);
 
-      const perf = manager.getFundPerformance();
+      const perf = calculateFundPerformance(pool, manager, initialAmount0, initialAmount1);
 
       // Should have some swap costs from optimizeForMaxL
       expect(perf.totalSwapCost).toBeGreaterThanOrEqual(0n);
@@ -124,7 +127,7 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 100000n, 100000n);
 
-      const perfList = manager.getPositionsPerformance();
+      const perfList = calculatePositionsPerformance(pool, manager);
 
       expect(perfList).toHaveLength(1);
       const perf = perfList[0];
@@ -147,7 +150,7 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos2", -2000, 2000);
       manager.addLiquidity("pos2", 400000n, 400000n);
 
-      const perfList = manager.getPositionsPerformance();
+      const perfList = calculatePositionsPerformance(pool, manager);
 
       expect(perfList).toHaveLength(2);
       expect(perfList[0].positionId).toBe("pos1");
@@ -158,7 +161,7 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 100000n, 100000n);
 
-      const perfList = manager.getPositionsPerformance();
+      const perfList = calculatePositionsPerformance(pool, manager);
       expect(perfList[0].isInRange).toBe(true);
     });
 
@@ -185,7 +188,7 @@ describe("Performance Tracking", () => {
 
       manager.onSwapEvent(swapEvent);
 
-      const perfList = manager.getPositionsPerformance();
+      const perfList = calculatePositionsPerformance(pool, manager);
       const perf = perfList[0];
 
       expect(perf.totalFeeEarned).toBeGreaterThan(0n);
@@ -199,7 +202,7 @@ describe("Performance Tracking", () => {
       manager.addLiquidity("pos1", 100000n, 100000n);
       manager.closePosition("pos1");
 
-      const perfList = manager.getPositionsPerformance();
+      const perfList = calculatePositionsPerformance(pool, manager);
       expect(perfList[0].status).toBe("closed");
       expect(perfList[0].liquidity).toBe(0n);
     });
@@ -208,7 +211,7 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 500000n, 500000n);
 
-      const perfList = manager.getPositionsPerformance();
+      const perfList = calculatePositionsPerformance(pool, manager);
       const perf = perfList[0];
 
       // Should track costs
@@ -227,7 +230,9 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos2", -2000, 2000);
       manager.addLiquidity("pos2", 400000n, 400000n);
 
-      const result = await manager.exportPerformanceToCSV("./test-output");
+      const fundPerf = calculateFundPerformance(pool, manager, initialAmount0, initialAmount1);
+      const posPerfs = calculatePositionsPerformance(pool, manager);
+      const result = await exportPerformanceToCSV(fundPerf, posPerfs, "./test-output");
 
       expect(result.fundCsvPath).toContain("fund_performance_");
       expect(result.fundCsvPath).toContain(".csv");
@@ -260,8 +265,8 @@ describe("Performance Tracking", () => {
 
       manager.onSwapEvent(swapEvent);
 
-      const fundPerf = manager.getFundPerformance();
-      const posPerf = manager.getPositionsPerformance()[0];
+      const fundPerf = calculateFundPerformance(pool, manager, initialAmount0, initialAmount1);
+      const posPerf = calculatePositionsPerformance(pool, manager)[0];
 
       // ROI should be calculated as (PnL / InitialValue) * 100
       if (fundPerf.initialValue > 0n) {
@@ -277,7 +282,7 @@ describe("Performance Tracking", () => {
 
     it("should handle zero initial value gracefully", () => {
       const emptyManager = new PositionManager(0n, 0n, pool);
-      const perf = emptyManager.getFundPerformance();
+      const perf = calculateFundPerformance(pool, emptyManager, 0n, 0n, 0n, 0n);
 
       expect(perf.roiPercent).toBe(0);
       expect(perf.initialValue).toBe(0n);
