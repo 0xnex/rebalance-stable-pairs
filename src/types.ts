@@ -4,7 +4,8 @@ export interface SwapEvent {
   amountIn: bigint;
   amountOut: bigint;
   zeroForOne: boolean;
-  newSqrtPrice: bigint;
+  sqrtPriceBefore: bigint;
+  sqrtPriceAfter: bigint;
   feeAmount: bigint;
   liquidity: bigint;
   tick: number;
@@ -48,17 +49,13 @@ export interface OptimizationResult {
     optimizedL: bigint;
     improvementPct: number;
   };
+  // Convenience fields for remaining amounts
+  remainingAmount0: bigint; // finalAmount0 - amount0Used
+  remainingAmount1: bigint; // finalAmount1 - amount1Used
 }
 
 export interface IPool extends SwapEventListener {
   swap(amountIn: bigint, xForY: boolean): SwapResult;
-
-  maxL(
-    amount0: bigint,
-    amount1: bigint,
-    lower: number,
-    upper: number
-  ): MaxLResult;
 
   optimizeForMaxL(
     amount0: bigint,
@@ -66,6 +63,12 @@ export interface IPool extends SwapEventListener {
     lower: number,
     upper: number
   ): OptimizationResult;
+
+  removeLiquidity(
+    deltaLiquidity: bigint,
+    lower: number,
+    upper: number
+  ): { amount0: bigint; amount1: bigint };
 }
 
 export interface ISlippageProvider extends SwapEventListener {
@@ -73,8 +76,28 @@ export interface ISlippageProvider extends SwapEventListener {
 }
 
 export interface IPosition {
+  id: string;
+  lower: number;
+  upper: number;
+  initialAmount0: bigint;
+  initialAmount1: bigint;
+  fee0: bigint;
+  fee1: bigint;
+  accumulatedFee0: bigint;
+  accumulatedFee1: bigint;
+  amount0: bigint;
+  amount1: bigint;
+  cost0: bigint;
+  cost1: bigint;
+  slip0: bigint;
+  slip1: bigint;
+  L: bigint;
+  isClosed: boolean;
+
   getValue(price: number): bigint;
   isInRange(currentTick: number): boolean;
+  updateFee(fee0: bigint, fee1: bigint): void;
+  close(): { amount0: bigint; amount1: bigint; fee0: bigint; fee1: bigint };
 }
 
 export interface IPositionManager {
@@ -92,9 +115,9 @@ export interface IPositionManager {
   };
   fee(id: string): { fee0: bigint; fee1: bigint };
   claimFee(id: string): { fee0: bigint; fee1: bigint };
-  getPosition(id: string): Position;
-  getPositions(): Position[];
-  getActivePositions(): Position[];
+  getPosition(id: string): IPosition;
+  getPositions(): IPosition[];
+  getActivePositions(): IPosition[];
   updateFee(id: string, fee0: bigint, fee1: bigint): void;
 }
 
@@ -107,10 +130,9 @@ export interface ICompounder extends SwapEventListener {
 }
 
 export interface IWallet {
-  amount0(): bigint;
-  amount1(): bigint;
-  fee0(): bigint;
-  fee1(): bigint;
+  amount0: bigint;
+  amount1: bigint;
+  updateBalance(deltaAmount0: bigint, deltaAmount1: bigint): void;
 }
 
 export interface IStrategy {
@@ -118,3 +140,52 @@ export interface IStrategy {
   onEnd(): void;
   onSwapEvent(swapEvent: SwapEvent): void;
 }
+
+export interface FundPerformance {
+  timestamp: number;
+  initialAmount0: bigint;
+  initialAmount1: bigint;
+  initialValue: bigint; // in token1
+  currentBalance0: bigint;
+  currentBalance1: bigint;
+  totalPositionValue: bigint; // in token1
+  totalFeeEarned: bigint; // in token1
+  totalValue: bigint; // in token1
+  pnl: bigint; // in token1
+  roiPercent: number;
+  totalSlippageCost: bigint; // in token1
+  totalSwapCost: bigint; // in token1
+  currentPrice: number;
+}
+
+export interface PositionPerformance {
+  timestamp: number;
+  positionId: string;
+  lowerTick: number;
+  upperTick: number;
+  status: 'active' | 'closed';
+  isInRange: boolean;
+  liquidity: bigint;
+  initialAmount0: bigint;
+  initialAmount1: bigint;
+  initialValue: bigint; // in token1
+  currentAmount0: bigint;
+  currentAmount1: bigint;
+  positionValue: bigint; // in token1
+  fee0: bigint;
+  fee1: bigint;
+  totalFeeEarned: bigint; // in token1
+  pnl: bigint; // in token1
+  roiPercent: number;
+  slippage0: bigint;
+  slippage1: bigint;
+  slippageCost: bigint; // in token1
+  swapCost0: bigint;
+  swapCost1: bigint;
+  swapCost: bigint; // in token1
+  currentPrice: number;
+}
+
+export const Q64 = 1n << 64n;
+export const PPM = 1000000;
+export const BPS = 10000;
