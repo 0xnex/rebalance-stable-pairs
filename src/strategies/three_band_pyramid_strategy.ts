@@ -201,6 +201,23 @@ export class ThreeBandPyramidStrategy implements IStrategy {
     
     console.log(`[STRATEGY] [creating_bands] [balance0=${balance0}] [balance1=${balance1}]`);
     
+    // Validate initial balances
+    if (balance0 === 0n && balance1 === 0n) {
+      throw new Error(
+        `[STRATEGY] [error] Initial wallet is empty! ` +
+        `Please provide initial amounts with --initial0 and --initial1`
+      );
+    }
+    
+    if (balance0 === 0n || balance1 === 0n) {
+      console.log(
+        `[STRATEGY] [warning] [unbalanced_wallet] ` +
+        `[balance0=${balance0}] [balance1=${balance1}] ` +
+        `Positions may fail to add liquidity with only one token type. ` +
+        `Consider providing both token0 and token1 for optimal results.`
+      );
+    }
+    
     // Calculate allocations
     const alloc1Amount0 = (balance0 * BigInt(Math.floor(this.config.band1Allocation))) / 100n;
     const alloc1Amount1 = (balance1 * BigInt(Math.floor(this.config.band1Allocation))) / 100n;

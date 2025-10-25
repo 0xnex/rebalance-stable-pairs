@@ -1,4 +1,4 @@
-import { writeFile, mkdir } from "node:fs/promises";
+import { writeFile, mkdir, appendFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { FundPerformance, PositionPerformance, IPool, IPositionManager } from "./types";
 
@@ -35,9 +35,10 @@ export function calculateFundPerformance(
   pool: IPool,
   manager: IPositionManager,
   initialAmount0: bigint,
-  initialAmount1: bigint
+  initialAmount1: bigint,
+  timestamp?: number
 ): FundPerformance {
-  const timestamp = Date.now();
+  const ts = timestamp ?? Date.now();
   const currentPrice = getCurrentPrice(pool);
 
   // Get current wallet balance
@@ -77,7 +78,7 @@ export function calculateFundPerformance(
     : 0;
 
   return {
-    timestamp,
+    timestamp: ts,
     initialAmount0,
     initialAmount1,
     initialValue,
@@ -99,9 +100,10 @@ export function calculateFundPerformance(
  */
 export function calculatePositionsPerformance(
   pool: IPool,
-  manager: IPositionManager
+  manager: IPositionManager,
+  timestamp?: number
 ): PositionPerformance[] {
-  const timestamp = Date.now();
+  const ts = timestamp ?? Date.now();
   const currentPrice = getCurrentPrice(pool);
   const currentTick = (pool as any).tick;
 
@@ -132,7 +134,7 @@ export function calculatePositionsPerformance(
       : 0;
 
     return {
-      timestamp,
+      timestamp: ts,
       positionId: pos.id,
       lowerTick: pos.lower,
       upperTick: pos.upper,
@@ -180,11 +182,12 @@ function numberToString(value: number, decimals: number = 6): string {
 }
 
 /**
- * Exports fund performance data to CSV
+ * Exports fund performance data to CSV (appends to existing file)
  */
 export async function exportFundPerformanceToCSV(
   performance: FundPerformance,
-  outputPath: string
+  outputPath: string,
+  append: boolean = false
 ): Promise<string> {
   const headers = [
     "timestamp",
@@ -220,24 +223,33 @@ export async function exportFundPerformanceToCSV(
     numberToString(performance.currentPrice, 10),
   ];
 
-  const csv = [headers.join(","), row.join(",")].join("\n");
-
   // Ensure directory exists
   const dir = outputPath.substring(0, outputPath.lastIndexOf("/"));
   if (dir) {
     await mkdir(dir, { recursive: true });
   }
 
-  await writeFile(outputPath, csv, "utf-8");
+  let csv: string;
+  if (append) {
+    // Only append the data row
+    csv = row.join(",") + "\n";
+    await appendFile(outputPath, csv, "utf-8");
+  } else {
+    // Write headers + first row
+    csv = [headers.join(","), row.join(",")].join("\n") + "\n";
+    await writeFile(outputPath, csv, "utf-8");
+  }
+
   return outputPath;
 }
 
 /**
- * Exports position performance data to CSV
+ * Exports position performance data to CSV (appends to existing file)
  */
 export async function exportPositionPerformanceToCSV(
   performances: PositionPerformance[],
-  outputPath: string
+  outputPath: string,
+  append: boolean = false
 ): Promise<string> {
   const headers = [
     "timestamp",
@@ -295,15 +307,22 @@ export async function exportPositionPerformanceToCSV(
     numberToString(p.currentPrice, 10),
   ]);
 
-  const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
-
   // Ensure directory exists
   const dir = outputPath.substring(0, outputPath.lastIndexOf("/"));
   if (dir) {
     await mkdir(dir, { recursive: true });
   }
 
-  await writeFile(outputPath, csv, "utf-8");
+  if (append) {
+    // Only append data rows
+    const csv = rows.map((r) => r.join(",")).join("\n") + "\n";
+    await appendFile(outputPath, csv, "utf-8");
+  } else {
+    // Write headers + data rows
+    const csv = [headers.join(","), ...rows.map((r) => r.join(","))].join("\n") + "\n";
+    await writeFile(outputPath, csv, "utf-8");
+  }
+
   return outputPath;
 }
 
@@ -313,18 +332,16 @@ export async function exportPositionPerformanceToCSV(
 export async function exportPerformanceToCSV(
   fundPerformance: FundPerformance,
   positionPerformances: PositionPerformance[],
-  outputDir: string
+  outputDir: string,
+  append: boolean = false
 ): Promise<{ fundCsvPath: string; positionsCsvPath: string }> {
   const timestamp = fundPerformance.timestamp;
-  const fundCsvPath = join(outputDir, `fund_performance_${timestamp}.csv`);
-  const positionsCsvPath = join(
-    outputDir,
-    `position_performance_${timestamp}.csv`
-  );
+  const fundCsvPath = join(outputDir, `fund_performance.csv`);
+  const positionsCsvPath = join(outputDir, `position_performance.csv`);
 
   await Promise.all([
-    exportFundPerformanceToCSV(fundPerformance, fundCsvPath),
-    exportPositionPerformanceToCSV(positionPerformances, positionsCsvPath),
+    exportFundPerformanceToCSV(fundPerformance, fundCsvPath, append),
+    exportPositionPerformanceToCSV(positionPerformances, positionsCsvPath, append),
   ]);
 
   return { fundCsvPath, positionsCsvPath };

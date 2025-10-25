@@ -96,6 +96,8 @@ export interface IPosition {
   slip1: bigint;
   L: bigint;
   isClosed: boolean;
+  openTime: number;
+  closeTime: number;
 
   getValue(price: number): bigint;
   isInRange(currentTick: number): boolean;

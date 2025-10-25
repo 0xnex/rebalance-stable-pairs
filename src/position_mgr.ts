@@ -39,6 +39,8 @@ class Position implements IPosition {
   public slip1: bigint = 0n;
   public L: bigint = 0n;
   public isClosed: boolean = false;
+  public openTime: number = 0; // Timestamp when position was opened
+  public closeTime: number = 0; // Timestamp when position was closed
 
   private pool: IPool;
 
@@ -81,6 +83,7 @@ class Position implements IPosition {
 
   close(): { amount0: bigint; amount1: bigint; fee0: bigint; fee1: bigint } {
     this.isClosed = true;
+    this.closeTime = Date.now();
     const finalAmount0 = this.amount0;
     const finalAmount1 = this.amount1;
     this.L = 0n; // Clear liquidity
@@ -121,7 +124,14 @@ class PositionManager implements IPositionManager {
       pos = new Position(id, lower, upper, this.pool);
     }
 
-    console.log("[OPEN POSITION]", id, lower, upper);
+    // Set open time
+    pos.openTime = Date.now();
+    const openTimeStr = new Date(pos.openTime).toISOString();
+
+    console.log(
+      `[OPEN_POSITION] [id=${id}] [lower=${lower}] [upper=${upper}] ` +
+      `[time=${openTimeStr}] [timestamp=${pos.openTime}]`
+    );
     this.positions.set(id, pos);
     
     // Initialize fee tracking for this position
@@ -178,17 +188,22 @@ class PositionManager implements IPositionManager {
     position.initialAmount0 += amount0;
     position.initialAmount1 += amount1;
     // Only update liquidity - amounts are calculated on demand
-    position.L += optimizationResult.maxLResult.L;
+    const liquidityToAdd = optimizationResult.maxLResult.L;
+    position.L += liquidityToAdd;
     
-    // Deduct used amounts from wallet (including swap fees and slippage)
-    const totalCost0 = optimizationResult.maxLResult.amount0Used + 
-                       optimizationResult.maxLResult.fee0 + 
-                       optimizationResult.maxLResult.slip0;
-    const totalCost1 = optimizationResult.maxLResult.amount1Used + 
-                       optimizationResult.maxLResult.fee1 + 
-                       optimizationResult.maxLResult.slip1;
+    // Log warning if liquidity is zero
+    if (liquidityToAdd === 0n) {
+      console.log(
+        `[POSITION_MGR] [warning] [zero_liquidity_added] ` +
+        `[id=${id}] [input_amount0=${amount0}] [input_amount1=${amount1}] ` +
+        `[final_amount0=${optimizationResult.maxLResult.amount0Used}] ` +
+        `[final_amount1=${optimizationResult.maxLResult.amount1Used}] ` +
+        `[range=${position.lower}:${position.upper}] [current_tick=${(this.pool as any).tick}]`
+      );
+    }
     
-    this.wallet.updateBalance(-totalCost0, -totalCost1);
+    // Deduct input amounts from wallet (swap + liquidity all come from input)
+    this.wallet.updateBalance(-amount0, -amount1);
     
     return {
       liquidity: optimizationResult.maxLResult.L,
@@ -229,7 +244,22 @@ class PositionManager implements IPositionManager {
       throw new Error(`Position ${id} does not exist`);
     }
     const position = this.positions.get(id) as IPosition;
+    
+    // Distribute any accumulated fees before closing
+    this.feeDistributor.distributeAccumulatedFeesOnClose(position);
+    
     const result = position.close();
+    
+    // Log close time and duration
+    const closeTimeStr = new Date(position.closeTime).toISOString();
+    const durationMs = position.closeTime - position.openTime;
+    const durationHours = (durationMs / (1000 * 60 * 60)).toFixed(2);
+    const durationDays = (durationMs / (1000 * 60 * 60 * 24)).toFixed(2);
+    
+    console.log(
+      `[CLOSE_POSITION] [id=${id}] [time=${closeTimeStr}] [timestamp=${position.closeTime}] ` +
+      `[duration_hours=${durationHours}] [duration_days=${durationDays}]`
+    );
     
     // Return all amounts and fees to wallet
     this.wallet.updateBalance(

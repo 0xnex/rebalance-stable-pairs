@@ -328,7 +328,15 @@ export class SimplePool implements IPool {
     }
     
     const sqrtPrice = Math.sqrt(1.0001 ** tick);
-    return BigInt(Math.floor(sqrtPrice * Number(SimplePool.Q64)));
+    const q64Number = Number(SimplePool.Q64);
+    const result = sqrtPrice * q64Number;
+    
+    // Check for overflow/NaN
+    if (!isFinite(result) || result < 0) {
+      throw new Error(`Invalid sqrt price calculation for tick ${tick}`);
+    }
+    
+    return BigInt(Math.floor(result));
   }
 
   /**
@@ -375,7 +383,12 @@ export class SimplePool implements IPool {
     // Calculate original liquidity without swapping
     const originalMaxL = this.calculateMaxLiquidity(amount0, amount1, lower, upper);
 
-    const sqrtPriceX64 = this.sqrtPriceX64;
+    // Get current sqrtPrice - use tick if sqrtPriceX64 is not initialized yet
+    let sqrtPriceX64 = this.sqrtPriceX64;
+    if (sqrtPriceX64 === 0n) {
+      sqrtPriceX64 = this.tickToSqrtPrice(this.tick);
+    }
+    
     const sqrtPriceLower = this.tickToSqrtPrice(lower);
     const sqrtPriceUpper = this.tickToSqrtPrice(upper);
 
@@ -438,25 +451,24 @@ export class SimplePool implements IPool {
         ((sqrtP - sqrtA) * sqrtP * sqrtB) /
         ((sqrtB - sqrtP) * Q64_NUM * Q64_NUM);
 
-      // Calculate current ratio
-      const currentRatio =
-        amount1 > 0n && amount0 > 0n ? Number(amount1) / Number(amount0) : 0;
-
-      // Determine if we need to swap and in which direction
-      if (currentRatio > requiredRatio * 1.01) {
-        // We have too much token1, swap some token1 → token0
-        // Calculate how much to swap to achieve the required ratio
-        // After swap: (amount1 - swapAmt) / (amount0 + swapOut) = requiredRatio
-        // Assuming swapOut ≈ swapAmt * price (ignoring fees/slippage for estimation)
+      // Handle edge cases where one token is zero
+      if (amount0 === 0n && amount1 > 0n) {
+        // Have only token1, need to swap some to token0
+        // Swap enough token1 to get the required ratio
         const price = this.price();
-        const targetAmount1 = requiredRatio * (Number(amount0) + Number(amount1) / price);
-        const swapEstimate = Math.max(0, Number(amount1) - targetAmount1);
-
+        // After swap: amount1_remaining / amount0_received = requiredRatio
+        // amount1_remaining = amount1 - swapAmount
+        // amount0_received ≈ swapAmount / price (after fees/slippage)
+        // So: (amount1 - swapAmount) / (swapAmount / price) = requiredRatio
+        // amount1 - swapAmount = requiredRatio * swapAmount / price
+        // amount1 = swapAmount * (1 + requiredRatio / price)
+        // swapAmount = amount1 / (1 + requiredRatio / price)
+        const swapEstimate = Number(amount1) / (1 + requiredRatio / price);
+        
         if (swapEstimate > 0) {
           swapAmount = BigInt(Math.floor(swapEstimate));
-          // Cap swap amount to available amount1
           if (swapAmount > amount1) swapAmount = amount1;
-
+          
           if (swapAmount > minSwapThreshold) {
             needSwap = true;
             swapDirection = "1to0";
@@ -464,21 +476,27 @@ export class SimplePool implements IPool {
             swapReceived = swapResult.amountOut;
             swapFee = swapResult.fee;
             swapSlippage = swapResult.slippage;
-            finalAmount0 = amount0 + swapResult.amountOut;
+            finalAmount0 = swapResult.amountOut;
             finalAmount1 = amount1 - swapAmount;
           }
         }
-      } else if (currentRatio < requiredRatio * 0.99) {
-        // We have too much token0, swap some token0 → token1
+      } else if (amount1 === 0n && amount0 > 0n) {
+        // Have only token0, need to swap some to token1
         const price = this.price();
-        const targetAmount0 = (Number(amount1) + Number(amount0) * price) / requiredRatio / price;
-        const swapEstimate = Math.max(0, Number(amount0) - targetAmount0);
-
+        // After swap: amount1_received / amount0_remaining = requiredRatio
+        // amount1_received ≈ swapAmount * price (after fees/slippage)
+        // amount0_remaining = amount0 - swapAmount
+        // So: (swapAmount * price) / (amount0 - swapAmount) = requiredRatio
+        // swapAmount * price = requiredRatio * (amount0 - swapAmount)
+        // swapAmount * price = requiredRatio * amount0 - requiredRatio * swapAmount
+        // swapAmount * (price + requiredRatio) = requiredRatio * amount0
+        // swapAmount = (requiredRatio * amount0) / (price + requiredRatio)
+        const swapEstimate = (requiredRatio * Number(amount0)) / (price + requiredRatio);
+        
         if (swapEstimate > 0) {
           swapAmount = BigInt(Math.floor(swapEstimate));
-          // Cap swap amount to available amount0
           if (swapAmount > amount0) swapAmount = amount0;
-
+          
           if (swapAmount > minSwapThreshold) {
             needSwap = true;
             swapDirection = "0to1";
@@ -487,11 +505,64 @@ export class SimplePool implements IPool {
             swapFee = swapResult.fee;
             swapSlippage = swapResult.slippage;
             finalAmount0 = amount0 - swapAmount;
-            finalAmount1 = amount1 + swapResult.amountOut;
+            finalAmount1 = swapResult.amountOut;
+          }
+        }
+      } else if (amount0 > 0n && amount1 > 0n) {
+        // Have both tokens - calculate current ratio and adjust
+        const currentRatio = Number(amount1) / Number(amount0);
+
+        // Determine if we need to swap and in which direction
+        if (currentRatio > requiredRatio * 1.01) {
+          // We have too much token1, swap some token1 → token0
+          // Calculate how much to swap to achieve the required ratio
+          // After swap: (amount1 - swapAmt) / (amount0 + swapOut) = requiredRatio
+          // Assuming swapOut ≈ swapAmt * price (ignoring fees/slippage for estimation)
+          const price = this.price();
+          const targetAmount1 = requiredRatio * (Number(amount0) + Number(amount1) / price);
+          const swapEstimate = Math.max(0, Number(amount1) - targetAmount1);
+
+          if (swapEstimate > 0) {
+            swapAmount = BigInt(Math.floor(swapEstimate));
+            // Cap swap amount to available amount1
+            if (swapAmount > amount1) swapAmount = amount1;
+
+            if (swapAmount > minSwapThreshold) {
+              needSwap = true;
+              swapDirection = "1to0";
+              const swapResult = this.swap(swapAmount, false);
+              swapReceived = swapResult.amountOut;
+              swapFee = swapResult.fee;
+              swapSlippage = swapResult.slippage;
+              finalAmount0 = amount0 + swapResult.amountOut;
+              finalAmount1 = amount1 - swapAmount;
+            }
+          }
+        } else if (currentRatio < requiredRatio * 0.99) {
+          // We have too much token0, swap some token0 → token1
+          const price = this.price();
+          const targetAmount0 = (Number(amount1) + Number(amount0) * price) / requiredRatio / price;
+          const swapEstimate = Math.max(0, Number(amount0) - targetAmount0);
+
+          if (swapEstimate > 0) {
+            swapAmount = BigInt(Math.floor(swapEstimate));
+            // Cap swap amount to available amount0
+            if (swapAmount > amount0) swapAmount = amount0;
+
+            if (swapAmount > minSwapThreshold) {
+              needSwap = true;
+              swapDirection = "0to1";
+              const swapResult = this.swap(swapAmount, true);
+              swapReceived = swapResult.amountOut;
+              swapFee = swapResult.fee;
+              swapSlippage = swapResult.slippage;
+              finalAmount0 = amount0 - swapAmount;
+              finalAmount1 = amount1 + swapResult.amountOut;
+            }
           }
         }
       }
-      // else: ratio is close enough, no swap needed
+      // else: both are zero or ratio is close enough, no swap needed
     }
 
     // Calculate final max liquidity
@@ -549,7 +620,12 @@ export class SimplePool implements IPool {
   }
 
   price(): number {
-    const sqrtPrice = Number(this.sqrtPriceX64) / Number(SimplePool.Q64);
+    // Use sqrtPriceX64 if available, otherwise derive from tick
+    let sqrtPriceX64 = this.sqrtPriceX64;
+    if (sqrtPriceX64 === 0n) {
+      sqrtPriceX64 = this.tickToSqrtPrice(this.tick);
+    }
+    const sqrtPrice = Number(sqrtPriceX64) / Number(SimplePool.Q64);
     return sqrtPrice * sqrtPrice;
   }
 

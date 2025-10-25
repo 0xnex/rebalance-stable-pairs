@@ -41,7 +41,7 @@ describe("optimizeForMaxL", () => {
       amountIn: 0n,
       amountOut: 0n,
       zeroForOne: true,
-      newSqrtPrice: sqrtPriceX64,
+      sqrtPriceAfter: sqrtPriceX64,
       feeAmount: 0n,
       liquidity: 1000000000n,
       tick: 0,
@@ -248,19 +248,213 @@ describe("optimizeForMaxL", () => {
     });
   });
 
-  describe("Edge cases", () => {
-    it("should handle zero token0", () => {
-      const result = pool.optimizeForMaxL(0n, 1000000n, -120, 120);
+  describe("Edge cases - Single token with in-range positions (BUG FIX)", () => {
+    it("should handle zero token0 with in-range position (only token1)", () => {
+      // This is the bug case: have only token1, but position is in-range
+      // Should swap some token1 to token0 to create balanced position
+      const result = pool.optimizeForMaxL(
+        0n,         // No token0
+        1000000n,   // 1 USDT
+        -120,       // In range
+        120
+      );
 
-      expect(result.maxLResult.L).toBeGreaterThanOrEqual(0n);
-      // Should work even with zero token0
+      // Should trigger swap
+      expect(result.needSwap).toBe(true);
+      expect(result.swapDirection).toBe("1to0");
+      
+      // Should end up with both tokens
+      expect(result.finalAmount0).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeLessThan(1000000n); // Some token1 swapped
+      
+      // Should have non-zero liquidity
+      expect(result.maxLResult.L).toBeGreaterThan(0n);
+      
+      // Original L should be 0 (can't calculate with only token1 in-range)
+      expect(result.improvement.originalL).toBe(0n);
+      expect(result.improvement.optimizedL).toBeGreaterThan(0n);
+      
+      console.log(`[TEST] Only token1 for in-range: swapped ${result.swapAmount} token1 -> ${result.swapResult?.amountOut} token0, final L=${result.maxLResult.L}`);
     });
 
-    it("should handle zero token1", () => {
-      const result = pool.optimizeForMaxL(1000000n, 0n, -120, 120);
+    it("should handle zero token1 with in-range position (only token0)", () => {
+      // Have only token0, but position is in-range
+      // Should swap some token0 to token1 to create balanced position
+      const result = pool.optimizeForMaxL(
+        1000000n,   // 1 USDC
+        0n,         // No token1
+        -120,       // In range
+        120
+      );
 
+      // Should trigger swap
+      expect(result.needSwap).toBe(true);
+      expect(result.swapDirection).toBe("0to1");
+      
+      // Should end up with both tokens
+      expect(result.finalAmount0).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeGreaterThan(0n);
+      expect(result.finalAmount0).toBeLessThan(1000000n); // Some token0 swapped
+      
+      // Should have non-zero liquidity
+      expect(result.maxLResult.L).toBeGreaterThan(0n);
+      
+      // Original L should be 0 (can't calculate with only token0 in-range)
+      expect(result.improvement.originalL).toBe(0n);
+      expect(result.improvement.optimizedL).toBeGreaterThan(0n);
+      
+      console.log(`[TEST] Only token0 for in-range: swapped ${result.swapAmount} token0 -> ${result.swapResult?.amountOut} token1, final L=${result.maxLResult.L}`);
+    });
+
+    it("should handle large amount of only token1 with narrow in-range position", () => {
+      // Large amount, narrow range
+      const result = pool.optimizeForMaxL(
+        0n,           // No token0
+        100000000n,   // 100 USDT (large)
+        -60,          // Narrow range
+        60
+      );
+
+      expect(result.needSwap).toBe(true);
+      expect(result.swapDirection).toBe("1to0");
+      expect(result.finalAmount0).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeGreaterThan(0n);
+      expect(result.maxLResult.L).toBeGreaterThan(0n);
+      
+      // Should use a significant portion of the amount
+      expect(result.maxLResult.amount0Used + result.maxLResult.amount1Used).toBeGreaterThan(10000000n);
+    });
+
+    it("should handle large amount of only token0 with wide in-range position", () => {
+      // Large amount, wide range
+      const result = pool.optimizeForMaxL(
+        100000000n,   // 100 USDC (large)
+        0n,           // No token1
+        -600,         // Wide range
+        600
+      );
+
+      expect(result.needSwap).toBe(true);
+      expect(result.swapDirection).toBe("0to1");
+      expect(result.finalAmount0).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeGreaterThan(0n);
+      expect(result.maxLResult.L).toBeGreaterThan(0n);
+    });
+
+    it("should handle minimal amount of only token1 with in-range position", () => {
+      // Minimal amount to test rounding
+      const result = pool.optimizeForMaxL(
+        0n,     // No token0
+        1000n,  // 0.001 USDT (tiny)
+        -120,
+        120
+      );
+
+      // May or may not swap depending on threshold and calculations
+      // But should not crash and should handle gracefully
       expect(result.maxLResult.L).toBeGreaterThanOrEqual(0n);
-      // Should work even with zero token1
+      
+      if (result.needSwap) {
+        expect(result.finalAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.finalAmount1).toBeGreaterThanOrEqual(0n);
+      }
+    });
+
+    it("should respect swap threshold even with only one token", () => {
+      // Small amount with high threshold
+      const result = pool.optimizeForMaxL(
+        0n,       // No token0
+        500000n,  // 0.5 USDT
+        -120,
+        120,
+        1000000n  // Threshold: 1 USDT (higher than available)
+      );
+
+      // Should not swap if calculated swap amount is below threshold
+      // Exact behavior depends on calculation
+      expect(result.maxLResult.L).toBeGreaterThanOrEqual(0n);
+    });
+
+    it("should produce balanced ratio after swap from only token1", () => {
+      const result = pool.optimizeForMaxL(
+        0n,         // No token0
+        10000000n,  // 10 USDT
+        -120,
+        120
+      );
+
+      if (result.needSwap) {
+        // After swap, should have approximately correct ratio
+        const finalRatio = Number(result.finalAmount1) / Number(result.finalAmount0);
+        
+        // The ratio should be reasonable (not extreme)
+        expect(finalRatio).toBeGreaterThan(0.1);
+        expect(finalRatio).toBeLessThan(10);
+        
+        // Both amounts should be meaningful (not one >> other)
+        const smallerAmount = result.finalAmount0 < result.finalAmount1 ? result.finalAmount0 : result.finalAmount1;
+        const largerAmount = result.finalAmount0 > result.finalAmount1 ? result.finalAmount0 : result.finalAmount1;
+        
+        // Smaller amount should be at least 10% of larger amount
+        expect(Number(smallerAmount) / Number(largerAmount)).toBeGreaterThan(0.1);
+      }
+    });
+
+    it("should produce balanced ratio after swap from only token0", () => {
+      const result = pool.optimizeForMaxL(
+        10000000n,  // 10 USDC
+        0n,         // No token1
+        -120,
+        120
+      );
+
+      if (result.needSwap) {
+        // After swap, should have approximately correct ratio
+        const finalRatio = Number(result.finalAmount1) / Number(result.finalAmount0);
+        
+        // The ratio should be reasonable
+        expect(finalRatio).toBeGreaterThan(0.1);
+        expect(finalRatio).toBeLessThan(10);
+        
+        // Both amounts should be meaningful
+        const smallerAmount = result.finalAmount0 < result.finalAmount1 ? result.finalAmount0 : result.finalAmount1;
+        const largerAmount = result.finalAmount0 > result.finalAmount1 ? result.finalAmount0 : result.finalAmount1;
+        
+        expect(Number(smallerAmount) / Number(largerAmount)).toBeGreaterThan(0.1);
+      }
+    });
+
+    it("should handle asymmetric range with only token1", () => {
+      // Range is mostly below current price, but includes it
+      const result = pool.optimizeForMaxL(
+        0n,         // No token0
+        5000000n,   // 5 USDT
+        -300,       // Mostly negative
+        60          // Slightly positive
+      );
+
+      expect(result.needSwap).toBe(true);
+      expect(result.swapDirection).toBe("1to0");
+      expect(result.finalAmount0).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeGreaterThan(0n);
+      expect(result.maxLResult.L).toBeGreaterThan(0n);
+    });
+
+    it("should handle asymmetric range with only token0", () => {
+      // Range is mostly above current price, but includes it
+      const result = pool.optimizeForMaxL(
+        5000000n,   // 5 USDC
+        0n,         // No token1
+        -60,        // Slightly negative
+        300         // Mostly positive
+      );
+
+      expect(result.needSwap).toBe(true);
+      expect(result.swapDirection).toBe("0to1");
+      expect(result.finalAmount0).toBeGreaterThan(0n);
+      expect(result.finalAmount1).toBeGreaterThan(0n);
+      expect(result.maxLResult.L).toBeGreaterThan(0n);
     });
 
     it("should handle both tokens zero", () => {
@@ -268,6 +462,8 @@ describe("optimizeForMaxL", () => {
 
       expect(result.needSwap).toBe(false);
       expect(result.maxLResult.L).toBe(0n);
+      expect(result.finalAmount0).toBe(0n);
+      expect(result.finalAmount1).toBe(0n);
     });
 
     it("should throw error for misaligned ticks", () => {
@@ -280,6 +476,146 @@ describe("optimizeForMaxL", () => {
       expect(() => {
         pool.optimizeForMaxL(1000000n, 1000000n, 120, -120); // lower > upper
       }).toThrow("must be less than");
+    });
+  });
+
+  describe("Realistic backtest scenario - Single token initialization", () => {
+    it("should simulate three-band pyramid strategy with only token1", () => {
+      // Simulates the user's bug case: starting backtest with only token1
+      const initialToken1 = 1000000000n; // 1000 USDT (with 6 decimals)
+      
+      // Band 1: narrow (2 ticks = ±1 tick from center)
+      const band1Result = pool.optimizeForMaxL(
+        0n,
+        (initialToken1 * 30n) / 100n, // 30% allocation
+        -60,  // -1 tick with spacing 60
+        60    // +1 tick
+      );
+      
+      // Band 2: medium (4 ticks = ±2 ticks from center)
+      const band2Result = pool.optimizeForMaxL(
+        0n,
+        (initialToken1 * 30n) / 100n, // 30% allocation
+        -120, // -2 ticks
+        120   // +2 ticks
+      );
+      
+      // Band 3: wide (8 ticks = ±4 ticks from center)
+      const band3Result = pool.optimizeForMaxL(
+        0n,
+        (initialToken1 * 40n) / 100n, // 40% allocation
+        -240, // -4 ticks
+        240   // +4 ticks
+      );
+
+      // All should successfully create liquidity
+      expect(band1Result.maxLResult.L).toBeGreaterThan(0n);
+      expect(band2Result.maxLResult.L).toBeGreaterThan(0n);
+      expect(band3Result.maxLResult.L).toBeGreaterThan(0n);
+      
+      // All should have swapped some token1 to token0
+      expect(band1Result.needSwap).toBe(true);
+      expect(band2Result.needSwap).toBe(true);
+      expect(band3Result.needSwap).toBe(true);
+      
+      // All should have both tokens after optimization
+      expect(band1Result.finalAmount0).toBeGreaterThan(0n);
+      expect(band1Result.finalAmount1).toBeGreaterThan(0n);
+      expect(band2Result.finalAmount0).toBeGreaterThan(0n);
+      expect(band2Result.finalAmount1).toBeGreaterThan(0n);
+      expect(band3Result.finalAmount0).toBeGreaterThan(0n);
+      expect(band3Result.finalAmount1).toBeGreaterThan(0n);
+      
+      console.log(`[TEST] Three-band with only token1:`);
+      console.log(`  Band1 L=${band1Result.maxLResult.L}, swapped=${band1Result.swapAmount}`);
+      console.log(`  Band2 L=${band2Result.maxLResult.L}, swapped=${band2Result.swapAmount}`);
+      console.log(`  Band3 L=${band3Result.maxLResult.L}, swapped=${band3Result.swapAmount}`);
+    });
+
+    it("should simulate three-band pyramid strategy with only token0", () => {
+      // Opposite case: starting with only token0
+      const initialToken0 = 1000000000n; // 1000 USDC
+      
+      const band1Result = pool.optimizeForMaxL(
+        (initialToken0 * 30n) / 100n,
+        0n,
+        -60,
+        60
+      );
+      
+      const band2Result = pool.optimizeForMaxL(
+        (initialToken0 * 30n) / 100n,
+        0n,
+        -120,
+        120
+      );
+      
+      const band3Result = pool.optimizeForMaxL(
+        (initialToken0 * 40n) / 100n,
+        0n,
+        -240,
+        240
+      );
+
+      // All should successfully create liquidity
+      expect(band1Result.maxLResult.L).toBeGreaterThan(0n);
+      expect(band2Result.maxLResult.L).toBeGreaterThan(0n);
+      expect(band3Result.maxLResult.L).toBeGreaterThan(0n);
+      
+      // All should have swapped
+      expect(band1Result.needSwap).toBe(true);
+      expect(band2Result.needSwap).toBe(true);
+      expect(band3Result.needSwap).toBe(true);
+      
+      // All should have both tokens
+      expect(band1Result.finalAmount0).toBeGreaterThan(0n);
+      expect(band1Result.finalAmount1).toBeGreaterThan(0n);
+      expect(band2Result.finalAmount0).toBeGreaterThan(0n);
+      expect(band2Result.finalAmount1).toBeGreaterThan(0n);
+      expect(band3Result.finalAmount0).toBeGreaterThan(0n);
+      expect(band3Result.finalAmount1).toBeGreaterThan(0n);
+    });
+
+    it("should compare single-token vs balanced initialization", () => {
+      const amount = 1000000n;
+      
+      // Single token (only token1)
+      const singleTokenResult = pool.optimizeForMaxL(
+        0n,
+        amount,
+        -120,
+        120
+      );
+      
+      // Balanced tokens
+      const balancedResult = pool.optimizeForMaxL(
+        amount / 2n,
+        amount / 2n,
+        -120,
+        120
+      );
+
+      // Both should produce liquidity
+      expect(singleTokenResult.maxLResult.L).toBeGreaterThan(0n);
+      expect(balancedResult.maxLResult.L).toBeGreaterThan(0n);
+      
+      // Single token case requires swap
+      expect(singleTokenResult.needSwap).toBe(true);
+      
+      // Balanced may or may not need swap depending on exact ratio
+      // But should have similar or better liquidity
+      
+      // Compare efficiency (balanced should be more efficient due to no swap costs)
+      const singleTokenEfficiency = Number(singleTokenResult.maxLResult.L) / Number(amount);
+      const balancedEfficiency = Number(balancedResult.maxLResult.L) / Number(amount);
+      
+      console.log(`[TEST] Efficiency comparison:`);
+      console.log(`  Single token: L=${singleTokenResult.maxLResult.L}, efficiency=${singleTokenEfficiency}`);
+      console.log(`  Balanced:     L=${balancedResult.maxLResult.L}, efficiency=${balancedEfficiency}`);
+      
+      // Balanced should generally be more efficient (higher L per token)
+      // But single token should still work (not zero)
+      expect(singleTokenEfficiency).toBeGreaterThan(0);
     });
   });
 
