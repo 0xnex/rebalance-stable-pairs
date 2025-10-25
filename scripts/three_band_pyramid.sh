@@ -14,7 +14,7 @@ bun run src/strategies/three_band_pyramid_strategy_runner.ts \
   --initialAmount1 1000000000 \
   --start "2025-08-20T00:00:00Z" \
   --end "2025-10-10T00:00:00Z" \
-  --output ./backtest-results/three_band_pyramid/ \
+  --output ./test-output/three_band_pyramid/ \
   --band1-width 2 \
   --band2-width 4 \
   --band3-width 8 \

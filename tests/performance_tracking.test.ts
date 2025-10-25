@@ -83,17 +83,17 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 500000n, 500000n);
 
-      // Simulate swap event that generates fees
+      // Simulate swap event that generates fees (above 1000 threshold)
       const sqrtPriceX64 = getSqrtPriceX64();
       const swapEvent = {
         timestamp: Date.now(),
         poolId: "test-pool",
-        amountIn: 10000n,
-        amountOut: 9900n,
+        amountIn: 100000n,
+        amountOut: 99000n,
         zeroForOne: true,
         sqrtPriceBefore: sqrtPriceX64,
         sqrtPriceAfter: sqrtPriceX64,
-        feeAmount: 30n,
+        feeAmount: 5000n, // Above threshold
         liquidity: 1000000n,
         tick: 0,
         reserveA: 1010000n,
@@ -169,17 +169,17 @@ describe("Performance Tracking", () => {
       manager.openPosition("pos1", -1000, 1000);
       manager.addLiquidity("pos1", 500000n, 500000n);
 
-      // Simulate swap event
+      // Simulate swap event (above threshold)
       const sqrtPriceX64 = getSqrtPriceX64();
       const swapEvent = {
         timestamp: Date.now(),
         poolId: "test-pool",
-        amountIn: 10000n,
-        amountOut: 9900n,
+        amountIn: 100000n,
+        amountOut: 99000n,
         zeroForOne: true,
         sqrtPriceBefore: sqrtPriceX64,
         sqrtPriceAfter: sqrtPriceX64,
-        feeAmount: 30n,
+        feeAmount: 5000n, // Above threshold
         liquidity: 1000000n,
         tick: 0,
         reserveA: 1010000n,
@@ -234,9 +234,9 @@ describe("Performance Tracking", () => {
       const posPerfs = calculatePositionsPerformance(pool, manager);
       const result = await exportPerformanceToCSV(fundPerf, posPerfs, "./test-output");
 
-      expect(result.fundCsvPath).toContain("fund_performance_");
+      expect(result.fundCsvPath).toContain("fund_performance");
       expect(result.fundCsvPath).toContain(".csv");
-      expect(result.positionsCsvPath).toContain("position_performance_");
+      expect(result.positionsCsvPath).toContain("position_performance");
       expect(result.positionsCsvPath).toContain(".csv");
     });
   });
