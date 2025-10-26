@@ -21,5 +21,5 @@ bun run src/strategies/three_band_pyramid_strategy_runner.ts \
   --band1-alloc 30 \
   --band2-alloc 30 \
   --band3-alloc 40 \
-  --outside-duration 600000 \
-  --cooldown 300000
+  --outside-duration 30 \
+  --cooldown 5

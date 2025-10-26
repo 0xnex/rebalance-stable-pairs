@@ -56,7 +56,7 @@ export interface OptimizationResult {
 
 export interface IPool extends SwapEventListener {
   getTick(): number;
-  getPrice(): number;
+  price(): number;
   
   swap(amountIn: bigint, xForY: boolean): SwapResult;
 
@@ -79,30 +79,55 @@ export interface ISlippageProvider extends SwapEventListener {
 }
 
 export interface IPosition {
+  // Identity
   id: string;
   lower: number;
   upper: number;
+  
+  // Initial investment
   initialAmount0: bigint;
   initialAmount1: bigint;
+  
+  // Cached amounts (updated by PositionManager)
+  amount0: bigint;
+  amount1: bigint;
+  
+  // Final amounts when closed (for performance calculation)
+  finalAmount0: bigint;
+  finalAmount1: bigint;
+  
+  // Fees (integer values, rounded down from high-precision)
   fee0: bigint;
   fee1: bigint;
   accumulatedFee0: bigint;
   accumulatedFee1: bigint;
-  amount0: bigint;
-  amount1: bigint;
+  
+  // Costs
   cost0: bigint;
   cost1: bigint;
   slip0: bigint;
   slip1: bigint;
+  
+  // State
   L: bigint;
   isClosed: boolean;
   openTime: number;
   closeTime: number;
-
+  
+  // In-range tracking (managed by PositionManager)
+  lastTickUpdateTime: number;
+  lastWasInRange: boolean;
+  totalInRangeTimeMs: number;
+  
+  // Cumulative tracking across rebalances (persists when position is recreated)
+  cumulativeOpenTime: number; // First time this position ID was ever opened
+  cumulativeTotalInRangeTimeMs: number; // Total in-range time across all iterations
+  cumulativeInitialAmount0: bigint; // Total invested amount0 across all iterations
+  cumulativeInitialAmount1: bigint; // Total invested amount1 across all iterations
+  
+  // Simple query methods (no side effects)
   getValue(price: number): bigint;
   isInRange(currentTick: number): boolean;
-  updateFee(fee0: bigint, fee1: bigint): void;
-  close(): { amount0: bigint; amount1: bigint; fee0: bigint; fee1: bigint };
 }
 
 export interface IPositionManager {
@@ -124,25 +149,15 @@ export interface IPositionManager {
   getPositions(): IPosition[];
   getActivePositions(): IPosition[];
   updateFee(id: string, fee0: bigint, fee1: bigint): void;
-  // Wallet access methods
-  getWallet(): IWallet;
+  // Balance access methods
   getBalance0(): bigint;
   getBalance1(): bigint;
-  getAllPositions(): IPosition[];
-}
-
-export interface IFeeDistributor extends SwapEventListener {
-  distributeFee(id: string): void;
+  // Time management
+  setCurrentTime(timestamp: number): void;
 }
 
 export interface ICompounder extends SwapEventListener {
   // check if canCompound per SwapEvent
-}
-
-export interface IWallet {
-  amount0: bigint;
-  amount1: bigint;
-  updateBalance(deltaAmount0: bigint, deltaAmount1: bigint): void;
 }
 
 export interface BacktestContext {
@@ -214,6 +229,14 @@ export interface PositionPerformance {
   totalFeeEarned: bigint; // in token1
   pnl: bigint; // in token1
   roiPercent: number;
+  apr: number; // Annualized percentage rate
+  apy: number; // Annual percentage yield (compounded)
+  openTime: number; // Timestamp when position opened
+  closeTime: number; // Timestamp when position closed (0 if still open)
+  durationMs: number; // Time position has been open
+  durationDays: number; // Duration in days
+  inRangeTimeMs: number; // Time spent in range
+  inRangePercent: number; // Percentage of time in range
   slippage0: bigint;
   slippage1: bigint;
   slippageCost: bigint; // in token1

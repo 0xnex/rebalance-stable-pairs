@@ -22,7 +22,8 @@ import { createSwapEventGenerator } from "./event_importer";
 import { SimplePool } from "./simple_pool";
 import { PositionManager } from "./position_mgr";
 import { FixedSlippageProvider, LinearSlippageEstimator } from "./slippage_estimator";
-import { exportPerformanceToCSV, calculateFundPerformance, calculatePositionsPerformance } from "./performance_exporter";
+import { PerformanceTracker } from "./performance_tracker";
+import { calculateFundPerformance, calculatePositionsPerformance } from "./performance_exporter";
 import { join } from "node:path";
 import type { SwapEvent, IStrategy, BacktestContext } from "./types";
 
@@ -283,16 +284,28 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
     slippageProvider
   );
 
-  // Create position manager
-  const manager = new PositionManager(config.initialAmount0, config.initialAmount1, pool);
+  // Calculate time range
+  const startMs = config.startTime.getTime();
+  const endMs = config.endTime.getTime();
+
+  // Create position manager with initial simulation time
+  const manager = new PositionManager(config.initialAmount0, config.initialAmount1, pool, startMs);
+
+  // Create performance tracker
+  const performanceTracker = new PerformanceTracker(
+    pool,
+    manager,
+    config.initialAmount0,
+    config.initialAmount1,
+    startMs,
+    config.output,
+    config.silent
+  );
 
   // Create event generator
   if (!config.silent) {
     console.log("\n[INIT] [event_generator] [creating]");
   }
-
-  const startMs = config.startTime.getTime();
-  const endMs = config.endTime.getTime();
 
   const eventGenerator = createSwapEventGenerator({
     poolId: config.poolId,
@@ -316,11 +329,6 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
   // Initialize strategy AFTER processing first event to ensure pool has valid price
   let strategyInitialized = false;
 
-  // Performance tracking
-  const SNAPSHOT_INTERVAL_MS = 60 * 1000; // 1 minute
-  let nextSnapshotTime = startMs + SNAPSHOT_INTERVAL_MS;
-  let snapshotCount = 0;
-
   // Stream events and emit time ticks
   let eventCount = 0;
   let tickCount = 0;
@@ -329,12 +337,12 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
   const nextTickTime = () => currentTime + config.tickIntervalMs;
 
   // Process events as they stream in
+  // Event-driven backtest: only emit ticks when there are swap events to react to
   for await (const event of eventGenerator) {
-    // Update pool and manager state with event FIRST (before strategy runs)
+    // 1. Update pool state with swap event (price/tick/liquidity changes)
     pool.onSwapEvent(event);
-    manager.onSwapEvent(event); // This distributes fees
     eventCount++;
-
+    
     // Initialize strategy after first event (pool now has valid price)
     if (!strategyInitialized) {
       if (!config.silent) {
@@ -346,36 +354,28 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
       strategyInitialized = true;
     }
 
-    // Emit all ticks that should have occurred before this event
+    // 2. Distribute fees to positions based on swap event
+    manager.onSwapEvent(event);
+
+    // 3. Emit all time ticks that should have occurred up to this swap event
+    // Strategy can now see the updated pool state and make decisions
     while (currentTime <= endMs && event.timestamp >= nextTickTime()) {
-      config.strategy.onTick(currentTime, createContext(currentTime));
+      const tickTime = nextTickTime();
+      
+      // Emit time tick event to strategy
+      config.strategy.onTick(tickTime, createContext(tickTime));
       tickCount++;
-      currentTime += config.tickIntervalMs;
+      
+      // Emit time tick event to performance tracker
+      await performanceTracker.onTimeTick(tickTime);
+      
+      currentTime = tickTime + config.tickIntervalMs;
 
-      // Capture performance snapshot every minute (only once per interval)
-      while (currentTime >= nextSnapshotTime && nextSnapshotTime <= endMs) {
-        const fundPerf = calculateFundPerformance(pool, manager, config.initialAmount0, config.initialAmount1, nextSnapshotTime);
-        const posPerfs = calculatePositionsPerformance(pool, manager, nextSnapshotTime);
-        
-        await exportPerformanceToCSV(
-          fundPerf,
-          posPerfs,
-          config.output,
-          snapshotCount > 0 // append if not first snapshot
-        );
-        
-        snapshotCount++;
-        nextSnapshotTime += SNAPSHOT_INTERVAL_MS;
-        
-        if (!config.silent && snapshotCount % 10 === 0) {
-          process.stdout.write(`\r[SNAPSHOT] [performance] [captured] [count=${snapshotCount}]${' '.repeat(50)}\n`);
-        }
-      }
-
-      // Progress indicator (only if no snapshot was just logged)
+      // Progress indicator
       if (!config.silent && tickCount % 1000 === 0) {
         const progress = (tickCount / totalTicks * 100).toFixed(1);
-        const shouldLogProgress = snapshotCount % 10 !== 0 || currentTime < nextSnapshotTime - SNAPSHOT_INTERVAL_MS;
+        const snapshotCount = performanceTracker.getSnapshotCount();
+        const shouldLogProgress = snapshotCount % 10 !== 0 || currentTime < tickTime;
         if (shouldLogProgress) {
           process.stdout.write(`\r[ENGINE] [backtest] [running] [progress=${progress}%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventCount}] [snapshots=${snapshotCount}]`);
         }
@@ -383,65 +383,25 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
     }
   }
 
-  // Emit remaining ticks after all events processed
-  while (currentTime <= endMs) {
-    config.strategy.onTick(currentTime, createContext(currentTime));
-    tickCount++;
-    currentTime += config.tickIntervalMs;
-
-    // Capture performance snapshot every minute (only once per interval)
-    while (currentTime >= nextSnapshotTime && nextSnapshotTime <= endMs) {
-      const fundPerf = calculateFundPerformance(pool, manager, config.initialAmount0, config.initialAmount1, nextSnapshotTime);
-      const posPerfs = calculatePositionsPerformance(pool, manager, nextSnapshotTime);
-      
-      await exportPerformanceToCSV(
-        fundPerf,
-        posPerfs,
-        config.output,
-        snapshotCount > 0 // append if not first snapshot
-      );
-      
-      snapshotCount++;
-      nextSnapshotTime += SNAPSHOT_INTERVAL_MS;
-      
-      if (!config.silent && snapshotCount % 10 === 0) {
-        process.stdout.write(`\r[SNAPSHOT] [performance] [captured] [count=${snapshotCount}]${' '.repeat(50)}\n`);
-      }
-    }
-
-    // Progress indicator (only if no snapshot was just logged)
-    if (!config.silent && tickCount % 1000 === 0) {
-      const progress = (tickCount / totalTicks * 100).toFixed(1);
-      const shouldLogProgress = snapshotCount % 10 !== 0 || currentTime < nextSnapshotTime - SNAPSHOT_INTERVAL_MS;
-      if (shouldLogProgress) {
-        process.stdout.write(`\r[ENGINE] [backtest] [running] [progress=${progress}%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventCount}] [snapshots=${snapshotCount}]`);
-      }
-    }
-  }
+  // Note: We do NOT emit ticks after all swap events are done
+  // Ticks without price changes (swap events) cannot impact strategy decisions
 
   if (!config.silent) {
+    const snapshotCount = performanceTracker.getSnapshotCount();
     process.stdout.write(`\r[ENGINE] [backtest] [completed] [progress=100.0%] [ticks=${tickCount}/${totalTicks}] [events_processed=${eventCount}] [snapshots=${snapshotCount}]       \n`);
   }
+
+  // Set final simulation time before calling strategy onEnd
+  manager.setCurrentTime(endMs);
 
   // Finalize strategy
   config.strategy.onEnd(createContext(endMs));
 
-  // Capture final snapshot if not already captured
-  if (currentTime > nextSnapshotTime - SNAPSHOT_INTERVAL_MS || snapshotCount === 0) {
-    const fundPerf = calculateFundPerformance(pool, manager, config.initialAmount0, config.initialAmount1, endMs);
-    const posPerfs = calculatePositionsPerformance(pool, manager, endMs);
-    
-    await exportPerformanceToCSV(
-      fundPerf,
-      posPerfs,
-      config.output,
-      snapshotCount > 0 // append if not first snapshot
-    );
-    
-    snapshotCount++;
-  }
+  // Capture final snapshot
+  await performanceTracker.captureFinalSnapshot(endMs);
 
   if (!config.silent) {
+    const snapshotCount = performanceTracker.getSnapshotCount();
     console.log(`\n[EXPORT] [performance] [complete] [total_snapshots=${snapshotCount}]`);
   }
 
@@ -451,6 +411,12 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
     manager,
     config.initialAmount0,
     config.initialAmount1,
+    endMs
+  );
+  
+  const positionsPerformance = calculatePositionsPerformance(
+    pool,
+    manager,
     endMs
   );
 
@@ -489,6 +455,24 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
     console.log(`[SUMMARY] [apr] [${apr.toFixed(4)}]`);
     console.log(`[SUMMARY] [apy] [${apy.toFixed(4)}]`);
     console.log(`[SUMMARY] [fees.earned] [${fundPerformance.totalFeeEarned}] [token=${config.token1Name}]`);
+    
+    // Log position-level performance
+    console.log("\n[SUMMARY] [positions] [performance]");
+    for (const posPerf of positionsPerformance) {
+      console.log(
+        `[POSITION_SUMMARY] [id=${posPerf.positionId}] ` +
+        `[range=${posPerf.lowerTick}:${posPerf.upperTick}] ` +
+        `[status=${posPerf.status}] ` +
+        `[pnl=${posPerf.pnl}] ` +
+        `[roi=${posPerf.roiPercent.toFixed(4)}%] ` +
+        `[apr=${posPerf.apr.toFixed(4)}%] ` +
+        `[apy=${posPerf.apy.toFixed(4)}%] ` +
+        `[duration_days=${posPerf.durationDays.toFixed(2)}] ` +
+        `[in_range=${posPerf.inRangePercent.toFixed(2)}%] ` +
+        `[fees_earned=${posPerf.totalFeeEarned}]`
+      );
+    }
+    
     console.log("\n[COMPLETE] [backtest] [success]\n");
   }
 }

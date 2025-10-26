@@ -108,12 +108,23 @@ export function calculatePositionsPerformance(
   const currentTick = (pool as any).tick;
 
   return manager.getPositions().map((pos) => {
-    // Calculate initial value in token1
-    const initialValue = convertToToken1(pos.initialAmount0, currentPrice) + pos.initialAmount1;
+    // Use cumulative metrics if available (for positions that have been rebalanced)
+    // Otherwise use current iteration metrics
+    const hasCumulativeData = pos.cumulativeOpenTime > 0 && pos.cumulativeOpenTime !== pos.openTime;
+    const effectiveOpenTime = hasCumulativeData ? pos.cumulativeOpenTime : pos.openTime || ts;
+    const effectiveInitialAmount0 = hasCumulativeData ? pos.cumulativeInitialAmount0 : pos.initialAmount0;
+    const effectiveInitialAmount1 = hasCumulativeData ? pos.cumulativeInitialAmount1 : pos.initialAmount1;
+    const effectiveInRangeTimeMs = hasCumulativeData 
+      ? pos.cumulativeTotalInRangeTimeMs + pos.totalInRangeTimeMs 
+      : pos.totalInRangeTimeMs;
+    
+    // Calculate initial value in token1 using effective amounts
+    const initialValue = convertToToken1(effectiveInitialAmount0, currentPrice) + effectiveInitialAmount1;
 
     // Calculate position value (amount + fees)
-    const currentAmount0 = pos.amount0;
-    const currentAmount1 = pos.amount1;
+    // Use finalAmount for closed positions, current amount for open positions
+    const currentAmount0 = pos.isClosed ? pos.finalAmount0 : pos.amount0;
+    const currentAmount1 = pos.isClosed ? pos.finalAmount1 : pos.amount1;
     const positionValue = 
       convertToToken1(currentAmount0, currentPrice) + 
       currentAmount1 + 
@@ -128,10 +139,46 @@ export function calculatePositionsPerformance(
     const swapCost = convertToToken1(pos.cost0, currentPrice) + pos.cost1;
 
     // Calculate PnL and ROI
-    const pnl = positionValue - initialValue;
+    // For rebalanced positions, the capital is recycled through close/reopen cycles.
+    // The meaningful PnL is: fees earned - costs incurred
+    // (The position value doesn't reflect the true performance since funds are continuously moved to/from wallet)
+    let pnl: bigint;
+    if (hasCumulativeData) {
+      // For rebalanced positions: PnL = total fees - slippage - swap costs
+      pnl = totalFeeEarned - slippageCost - swapCost;
+    } else {
+      // For non-rebalanced positions: PnL = current value - initial value
+      pnl = positionValue - initialValue;
+    }
+    
     const roiPercent = initialValue > 0n 
       ? Number((pnl * 10000n) / initialValue) / 100 
       : 0;
+
+    // Calculate duration using effective open time
+    const openTime = effectiveOpenTime;
+    const closeTime = pos.isClosed ? (pos.closeTime || ts) : ts;
+    const durationMs = closeTime - openTime;
+    const durationDays = durationMs / (1000 * 60 * 60 * 24);
+    const durationYears = durationDays / 365;
+
+    // Calculate APR and APY
+    let apr = 0;
+    let apy = 0;
+    if (durationYears > 0 && initialValue > 0n) {
+      // APR: simple annualization
+      apr = roiPercent / durationYears;
+      
+      // APY: compound annualization
+      const dailyReturn = roiPercent / 100 / durationDays;
+      if (dailyReturn > -1 && durationDays > 0) {
+        apy = (Math.pow(1 + dailyReturn, 365) - 1) * 100;
+      }
+    }
+
+    // Calculate in-range time and percentage using effective in-range time
+    const inRangeTimeMs = effectiveInRangeTimeMs || 0;
+    const inRangePercent = durationMs > 0 ? (inRangeTimeMs / durationMs) * 100 : 0;
 
     return {
       timestamp: ts,
@@ -152,6 +199,14 @@ export function calculatePositionsPerformance(
       totalFeeEarned,
       pnl,
       roiPercent,
+      apr,
+      apy,
+      openTime,
+      closeTime,
+      durationMs,
+      durationDays,
+      inRangeTimeMs,
+      inRangePercent,
       slippage0: pos.slip0,
       slippage1: pos.slip1,
       slippageCost,
@@ -270,6 +325,14 @@ export async function exportPositionPerformanceToCSV(
     "total_fee_earned",
     "pnl",
     "roi_percent",
+    "apr",
+    "apy",
+    "open_time",
+    "close_time",
+    "duration_ms",
+    "duration_days",
+    "in_range_time_ms",
+    "in_range_percent",
     "slippage0",
     "slippage1",
     "slippage_cost",
@@ -298,6 +361,14 @@ export async function exportPositionPerformanceToCSV(
     bigintToString(p.totalFeeEarned),
     bigintToString(p.pnl),
     numberToString(p.roiPercent, 4),
+    numberToString(p.apr, 4),
+    numberToString(p.apy, 4),
+    p.openTime.toString(),
+    p.closeTime.toString(),
+    p.durationMs.toString(),
+    numberToString(p.durationDays, 4),
+    p.inRangeTimeMs.toString(),
+    numberToString(p.inRangePercent, 2),
     bigintToString(p.slippage0),
     bigintToString(p.slippage1),
     bigintToString(p.slippageCost),

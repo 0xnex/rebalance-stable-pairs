@@ -8,7 +8,7 @@ import type { IStrategy, BacktestContext, IPosition } from "../types";
  * - All bands initially centered on current pool price
  * - Only Band 1 (narrow, 2 ticks) rebalances
  * - Band 2 and Band 3 NEVER move from initial positions
- * - Rebalance trigger: Price stays outside Band 3 for 30 continuous minutes
+ * - Rebalance trigger: Price stays outside Band 1 for 30 continuous minutes
  * - Cooldown: 5 minutes minimum between rebalances
  * 
  * Allocation: 30% / 30% / 40% for Band 1 / Band 2 / Band 3
@@ -85,8 +85,8 @@ export class ThreeBandPyramidStrategy implements IStrategy {
     console.log("\n[STRATEGY] [three_band] [started]");
     console.log(`[STRATEGY] [config] [band_widths=${this.config.band1Width},${this.config.band2Width},${this.config.band3Width}]`);
     console.log(`[STRATEGY] [config] [allocations=${this.config.band1Allocation.toFixed(1)}%,${this.config.band2Allocation.toFixed(1)}%,${this.config.band3Allocation.toFixed(1)}%]`);
-    console.log(`[STRATEGY] [config] [outside_duration=${this.config.outsideDurationMs / 60000}min]`);
-    console.log(`[STRATEGY] [config] [cooldown=${this.config.cooldownMs / 60000}min]`);
+    console.log(`[STRATEGY] [config] [outside_duration=${this.config.outsideDurationMs}ms (${(this.config.outsideDurationMs / 60000).toFixed(2)}min)]`);
+    console.log(`[STRATEGY] [config] [cooldown=${this.config.cooldownMs}ms (${(this.config.cooldownMs / 60000).toFixed(2)}min)]`);
     
     const currentTick = context.pool.getTick();
 
@@ -101,20 +101,20 @@ export class ThreeBandPyramidStrategy implements IStrategy {
   onTick(timestamp: number, context: BacktestContext): void {
     const currentTick = context.pool.getTick();
     
-    // Check if price is outside Band 3 (widest band)
-    if (!this.band3) return;
+    // Check if price is outside Band 1 (narrowest band)
+    if (!this.band1) return;
 
-    const outsideBand3 = currentTick < this.band3.tickLower || currentTick >= this.band3.tickUpper;
+    const outsideBand1 = currentTick < this.band1.tickLower || currentTick >= this.band1.tickUpper;
     
-    if (outsideBand3) {
-      // Price is outside Band 3
+    if (outsideBand1) {
+      // Price is outside Band 1
       if (this.outsideStartTime === null) {
         // Just went outside - start timer
         this.outsideStartTime = timestamp;
         console.log(
-          `[STRATEGY] [price_outside_band3] ` +
+          `[STRATEGY] [price_outside_band1] ` +
           `[tick=${currentTick}] ` +
-          `[band3_range=${this.band3.tickLower}:${this.band3.tickUpper}] ` +
+          `[band1_range=${this.band1.tickLower}:${this.band1.tickUpper}] ` +
           `[timer_started]`
         );
       } else {
@@ -151,11 +151,11 @@ export class ThreeBandPyramidStrategy implements IStrategy {
         }
       }
     } else {
-      // Price is back inside Band 3
+      // Price is back inside Band 1
       if (this.outsideStartTime !== null) {
         const durationWasOutside = timestamp - this.outsideStartTime;
         console.log(
-          `[STRATEGY] [price_back_inside_band3] ` +
+          `[STRATEGY] [price_back_inside_band1] ` +
           `[tick=${currentTick}] ` +
           `[was_outside_for=${(durationWasOutside / 60000).toFixed(1)}min] ` +
           `[timer_reset]`
@@ -169,7 +169,7 @@ export class ThreeBandPyramidStrategy implements IStrategy {
     console.log("\n[STRATEGY] [three_band] [completed]");
     
     const finalTick = context.pool.getTick();
-    const finalPrice = context.pool.getPrice();
+    const finalPrice = context.pool.price();
     
     console.log(`[STRATEGY] [final_tick] [${finalTick}]`);
     console.log(`[STRATEGY] [final_price] [${finalPrice}]`);
@@ -337,6 +337,17 @@ export class ThreeBandPyramidStrategy implements IStrategy {
       this.config.band1Allocation,
       amount0 + fee0,  // Use all returned funds including fees
       amount1 + fee1
+    );
+    
+    // Log band1 effective liquidity after rebalancing
+    const band1Position = context.positionManager.getPosition("band1");
+    const band1Value = Number(band1Position.amount0) + Number(band1Position.amount1);
+    console.log(
+      `[STRATEGY] [band1_rebalanced_liquidity] ` +
+      `[amount0=${band1Position.amount0}] ` +
+      `[amount1=${band1Position.amount1}] ` +
+      `[total_value=${band1Value}] ` +
+      `[liquidity=${band1Position.L}]`
     );
     
     this.rebalanceCount++;

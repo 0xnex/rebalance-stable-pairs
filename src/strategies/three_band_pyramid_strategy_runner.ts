@@ -228,8 +228,8 @@ async function main() {
   console.log("[CONFIG] [strategy] [three-band-pyramid]");
   console.log(`[CONFIG] [band_widths] [${strategyParams.band1Width},${strategyParams.band2Width},${strategyParams.band3Width}]`);
   console.log(`[CONFIG] [allocations] [${strategyParams.band1Allocation}%,${strategyParams.band2Allocation}%,${strategyParams.band3Allocation}%]`);
-  console.log(`[CONFIG] [outside_duration] [${strategyParams.outsideDurationMs / 60000} minutes]`);
-  console.log(`[CONFIG] [cooldown] [${strategyParams.cooldownMs / 60000} minutes]`);
+  console.log(`[CONFIG] [outside_duration] [${strategyParams.outsideDurationMs} ms] [${(strategyParams.outsideDurationMs / 60000).toFixed(2)} minutes]`);
+  console.log(`[CONFIG] [cooldown] [${strategyParams.cooldownMs} ms] [${(strategyParams.cooldownMs / 60000).toFixed(2)} minutes]`);
 
   // Create strategy with configuration
   const strategyConfig: Partial<ThreeBandConfig> = {

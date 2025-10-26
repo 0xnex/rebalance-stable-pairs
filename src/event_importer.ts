@@ -105,10 +105,11 @@ function sortTransactionsByTimestamp(
  */
 function processSwapTransaction(
   swapEvent: MomentumEvent,
-  nextEvent: MomentumEvent | undefined
+  nextEvent: MomentumEvent | undefined,
+  transactionTimestamp: number
 ): SwapEvent {
   const parsedJson = swapEvent.parsedJson;
-  const timestamp = parseInt(swapEvent.id.txDigest.slice(0, 13), 16); // Extract timestamp from tx
+  const timestamp = transactionTimestamp; // Use transaction timestamp, not hash
 
   const zeroForOne = parsedJson.x_for_y === true;
   const feeAmount = BigInt(parsedJson.fee_amount || 0);
@@ -214,6 +215,10 @@ async function* generateEventsFromDB(options: SwapEventGeneratorOptions): AsyncG
       for (const rawEvent of rawEvents) {
         if (Array.isArray(rawEvent.data?.events)) {
         const events = rawEvent.data.events;
+        // Get transaction timestamp from raw event data
+        const transactionTimestamp = rawEvent.data.timestampMs 
+          ? parseInt(rawEvent.data.timestampMs)
+          : parseInt(events[0]?.id?.txDigest?.slice(0, 13) || "0", 16); // Fallback to hash extraction if no timestamp
 
         // Process events sequentially, checking next event
         for (let i = 0; i < events.length; i++) {
@@ -225,7 +230,7 @@ async function* generateEventsFromDB(options: SwapEventGeneratorOptions): AsyncG
             event.parsedJson?.pool_id === options.poolId
           ) {
             const nextEvent = events[i + 1]; // Check immediate next event
-            yield processSwapTransaction(event, nextEvent);
+            yield processSwapTransaction(event, nextEvent, transactionTimestamp);
           }
         }
       }
@@ -362,7 +367,7 @@ function* generateEventsFromFiles(options: SwapEventGeneratorOptions): Generator
             event.parsedJson?.pool_id === options.poolId
           ) {
             const nextEvent = events[i + 1]; // Check immediate next event
-            yield processSwapTransaction(event, nextEvent);
+            yield processSwapTransaction(event, nextEvent, transactionTimestamp);
           }
         }
       }

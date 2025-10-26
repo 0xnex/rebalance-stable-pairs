@@ -403,32 +403,88 @@ export class SimplePool implements IPool {
 
     // Case 1: Price range is entirely below current price - only need token0
     if (sqrtPriceX64 >= sqrtPriceUpper) {
-      // Swap all token1 to token0
+      // Current price is above range - need to swap token1 to token0
+      // But don't swap ALL token1, as price impact might move us out of range
+      // Use a conservative approach: estimate the swap amount needed
       if (amount1 > minSwapThreshold) {
-        needSwap = true;
-        swapDirection = "1to0";
-        swapAmount = amount1;
-        const swapResult = this.swap(amount1, false);
-        swapReceived = swapResult.amountOut;
-        swapFee = swapResult.fee;
-        swapSlippage = swapResult.slippage;
-        finalAmount0 = amount0 + swapResult.amountOut;
-        finalAmount1 = 0n;
+        // Estimate token0 needed based on liquidity we can add
+        // For price above range: only token0 is used
+        // L = amount0 * sqrtPriceUpper * sqrtPriceLower / ((sqrtPriceUpper - sqrtPriceLower) * 2^64)
+        const range = sqrtPriceUpper - sqrtPriceLower;
+        const liquidityFromToken0 = (amount0 * sqrtPriceUpper * sqrtPriceLower) / (range * SimplePool.Q64);
+        
+        // Estimate additional token0 from swapping (roughly at current price)
+        const currentPrice = this.price();
+        const estimatedToken0FromSwap = BigInt(Math.floor(Number(amount1) / currentPrice * 0.99)); // 99% to account for fees/slippage
+        const totalPotentialToken0 = amount0 + estimatedToken0FromSwap;
+        
+        // Calculate max useful liquidity
+        const maxUsefulLiquidity = (totalPotentialToken0 * sqrtPriceUpper * sqrtPriceLower) / (range * SimplePool.Q64);
+        
+        // Calculate token0 needed for max liquidity
+        const token0Needed = (maxUsefulLiquidity * range * SimplePool.Q64) / (sqrtPriceUpper * sqrtPriceLower);
+        
+        if (token0Needed > amount0) {
+          // Need to swap some token1
+          const token0Gap = token0Needed - amount0;
+          // Estimate swap amount (accounting for price impact - be conservative)
+          const swapEstimate = BigInt(Math.floor(Number(token0Gap) * currentPrice * 1.01)); // 101% buffer
+          swapAmount = swapEstimate > amount1 ? amount1 : swapEstimate;
+          
+          if (swapAmount > minSwapThreshold) {
+            needSwap = true;
+            swapDirection = "1to0";
+            const swapResult = this.swap(swapAmount, false);
+            swapReceived = swapResult.amountOut;
+            swapFee = swapResult.fee;
+            swapSlippage = swapResult.slippage;
+            finalAmount0 = amount0 + swapResult.amountOut;
+            finalAmount1 = amount1 - swapAmount;
+          }
+        }
       }
     }
     // Case 2: Price range is entirely above current price - only need token1
     else if (sqrtPriceX64 <= sqrtPriceLower) {
-      // Swap all token0 to token1
+      // Current price is below range - need to swap token0 to token1
+      // But don't swap ALL token0, as price impact might move us out of range
+      // Use a conservative approach: estimate the swap amount needed
       if (amount0 > minSwapThreshold) {
-        needSwap = true;
-        swapDirection = "0to1";
-        swapAmount = amount0;
-        const swapResult = this.swap(amount0, true);
-        swapReceived = swapResult.amountOut;
-        swapFee = swapResult.fee;
-        swapSlippage = swapResult.slippage;
-        finalAmount0 = 0n;
-        finalAmount1 = amount1 + swapResult.amountOut;
+        // Estimate token1 needed based on liquidity we can add
+        // For price below range: only token1 is used
+        // L = amount1 * 2^64 / (sqrtPriceUpper - sqrtPriceLower)
+        const liquidityFromToken1 = (amount1 * SimplePool.Q64) / (sqrtPriceUpper - sqrtPriceLower);
+        
+        // Estimate additional token1 from swapping (roughly at current price)
+        // Be conservative: only swap enough to fill the range at current price
+        const currentPrice = this.price();
+        const estimatedToken1FromSwap = BigInt(Math.floor(Number(amount0) * currentPrice * 0.99)); // 99% to account for fees/slippage
+        const totalPotentialToken1 = amount1 + estimatedToken1FromSwap;
+        
+        // Calculate max useful liquidity (limited by sqrt price range)
+        const maxUsefulLiquidity = (totalPotentialToken1 * SimplePool.Q64) / (sqrtPriceUpper - sqrtPriceLower);
+        
+        // If we have way more token0 than we can use, swap most of it, otherwise swap conservatively
+        const token1Needed = (maxUsefulLiquidity * (sqrtPriceUpper - sqrtPriceLower)) / SimplePool.Q64;
+        
+        if (token1Needed > amount1) {
+          // Need to swap some token0
+          const token1Gap = token1Needed - amount1;
+          // Estimate swap amount (accounting for price impact - be conservative)
+          const swapEstimate = BigInt(Math.floor(Number(token1Gap) / currentPrice * 1.01)); // 101% buffer
+          swapAmount = swapEstimate > amount0 ? amount0 : swapEstimate;
+          
+          if (swapAmount > minSwapThreshold) {
+            needSwap = true;
+            swapDirection = "0to1";
+            const swapResult = this.swap(swapAmount, true);
+            swapReceived = swapResult.amountOut;
+            swapFee = swapResult.fee;
+            swapSlippage = swapResult.slippage;
+            finalAmount0 = amount0 - swapAmount;
+            finalAmount1 = amount1 + swapResult.amountOut;
+          }
+        }
       }
     }
     // Case 3: Current price is in range - need both tokens in specific ratio
@@ -515,50 +571,131 @@ export class SimplePool implements IPool {
         // Determine if we need to swap and in which direction
         if (currentRatio > requiredRatio * 1.01) {
           // We have too much token1, swap some token1 → token0
-          // Calculate how much to swap to achieve the required ratio
-          // After swap: (amount1 - swapAmt) / (amount0 + swapOut) = requiredRatio
-          // Assuming swapOut ≈ swapAmt * price (ignoring fees/slippage for estimation)
+          // Use iterative approach to find optimal swap accounting for price impact
           const price = this.price();
-          const targetAmount1 = requiredRatio * (Number(amount0) + Number(amount1) / price);
-          const swapEstimate = Math.max(0, Number(amount1) - targetAmount1);
-
-          if (swapEstimate > 0) {
-            swapAmount = BigInt(Math.floor(swapEstimate));
-            // Cap swap amount to available amount1
-            if (swapAmount > amount1) swapAmount = amount1;
-
-            if (swapAmount > minSwapThreshold) {
-              needSwap = true;
-              swapDirection = "1to0";
-              const swapResult = this.swap(swapAmount, false);
-              swapReceived = swapResult.amountOut;
-              swapFee = swapResult.fee;
-              swapSlippage = swapResult.slippage;
-              finalAmount0 = amount0 + swapResult.amountOut;
-              finalAmount1 = amount1 - swapAmount;
+          
+          // Estimate price impact based on pool liquidity
+          const poolLiquidityValue = Number(this.liquidity) / 1e18;
+          
+          // Binary search for optimal swap amount
+          let low = 0n;
+          let high = amount1;
+          let bestSwap = 0n;
+          let bestRatioError = Infinity;
+          
+          for (let i = 0; i < 10 && high > low; i++) {
+            const mid = (low + high) / 2n;
+            
+            // Estimate output after swap (accounting for fees ~0.3%)
+            const estimatedOut = (mid * 997n) / BigInt(Math.floor(price * 1000));
+            
+            // Estimate price impact
+            const priceImpactFactor = poolLiquidityValue > 0 
+              ? Math.max(0.95, 1 - Number(mid) / poolLiquidityValue / 10)
+              : 0.98;
+            const actualOut = BigInt(Math.floor(Number(estimatedOut) * priceImpactFactor));
+            
+            // Check resulting ratio
+            const resultAmount0 = amount0 + actualOut;
+            const resultAmount1 = amount1 - mid;
+            const resultRatio = Number(resultAmount1) / Number(resultAmount0);
+            const ratioError = Math.abs(resultRatio - requiredRatio) / requiredRatio;
+            
+            if (ratioError < bestRatioError) {
+              bestRatioError = ratioError;
+              bestSwap = mid;
             }
+            
+            // Adjust search range
+            if (resultRatio > requiredRatio) {
+              // Still have too much token1, swap more
+              low = mid + 1n;
+            } else {
+              // Have too little token1, swap less
+              high = mid - 1n;
+            }
+            
+            // If we found a good ratio (within 5% error), stop
+            if (ratioError < 0.05) break;
+          }
+          
+          swapAmount = bestSwap;
+
+          if (swapAmount > minSwapThreshold) {
+            needSwap = true;
+            swapDirection = "1to0";
+            const swapResult = this.swap(swapAmount, false);
+            swapReceived = swapResult.amountOut;
+            swapFee = swapResult.fee;
+            swapSlippage = swapResult.slippage;
+            finalAmount0 = amount0 + swapResult.amountOut;
+            finalAmount1 = amount1 - swapAmount;
           }
         } else if (currentRatio < requiredRatio * 0.99) {
           // We have too much token0, swap some token0 → token1
+          // Use iterative approach to find optimal swap accounting for price impact
           const price = this.price();
-          const targetAmount0 = (Number(amount1) + Number(amount0) * price) / requiredRatio / price;
-          const swapEstimate = Math.max(0, Number(amount0) - targetAmount0);
-
-          if (swapEstimate > 0) {
-            swapAmount = BigInt(Math.floor(swapEstimate));
-            // Cap swap amount to available amount0
-            if (swapAmount > amount0) swapAmount = amount0;
-
-            if (swapAmount > minSwapThreshold) {
-              needSwap = true;
-              swapDirection = "0to1";
-              const swapResult = this.swap(swapAmount, true);
-              swapReceived = swapResult.amountOut;
-              swapFee = swapResult.fee;
-              swapSlippage = swapResult.slippage;
-              finalAmount0 = amount0 - swapAmount;
-              finalAmount1 = amount1 + swapResult.amountOut;
+          
+          // Estimate price impact based on pool liquidity
+          // Price impact ≈ swapAmount / poolLiquidity
+          // For Uniswap V3: ΔP/P ≈ Δx / L (simplified)
+          const poolLiquidityValue = Number(this.liquidity) / 1e18; // Rough estimate
+          
+          // Target: find swap amount such that after swap, we have the right ratio
+          // Use binary search to find optimal swap amount
+          let low = 0n;
+          let high = amount0;
+          let bestSwap = 0n;
+          let bestRatioError = Infinity;
+          
+          // Try up to 10 iterations to find good swap amount
+          for (let i = 0; i < 10 && high > low; i++) {
+            const mid = (low + high) / 2n;
+            
+            // Estimate output after swap (accounting for fees ~0.3%)
+            const estimatedOut = (mid * BigInt(Math.floor(price * 997))) / 1000n;
+            
+            // Estimate price impact (simplified)
+            const priceImpactFactor = poolLiquidityValue > 0 
+              ? Math.max(0.95, 1 - Number(mid) / poolLiquidityValue / 10)
+              : 0.98;
+            const actualOut = BigInt(Math.floor(Number(estimatedOut) * priceImpactFactor));
+            
+            // Check resulting ratio
+            const resultAmount0 = amount0 - mid;
+            const resultAmount1 = amount1 + actualOut;
+            const resultRatio = Number(resultAmount1) / Number(resultAmount0);
+            const ratioError = Math.abs(resultRatio - requiredRatio) / requiredRatio;
+            
+            if (ratioError < bestRatioError) {
+              bestRatioError = ratioError;
+              bestSwap = mid;
             }
+            
+            // Adjust search range
+            if (resultRatio < requiredRatio) {
+              // Need more token1, swap more token0
+              low = mid + 1n;
+            } else {
+              // Have too much token1, swap less token0
+              high = mid - 1n;
+            }
+            
+            // If we found a good ratio (within 5% error), stop
+            if (ratioError < 0.05) break;
+          }
+          
+          swapAmount = bestSwap;
+
+          if (swapAmount > minSwapThreshold) {
+            needSwap = true;
+            swapDirection = "0to1";
+            const swapResult = this.swap(swapAmount, true);
+            swapReceived = swapResult.amountOut;
+            swapFee = swapResult.fee;
+            swapSlippage = swapResult.slippage;
+            finalAmount0 = amount0 - swapAmount;
+            finalAmount1 = amount1 + swapResult.amountOut;
           }
         }
       }
@@ -612,11 +749,80 @@ export class SimplePool implements IPool {
     } else {
       this.totalFee1 += evt.feeAmount;
     }
-    this.liquidity += evt.liquidity;
+    
+    // Estimate liquidity from swap impact using constant product formula
+    const estimatedLiquidity = this.estimateLiquidityFromSwap(evt);
+    
+    // Use max of estimated liquidity and reported liquidity
+    // This protects against incorrect or missing liquidity data
+    this.liquidity = estimatedLiquidity > evt.liquidity ? estimatedLiquidity : evt.liquidity;
+    
     this.sqrtPriceX64 = evt.sqrtPriceAfter;
     this.tick = evt.tick;
     this.reserve0 = evt.reserveA;
     this.reserve1 = evt.reserveB;
+  }
+
+  /**
+   * Estimate pool liquidity from swap impact
+   * Uses the constant product formula: L = Δy / (Δ(1/√P))
+   * For concentrated liquidity, liquidity can be derived from price impact
+   */
+  private estimateLiquidityFromSwap(evt: SwapEvent): bigint {
+    // If no price change, can't estimate (return reported liquidity)
+    if (evt.sqrtPriceBefore === evt.sqrtPriceAfter) {
+      return evt.liquidity;
+    }
+
+    // Calculate price change
+    const sqrtPriceBefore = Number(evt.sqrtPriceBefore);
+    const sqrtPriceAfter = Number(evt.sqrtPriceAfter);
+    
+    if (sqrtPriceBefore === 0 || sqrtPriceAfter === 0) {
+      return evt.liquidity;
+    }
+
+    // For concentrated liquidity (Uniswap V3):
+    // When swapping token0 for token1 (zeroForOne):
+    //   L = Δy / (√P_after - √P_before)
+    // When swapping token1 for token0 (!zeroForOne):
+    //   L = Δx / (1/√P_after - 1/√P_before)
+    //   L = Δx * √P_before * √P_after / (√P_before - √P_after)
+
+    let estimatedL: number;
+
+    if (evt.zeroForOne) {
+      // Swapping token0 for token1
+      // amountOut is in token1 (Δy)
+      const deltaY = Number(evt.amountOut);
+      const deltaSqrtP = sqrtPriceAfter - sqrtPriceBefore;
+      
+      if (Math.abs(deltaSqrtP) < 0.0001) {
+        return evt.liquidity; // Price change too small to estimate
+      }
+      
+      // L = Δy / (√P_after - √P_before) * 2^64 (adjust for Q64.64 format)
+      estimatedL = (deltaY / deltaSqrtP) * Number(SimplePool.Q64);
+    } else {
+      // Swapping token1 for token0
+      // amountOut is in token0 (Δx)
+      const deltaX = Number(evt.amountOut);
+      const deltaSqrtPInverse = (1 / sqrtPriceAfter) - (1 / sqrtPriceBefore);
+      
+      if (Math.abs(deltaSqrtPInverse) < 0.000001) {
+        return evt.liquidity; // Price change too small to estimate
+      }
+      
+      // L = Δx / Δ(1/√P) * 2^64
+      estimatedL = (deltaX / deltaSqrtPInverse) * Number(SimplePool.Q64);
+    }
+
+    // Convert to bigint and ensure positive
+    if (!isFinite(estimatedL) || estimatedL <= 0) {
+      return evt.liquidity;
+    }
+
+    return BigInt(Math.floor(Math.abs(estimatedL)));
   }
 
   price(): number {
@@ -631,9 +837,5 @@ export class SimplePool implements IPool {
 
   getTick(): number {
     return this.tick;
-  }
-
-  getPrice(): number {
-    return this.price();
   }
 }
