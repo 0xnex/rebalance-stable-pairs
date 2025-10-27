@@ -57,6 +57,7 @@ export interface OptimizationResult {
 export interface IPool extends SwapEventListener {
   getTick(): number;
   price(): number;
+  liquidity: bigint;  // Estimated pool liquidity from swap events
   
   swap(amountIn: bigint, xForY: boolean): SwapResult;
 

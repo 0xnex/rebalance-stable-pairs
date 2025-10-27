@@ -594,7 +594,8 @@ class PositionManager implements IPositionManager {
         // Update position with high-precision fees using helper
         this.updatePositionFee(position as Position, fees.fee0, fees.fee1);
 
-        const share = this.feeService.calculateShare(position.L, swapEvent.liquidity);
+        // Use pool's calculated liquidity instead of swapEvent.liquidity
+        const share = this.feeService.calculateShare(position.L, this.pool.liquidity);
         
         // Convert to actual token amounts for logging
         const actualFee0 = fees.fee0 / PRECISION_FACTOR;
@@ -623,7 +624,7 @@ class PositionManager implements IPositionManager {
     console.log(
       `[FEE_DIST] [distributed] [current_tick=${this.currentTick}] ` +
       `[fee0=${totalFee0}] [fee1=${totalFee1}] [positions=${inRangePositions.length}] ` +
-      `[position_liquidity=${ourTotalLiquidity}] [pool_liquidity=${swapEvent.liquidity}] [to=${positionList}]`
+      `[position_liquidity=${ourTotalLiquidity}] [pool_liquidity=${this.pool.liquidity}] [to=${positionList}]`
     );
 
     // Log per-position distributions
