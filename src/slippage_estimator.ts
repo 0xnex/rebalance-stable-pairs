@@ -88,12 +88,13 @@ export class SlippageEstimator implements ISlippageProvider {
    * Estimate price impact using CLMM liquidity formula
    * 
    * For Uniswap V3 concentrated liquidity:
-   * - Price impact ≈ amountIn / L
-   * - This is derived from: Δ(1/√P) = Δx / L
-   * - For small swaps: ΔP/P ≈ Δx/L
+   * - Price impact is proportional to (amountIn / L)
+   * - But the actual impact depends on liquidity depth
+   * - Use a scaling factor to make it realistic
    * 
-   * This is much more accurate than constant product AMM estimation
-   * because L represents the actual active liquidity in the range.
+   * Formula: price_impact = (amountIn / L) * scaling_factor
+   * Using scaling_factor = 0.1 (10%) for realistic impact
+   * This means: swapping 1% of L causes ~0.1% price impact
    */
   private estimateCLMMPriceImpact(amountIn: bigint, liquidity: bigint): number {
     const amountInNum = this.safeToNumber(amountIn);
@@ -103,8 +104,11 @@ export class SlippageEstimator implements ISlippageProvider {
       return this.maxSlippage;
     }
 
-    // CLMM formula: price impact ≈ amountIn / L
-    const impact = amountInNum / liquidityNum;
+    // CLMM formula with realistic scaling
+    // Scaling factor of 0.1 means: swapping 1% of L → 0.1% price impact
+    const PRICE_IMPACT_FACTOR = 0.1;  // 10% scaling factor
+    const ratio = amountInNum / liquidityNum;
+    const impact = ratio * PRICE_IMPACT_FACTOR;
     
     return impact;
   }

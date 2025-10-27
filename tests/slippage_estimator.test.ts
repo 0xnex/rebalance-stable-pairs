@@ -45,20 +45,20 @@ describe("SlippageEstimator", () => {
       const slippage2x = estimator.getSlippagePct(swap2x, true, 1.0);
       const slippage4x = estimator.getSlippagePct(swap4x, true, 1.0);
 
-      // With CLMM formula: impact = amountIn / L
-      // This gives linear scaling (no base slippage)
+      // With CLMM formula: impact = (amountIn / L) * scaling_factor
+      // This gives linear scaling with a small factor
       // Larger swaps should have proportionally more impact
       const impact1x = slippage1x;
       const impact2x = slippage2x;
       const impact4x = slippage4x;
 
-      // 2x swap should have roughly 2x impact (linear with L)
-      expect(impact2x / impact1x).toBeGreaterThan(1.9);
-      expect(impact2x / impact1x).toBeLessThan(2.1);
+      // 2x swap should have roughly 2x impact (linear with small scaling)
+      expect(impact2x / impact1x).toBeGreaterThan(1.95);
+      expect(impact2x / impact1x).toBeLessThan(2.05);
 
       // 4x swap should have roughly 4x impact
-      expect(impact4x / impact1x).toBeGreaterThan(3.8);
-      expect(impact4x / impact1x).toBeLessThan(4.2);
+      expect(impact4x / impact1x).toBeGreaterThan(3.95);
+      expect(impact4x / impact1x).toBeLessThan(4.05);
     });
   });
 
@@ -105,11 +105,10 @@ describe("SlippageEstimator", () => {
 
       const slippage = estimator.getSlippagePct(amount, true, 1.0);
 
-      // With CLMM: impact = amountIn / L
-      // Expected: 10M / 1000M ≈ 0.01 = 1%
-      // No base slippage added
-      expect(slippage).toBeGreaterThan(0.009); // At least 0.9%
-      expect(slippage).toBeLessThan(0.011);    // At most 1.1%
+      // With CLMM: impact = (amountIn / L) * scaling_factor
+      // Expected: (10M / 1000M) * 0.1 = 0.01 * 0.1 = 0.001 = 0.1%
+      expect(slippage).toBeGreaterThan(0.0009); // At least 0.09%
+      expect(slippage).toBeLessThan(0.0011);    // At most 0.11%
     });
 
     it("should handle different pool sizes consistently", () => {
@@ -227,26 +226,29 @@ describe("FixedSlippageProvider", () => {
 describe("Slippage Comparison", () => {
   it("should show CLMM and fixed slippage models produce different results", () => {
     const clmm = new SlippageEstimator(0.001, 1.0);
-    const fixed = new FixedSlippageProvider(0.001);
+    const fixed = new FixedSlippageProvider(0.0005); // 0.05% fixed
 
     // Set liquidity for CLMM estimator
     clmm.setPoolLiquidity(1000000000n);
 
-    const largeSwap = 100000000n; // 10% of liquidity - larger swap for more visible impact
+    const largeSwap = 100000000n; // 10% of liquidity
 
     const clmmSlippage = clmm.getSlippagePct(largeSwap, true, 1.0);
     const fixedSlippage = fixed.getSlippagePct(largeSwap, true, 1.0);
 
-    // CLMM should have price impact for large swaps
+    // CLMM should have price impact for large swaps (1% for 10% swap)
+    // Fixed is always 0.05%
     expect(clmmSlippage).toBeGreaterThan(fixedSlippage);
 
     // Verify visible differences
-    expect(clmmSlippage).toBeGreaterThan(0.01); // > 1%
-    expect(fixedSlippage).toBe(0.001); // Exactly 0.1%
+    // With scaling factor 0.1: 10% swap → 1% slippage
+    expect(clmmSlippage).toBeGreaterThan(0.009); // > 0.9%
+    expect(clmmSlippage).toBeLessThan(0.011);    // < 1.1%
+    expect(fixedSlippage).toBe(0.0005); // Exactly 0.05%
 
     console.log(`Large swap (10% of liquidity):`);
-    console.log(`  CLMM: ${(clmmSlippage * 100).toFixed(3)}%`);
-    console.log(`  Fixed: ${(fixedSlippage * 100).toFixed(3)}%`);
+    console.log(`  CLMM: ${(clmmSlippage * 100).toFixed(4)}%`);
+    console.log(`  Fixed: ${(fixedSlippage * 100).toFixed(4)}%`);
   });
 });
 
