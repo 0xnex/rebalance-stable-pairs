@@ -15,9 +15,9 @@ bun run src/strategies/three_band_pyramid_strategy_runner.ts \
   --start "2025-08-20T00:00:00Z" \
   --end "2025-10-10T00:00:00Z" \
   --output ./test-output/three_band_pyramid/ \
-  --band1-width 2 \
-  --band2-width 4 \
-  --band3-width 8 \
+  --band1-width 4 \
+  --band2-width 8 \
+  --band3-width 16 \
   --band1-alloc 30 \
   --band2-alloc 30 \
   --band3-alloc 40 \
