@@ -18,8 +18,8 @@
  *   --band1-alloc <number>    Band 1 allocation % (default: 30)
  *   --band2-alloc <number>    Band 2 allocation % (default: 30)
  *   --band3-alloc <number>    Band 3 allocation % (default: 40)
- *   --outside-duration <number> Duration outside Band 3 in minutes (default: 30)
- *   --cooldown <number>       Cooldown between rebalances in minutes (default: 5)
+ *   --outside-duration-second <number> Duration outside Band 3 in seconds (default: 1800)
+ *   --cooldown-second <number>       Cooldown between rebalances in seconds (default: 300)
  *   --token0 <string>         Token0 name (default: "USDC")
  *   --token1 <string>         Token1 name (default: "USDT")
  *   --init0 <bigint>          Initial token0 amount (default: 10000000)
@@ -56,8 +56,8 @@ function parseStrategyArgs(args: string[]): ThreeBandParams {
     band1Allocation: 30,
     band2Allocation: 30,
     band3Allocation: 40,
-    outsideDurationMs: 30 * 60 * 1000,
-    cooldownMs: 5 * 60 * 1000,
+    outsideDurationMs: 1800 * 1000, // 1800 seconds = 30 minutes
+    cooldownMs: 300 * 1000, // 300 seconds = 5 minutes
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -107,16 +107,17 @@ function parseStrategyArgs(args: string[]): ThreeBandParams {
         }
         break;
 
-      case "--outside-duration":
+      case "--outside-duration-second":
         if (next) {
-          params.outsideDurationMs = parseFloat(next) * 60 * 1000; // minutes to ms
+          params.outsideDurationMs = parseFloat(next) * 1000; // seconds to ms
           i++;
         }
         break;
 
       case "--cooldown":
+      case "--cooldown-second":
         if (next) {
-          params.cooldownMs = parseFloat(next) * 60 * 1000; // minutes to ms
+          params.cooldownMs = parseFloat(next) * 1000; // seconds to ms
           i++;
         }
         break;
@@ -153,8 +154,8 @@ STRATEGY CONFIGURATION:
   --band1-alloc <number>     Band 1 allocation percentage (default: 30)
   --band2-alloc <number>     Band 2 allocation percentage (default: 30)
   --band3-alloc <number>     Band 3 allocation percentage (default: 40)
-  --outside-duration <num>   Minutes outside Band 3 before rebalance (default: 30)
-  --cooldown <number>        Minutes between rebalances (default: 5)
+  --outside-duration-second <num>   Seconds outside Band 3 before rebalance (default: 1800)
+  --cooldown-second <number>        Seconds between rebalances (default: 300)
 
 BACKTEST CONFIGURATION:
   --token0 <string>          Token0 name (default: "TOKEN0")
@@ -166,7 +167,7 @@ BACKTEST CONFIGURATION:
   --output, -o <path>        Output directory (default: "./backtest-results")
   --dataDir, -d <path>       Events data directory (default: auto-detect)
   --tickSpacing <int>        Tick spacing (default: 10)
-  --feeTier <int>            Fee tier in PPM (default: 3000)
+  --feeTier <decimal>        Fee tier as percentage (e.g., 0.1 = 0.1%, 0.3 = 0.3%, default: 0.3)
   --tickInterval <int>       Tick interval in ms (default: 1000)
   --silent                   Suppress progress logs
   --help, -h                 Show this help message
@@ -187,8 +188,8 @@ EXAMPLES:
     --band1-width 1 \\
     --band2-width 3 \\
     --band3-width 10 \\
-    --outside-duration 60 \\
-    --cooldown 10 \\
+    --outside-duration-second 3600 \\
+    --cooldown-second 600 \\
     --token0 USDC \\
     --token1 USDT
 
@@ -228,8 +229,8 @@ async function main() {
   console.log("[CONFIG] [strategy] [three-band-pyramid]");
   console.log(`[CONFIG] [band_widths] [${strategyParams.band1Width},${strategyParams.band2Width},${strategyParams.band3Width}]`);
   console.log(`[CONFIG] [allocations] [${strategyParams.band1Allocation}%,${strategyParams.band2Allocation}%,${strategyParams.band3Allocation}%]`);
-  console.log(`[CONFIG] [outside_duration] [${strategyParams.outsideDurationMs} ms] [${(strategyParams.outsideDurationMs / 60000).toFixed(2)} minutes]`);
-  console.log(`[CONFIG] [cooldown] [${strategyParams.cooldownMs} ms] [${(strategyParams.cooldownMs / 60000).toFixed(2)} minutes]`);
+  console.log(`[CONFIG] [outside_duration] [${strategyParams.outsideDurationMs} ms] [${(strategyParams.outsideDurationMs / 1000).toFixed(0)} seconds]`);
+  console.log(`[CONFIG] [cooldown] [${strategyParams.cooldownMs} ms] [${(strategyParams.cooldownMs / 1000).toFixed(0)} seconds]`);
 
   // Create strategy with configuration
   const strategyConfig: Partial<ThreeBandConfig> = {
@@ -262,7 +263,7 @@ async function main() {
       dataDir: config.dataDir,
       output: config.output ?? "./backtest-results",
       tickSpacing: config.tickSpacing ?? 10,
-      feeTier: config.feeTier ?? 3000,
+      feeTier: config.feeTier ?? 3000, // Will be in PPM after backtest parsing
       tickIntervalMs: config.tickIntervalMs ?? 1000,
       silent: config.silent ?? false,
     });

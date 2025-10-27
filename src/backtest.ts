@@ -21,7 +21,7 @@
 import { createSwapEventGenerator } from "./event_importer";
 import { SimplePool } from "./simple_pool";
 import { PositionManager } from "./position_mgr";
-import { FixedSlippageProvider, LinearSlippageEstimator } from "./slippage_estimator";
+import { FixedSlippageProvider, SlippageEstimator } from "./slippage_estimator";
 import { PerformanceTracker } from "./performance_tracker";
 import { calculateFundPerformance, calculatePositionsPerformance } from "./performance_exporter";
 import { join } from "node:path";
@@ -84,7 +84,7 @@ export function parseBacktestArgs(argv: string[] = process.argv.slice(2)): {
     decimals1: 6,
     output: "./backtest-results",
     tickSpacing: 10,
-    feeTier: 3000,
+    feeTier: 3000, // Default 0.3% in PPM (3000 / 10000 = 0.3%)
     tickIntervalMs: 1000,
     silent: false,
   };
@@ -197,7 +197,9 @@ export function parseBacktestArgs(argv: string[] = process.argv.slice(2)): {
 
       case "--feeTier":
         if (next) {
-          config.feeTier = parseInt(next);
+          // Convert from percentage to PPM (parts per million)
+          // e.g., 0.1% = 1000 PPM, 1% = 10000 PPM
+          config.feeTier = Math.round(parseFloat(next) * 10000);
           i++;
         }
         break;
@@ -266,14 +268,15 @@ export async function execute(config: BacktestConfig & { strategy: IStrategy }):
   }
 
   // Create slippage provider with sensible defaults (internal implementation)
-  // Using linear model with 0.1% base rate and 5% max
-  const slippageProvider = new LinearSlippageEstimator(
-    0.001,    // 0.1% base slippage
-    1000000,  // reserve threshold
-    0.05      // 5% max slippage
+  // Using CLMM-based model with only price impact calculation (no base slippage)
+  // Max slippage cap: 5%
+  const slippageProvider = new SlippageEstimator(
+    0.001,    // (Deprecated - not used) Kept for backward compatibility
+    0.05      // 5% max slippage cap
   );
 
   // Create pool with token names
+  console.log(`[CONFIG] [feeTier] [${config.feeTier} PPM] [${(config.feeTier / 10000).toFixed(3)}%]`);
   const pool = new SimplePool(
     config.token0Name,
     config.token1Name,

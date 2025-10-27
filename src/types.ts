@@ -74,8 +74,9 @@ export interface IPool extends SwapEventListener {
   ): { amount0: bigint; amount1: bigint };
 }
 
-export interface ISlippageProvider extends SwapEventListener {
+export interface ISlippageProvider {
   getSlippagePct(amountIn: bigint, xForY: boolean, price: number): number;
+  setPoolLiquidity(liquidity: bigint): void;
 }
 
 export interface IPosition {

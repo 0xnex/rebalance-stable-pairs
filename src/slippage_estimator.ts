@@ -1,45 +1,33 @@
-import type { ISlippageProvider, SwapEvent } from "./types";
+import type { ISlippageProvider } from "./types";
 
 /**
- * Improved slippage estimator using actual swap data
+ * Improved slippage estimator using Uniswap V3 CLMM formulas
  * 
- * Key innovation:
- * - Derives effective liquidity from amountIn/amountOut ratios
- * - Uses actual CLMM price impact curve: k = sqrt(x * y)
- * - Estimates slippage based on how much the swap moves the price
- * - More accurate than reserve-based estimation
+ * Key improvements:
+ * - Uses actual liquidity L from the pool (not from individual swap events)
+ * - Applies proper CLMM price impact formula: ΔP/P = Δx/L for concentrated liquidity
+ * - More accurate than AMM reserve-based estimation
+ * - Handles both token0→token1 and token1→token0 swaps
  * 
- * Other improvements:
- * - Better handling of extreme values and edge cases
- * - Precision-safe BigInt arithmetic
- * - Validation and bounds checking
+ * CLMM Price Impact Formula:
+ * For a swap of amount Δx in a concentrated liquidity range:
+ * - Price impact ≈ Δx / L (where L is the pool's effective liquidity)
+ * - Total slippage = price_impact (no base slippage)
+ * - Capped at maxSlippage
  */
 export class SlippageEstimator implements ISlippageProvider {
-  // Pool state tracking from swap events
+  // Pool state tracking - liquidity is set by the pool
   private liquidity: bigint = 0n;
-  private reserve0: bigint = 0n;
-  private reserve1: bigint = 0n;
-  private sqrtPriceX64: bigint = 0n;
   
-  // Historical swap data for calibration
-  private recentSwaps: Array<{
-    amountIn: bigint;
-    amountOut: bigint;
-    zeroForOne: boolean;
-    effectivePrice: number;
-  }> = [];
-  private static readonly MAX_HISTORY = 100;  // Keep last 100 swaps for calibration
-
   // Slippage model parameters
-  private readonly baseSlippage: number;     // Base slippage (e.g., 0.001 = 0.1%)
+  private readonly baseSlippage: number;     // Kept for backward compatibility (not used)
   private readonly maxSlippage: number;      // Maximum slippage cap
   
   // Precision and safety
-  private static readonly MIN_RESERVE = 1000n;  // Minimum reserve to calculate slippage
-  private static readonly MIN_LIQUIDITY = 1000n; // Minimum liquidity
+  private static readonly MIN_LIQUIDITY = 1000n; // Minimum liquidity to calculate slippage
 
   /**
-   * @param baseSlippage Minimum slippage percentage (e.g., 0.001 = 0.1%)
+   * @param baseSlippage (Deprecated - not used) Kept for backward compatibility
    * @param maxSlippage Maximum slippage cap (default 0.5 = 50%)
    */
   constructor(
@@ -54,20 +42,18 @@ export class SlippageEstimator implements ISlippageProvider {
       throw new Error(`Invalid maxSlippage: ${maxSlippage}. Must be between baseSlippage and 1.`);
     }
 
-    this.baseSlippage = baseSlippage;
+    this.baseSlippage = baseSlippage;  // Stored but not used
     this.maxSlippage = maxSlippage;
   }
 
   /**
-   * Calculate slippage percentage for a swap using CLMM invariant
+   * Calculate slippage percentage using CLMM liquidity
    * 
-   * Approach:
-   * 1. Use current liquidity L and reserves to model the constant product curve
-   * 2. Estimate price impact: ΔP/P = (amountIn / reserve)
-   * 3. For CLMM: slippage ≈ (amountIn / (2 * L)) in percentage terms
-   * 
-   * This mirrors the actual CLMM math where price impact is proportional to
-   * the change in liquidity-adjusted reserves.
+   * For Uniswap V3 CLMM:
+   * - Price impact = amountIn / L (in the concentrated range)
+   * - This is much more accurate than reserve-based estimation
+   * - L represents the active liquidity in the current tick range
+   * - No base slippage applied, only actual price impact
    */
   getSlippagePct(amountIn: bigint, zeroForOne: boolean, price: number): number {
     // Edge case: no amount
@@ -75,33 +61,22 @@ export class SlippageEstimator implements ISlippageProvider {
       return 0;
     }
 
-    // Edge case: no liquidity data yet
+    // Edge case: no liquidity data yet - return 0 (not base slippage)
     if (this.liquidity < SlippageEstimator.MIN_LIQUIDITY) {
-      return this.baseSlippage;
+      return 0;
     }
 
-    // Get relevant reserve based on swap direction
-    const relevantReserve = zeroForOne ? this.reserve0 : this.reserve1;
-    
-    // Edge case: reserve too small or zero
-    if (relevantReserve < SlippageEstimator.MIN_RESERVE) {
-      return this.maxSlippage; // High slippage for low liquidity
-    }
-
-    // Calculate price impact using CLMM formula
-    // For constant product: slippage ≈ amountIn / (2 * sqrt(reserve * liquidity))
-    // Simplified: slippage ≈ amountIn / (k * liquidity) where k is calibration factor
-    
-    const priceImpact = this.estimatePriceImpact(amountIn, relevantReserve, this.liquidity);
+    // Calculate price impact using CLMM formula: ΔP/P ≈ Δx/L
+    const priceImpact = this.estimateCLMMPriceImpact(amountIn, this.liquidity);
     
     if (!isFinite(priceImpact) || priceImpact < 0) {
       return this.maxSlippage;
     }
 
-    // Total slippage = base + price impact
-    const totalSlippage = this.baseSlippage + priceImpact;
+    // Only use price impact (no base slippage)
+    const totalSlippage = priceImpact;
 
-    // Ensure result is valid and capped
+    // Ensure result is valid and capped at max
     if (!isFinite(totalSlippage) || totalSlippage < 0) {
       return this.maxSlippage;
     }
@@ -110,28 +85,26 @@ export class SlippageEstimator implements ISlippageProvider {
   }
 
   /**
-   * Estimate price impact based on CLMM invariant
+   * Estimate price impact using CLMM liquidity formula
    * 
-   * For a constant product AMM: x * y = k
-   * When we swap Δx for Δy: (x + Δx)(y - Δy) = k
-   * Price impact: |Δy/y| ≈ Δx/(x + Δx/2)
+   * For Uniswap V3 concentrated liquidity:
+   * - Price impact ≈ amountIn / L
+   * - This is derived from: Δ(1/√P) = Δx / L
+   * - For small swaps: ΔP/P ≈ Δx/L
    * 
-   * For CLMM with liquidity L: price impact ≈ amountIn / (reserve + amountIn/2)
+   * This is much more accurate than constant product AMM estimation
+   * because L represents the actual active liquidity in the range.
    */
-  private estimatePriceImpact(amountIn: bigint, reserve: bigint, liquidity: bigint): number {
-    // Use the constant product formula: impact = amountIn / (reserve + amountIn/2)
-    // This gives us a diminishing returns curve that matches CLMM behavior
-    
+  private estimateCLMMPriceImpact(amountIn: bigint, liquidity: bigint): number {
     const amountInNum = this.safeToNumber(amountIn);
-    const reserveNum = this.safeToNumber(reserve);
+    const liquidityNum = this.safeToNumber(liquidity);
     
-    if (!isFinite(amountInNum) || !isFinite(reserveNum) || reserveNum <= 0) {
+    if (!isFinite(amountInNum) || !isFinite(liquidityNum) || liquidityNum <= 0) {
       return this.maxSlippage;
     }
 
-    // Constant product approximation
-    const effectiveReserve = reserveNum + (amountInNum / 2);
-    const impact = amountInNum / effectiveReserve;
+    // CLMM formula: price impact ≈ amountIn / L
+    const impact = amountInNum / liquidityNum;
     
     return impact;
   }
@@ -160,219 +133,70 @@ export class SlippageEstimator implements ISlippageProvider {
   }
 
   /**
-   * Update pool state from swap events
-   * Also track swap history for calibration
+   * Set pool liquidity from the pool's calculated value
+   * Called by the pool after processing swap events
    */
-  onSwapEvent(swapEvent: SwapEvent): void {
-    this.liquidity = swapEvent.liquidity;
-    this.reserve0 = swapEvent.reserveA;
-    this.reserve1 = swapEvent.reserveB;
-    this.sqrtPriceX64 = swapEvent.sqrtPriceAfter;
-    
-    // Track swap for historical calibration
-    if (swapEvent.amountIn > 0n && swapEvent.amountOut > 0n) {
-      const effectivePrice = Number(swapEvent.amountOut) / Number(swapEvent.amountIn);
-      
-      this.recentSwaps.push({
-        amountIn: swapEvent.amountIn,
-        amountOut: swapEvent.amountOut,
-        zeroForOne: swapEvent.zeroForOne,
-        effectivePrice,
-      });
-      
-      // Keep only recent history
-      if (this.recentSwaps.length > SlippageEstimator.MAX_HISTORY) {
-        this.recentSwaps.shift();
-      }
-    }
+  setPoolLiquidity(liquidity: bigint): void {
+    this.liquidity = liquidity;
   }
 
   /**
-   * Get current pool state
+   * Get current pool liquidity
    */
-  getPoolState(): {
-    liquidity: bigint;
-    reserve0: bigint;
-    reserve1: bigint;
-    sqrtPriceX64: bigint;
-  } {
-    return {
-      liquidity: this.liquidity,
-      reserve0: this.reserve0,
-      reserve1: this.reserve1,
-      sqrtPriceX64: this.sqrtPriceX64,
-    };
+  getPoolLiquidity(): bigint {
+    return this.liquidity;
   }
 
   /**
    * Estimate slippage for a specific amount with detailed breakdown
    * Returns percentage as a number (e.g., 0.01 = 1%)
+   * Note: No base slippage is applied, only price impact
    */
   estimateSlippage(amountIn: bigint, zeroForOne: boolean): {
     slippagePct: number;
     baseSlippage: number;
     priceImpact: number;
-    swapRatio: number;
+    liquidityRatio: number;
   } {
     if (amountIn <= 0n) {
       return {
         slippagePct: 0,
-        baseSlippage: this.baseSlippage,
+        baseSlippage: 0,  // Always 0 (not used)
         priceImpact: 0,
-        swapRatio: 0,
+        liquidityRatio: 0,
       };
     }
 
-    const relevantReserve = zeroForOne ? this.reserve0 : this.reserve1;
-    
-    if (relevantReserve < SlippageEstimator.MIN_RESERVE || this.liquidity < SlippageEstimator.MIN_LIQUIDITY) {
+    if (this.liquidity < SlippageEstimator.MIN_LIQUIDITY) {
       return {
         slippagePct: this.maxSlippage,
-        baseSlippage: this.baseSlippage,
-        priceImpact: this.maxSlippage - this.baseSlippage,
-        swapRatio: 0,
+        baseSlippage: 0,  // Always 0 (not used)
+        priceImpact: this.maxSlippage,
+        liquidityRatio: 0,
       };
     }
 
-    const priceImpact = this.estimatePriceImpact(amountIn, relevantReserve, this.liquidity);
-    const swapRatio = this.safeToNumber(amountIn) / this.safeToNumber(relevantReserve);
+    const priceImpact = this.estimateCLMMPriceImpact(amountIn, this.liquidity);
+    const liquidityRatio = this.safeToNumber(amountIn) / this.safeToNumber(this.liquidity);
     
     if (!isFinite(priceImpact) || priceImpact < 0) {
       return {
         slippagePct: this.maxSlippage,
-        baseSlippage: this.baseSlippage,
-        priceImpact: this.maxSlippage - this.baseSlippage,
-        swapRatio: isFinite(swapRatio) ? swapRatio : 0,
+        baseSlippage: 0,  // Always 0 (not used)
+        priceImpact: this.maxSlippage,
+        liquidityRatio: isFinite(liquidityRatio) ? liquidityRatio : 0,
       };
     }
     
-    const slippagePct = Math.min(this.baseSlippage + priceImpact, this.maxSlippage);
+    // Only price impact, no base slippage
+    const slippagePct = Math.min(priceImpact, this.maxSlippage);
 
     return {
       slippagePct: isFinite(slippagePct) ? slippagePct : this.maxSlippage,
-      baseSlippage: this.baseSlippage,
-      priceImpact: isFinite(priceImpact) ? priceImpact : this.maxSlippage - this.baseSlippage,
-      swapRatio: isFinite(swapRatio) ? swapRatio : 0,
+      baseSlippage: 0,  // Always 0 (not used)
+      priceImpact: isFinite(priceImpact) ? priceImpact : this.maxSlippage,
+      liquidityRatio: isFinite(liquidityRatio) ? liquidityRatio : 0,
     };
-  }
-
-  /**
-   * Get average observed slippage from recent swaps (for debugging/calibration)
-   */
-  getAverageObservedSlippage(): number {
-    if (this.recentSwaps.length === 0) {
-      return 0;
-    }
-
-    const totalSlippage = this.recentSwaps.reduce((sum, swap) => {
-      // Observed slippage = difference between expected and actual price
-      // This is simplified - in reality we'd need the pre-swap price
-      return sum + 0.001; // Placeholder
-    }, 0);
-
-    return totalSlippage / this.recentSwaps.length;
-  }
-}
-
-/**
- * Linear slippage model - simpler, more stable alternative
- * Slippage increases linearly with swap size
- * 
- * Improvements:
- * - Better edge case handling
- * - Precision-safe arithmetic
- * - Validation and bounds
- */
-export class LinearSlippageEstimator implements ISlippageProvider {
-  private liquidity: bigint = 0n;
-  private reserve0: bigint = 0n;
-  private reserve1: bigint = 0n;
-
-  private readonly baseSlippage: number;
-  private readonly linearFactor: number;
-  private readonly maxSlippage: number;
-
-  private static readonly MIN_RESERVE = 1000n;
-  private static readonly MAX_RATIO = 2.0;
-
-  constructor(
-    baseSlippage: number = 0.001,
-    linearFactor: number = 0.1,
-    maxSlippage: number = 0.5
-  ) {
-    if (baseSlippage < 0 || baseSlippage > 1) {
-      throw new Error(`Invalid baseSlippage: ${baseSlippage}`);
-    }
-    if (linearFactor < 0) {
-      throw new Error(`Invalid linearFactor: ${linearFactor}`);
-    }
-    if (maxSlippage < baseSlippage || maxSlippage > 1) {
-      throw new Error(`Invalid maxSlippage: ${maxSlippage}`);
-    }
-
-    this.baseSlippage = baseSlippage;
-    this.linearFactor = linearFactor;
-    this.maxSlippage = maxSlippage;
-  }
-
-  getSlippagePct(amountIn: bigint, zeroForOne: boolean, price: number): number {
-    if (amountIn <= 0n) {
-      return 0;
-    }
-
-    if (this.liquidity === 0n) {
-      return this.baseSlippage;
-    }
-
-    const relevantReserve = zeroForOne ? this.reserve0 : this.reserve1;
-    
-    if (relevantReserve < LinearSlippageEstimator.MIN_RESERVE) {
-      return this.maxSlippage;
-    }
-
-    // Safe ratio calculation
-    const swapRatio = this.calculateSwapRatio(amountIn, relevantReserve);
-    
-    if (!isFinite(swapRatio) || swapRatio < 0) {
-      return this.maxSlippage;
-    }
-
-    // Cap extreme ratios
-    const cappedRatio = Math.min(swapRatio, LinearSlippageEstimator.MAX_RATIO);
-
-    // Linear impact: slippage = base + (swapSize / reserve) * factor
-    const priceImpact = cappedRatio * this.linearFactor;
-    const totalSlippage = this.baseSlippage + priceImpact;
-
-    if (!isFinite(totalSlippage) || totalSlippage < 0) {
-      return this.maxSlippage;
-    }
-
-    return Math.min(totalSlippage, this.maxSlippage);
-  }
-
-  private calculateSwapRatio(amountIn: bigint, reserve: bigint): number {
-    const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
-    
-    if (amountIn < MAX_SAFE_BIGINT && reserve < MAX_SAFE_BIGINT) {
-      return Number(amountIn) / Number(reserve);
-    }
-    
-    // Scale down for large values
-    const maxVal = amountIn > reserve ? amountIn : reserve;
-    let scale = 1n;
-    
-    while (maxVal / scale > MAX_SAFE_BIGINT && scale < 1000000000000000000n) {
-      scale *= 10n;
-    }
-    
-    return Number(amountIn / scale) / Number(reserve / scale);
-  }
-
-  onSwapEvent(swapEvent: SwapEvent): void {
-    this.liquidity = swapEvent.liquidity;
-    this.reserve0 = swapEvent.reserveA;
-    this.reserve1 = swapEvent.reserveB;
   }
 }
 
@@ -390,7 +214,7 @@ export class FixedSlippageProvider implements ISlippageProvider {
     return this.slippagePct;
   }
 
-  onSwapEvent(swapEvent: SwapEvent): void {
+  setPoolLiquidity(liquidity: bigint): void {
     // No-op for fixed slippage
   }
 }

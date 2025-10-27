@@ -750,12 +750,16 @@ export class SimplePool implements IPool {
       this.totalFee1 += evt.feeAmount;
     }
     
-    // Estimate liquidity from swap impact using constant product formula
+    // Calculate liquidity from swap data (priceBefore, priceAfter, amountIn, amountOut)
+    // This is more accurate than evt.liquidity which only represents current liquidity
     const estimatedLiquidity = this.estimateLiquidityFromSwap(evt);
     
-    // Use max of estimated liquidity and reported liquidity
-    // This protects against incorrect or missing liquidity data
-    this.liquidity = estimatedLiquidity > evt.liquidity ? estimatedLiquidity : evt.liquidity;
+    // Use estimated liquidity from the actual swap impact
+    // Don't use evt.liquidity as it only represents the liquidity at that tick, not total pool liquidity
+    this.liquidity = estimatedLiquidity;
+    
+    // Update slippage provider with the pool's calculated liquidity
+    this.slipMrg.setPoolLiquidity(this.liquidity);
     
     this.sqrtPriceX64 = evt.sqrtPriceAfter;
     this.tick = evt.tick;
@@ -765,11 +769,16 @@ export class SimplePool implements IPool {
 
   /**
    * Estimate pool liquidity from swap impact
-   * Uses the constant product formula: L = Δy / (Δ(1/√P))
-   * For concentrated liquidity, liquidity can be derived from price impact
+   * Uses the CLMM formula: L = Δy / Δ(√P) or L = Δx / Δ(1/√P)
+   * 
+   * For Uniswap V3 concentrated liquidity:
+   * - When swapping token0→token1: L = Δy / (√P_after - √P_before)
+   * - When swapping token1→token0: L = Δx * √P_before * √P_after / (√P_before - √P_after)
+   * 
+   * Uses amountIn (before fees) for calculation as it's more accurate
    */
   private estimateLiquidityFromSwap(evt: SwapEvent): bigint {
-    // If no price change, can't estimate (return reported liquidity)
+    // If no price change, can't estimate (return evt.liquidity as fallback)
     if (evt.sqrtPriceBefore === evt.sqrtPriceAfter) {
       return evt.liquidity;
     }
@@ -782,18 +791,13 @@ export class SimplePool implements IPool {
       return evt.liquidity;
     }
 
-    // For concentrated liquidity (Uniswap V3):
-    // When swapping token0 for token1 (zeroForOne):
-    //   L = Δy / (√P_after - √P_before)
-    // When swapping token1 for token0 (!zeroForOne):
-    //   L = Δx / (1/√P_after - 1/√P_before)
-    //   L = Δx * √P_before * √P_after / (√P_before - √P_after)
-
+    // Calculate liquidity based on swap direction
     let estimatedL: number;
 
     if (evt.zeroForOne) {
       // Swapping token0 for token1
-      // amountOut is in token1 (Δy)
+      // amountIn is in token0 (before fee), amountOut is in token1
+      // For token1 output: L = Δy / (√P_after - √P_before)
       const deltaY = Number(evt.amountOut);
       const deltaSqrtP = sqrtPriceAfter - sqrtPriceBefore;
       
@@ -801,11 +805,12 @@ export class SimplePool implements IPool {
         return evt.liquidity; // Price change too small to estimate
       }
       
-      // L = Δy / (√P_after - √P_before) * 2^64 (adjust for Q64.64 format)
+      // L = Δy / Δ(√P) * 2^64 (adjust for Q64.64 format)
       estimatedL = (deltaY / deltaSqrtP) * Number(SimplePool.Q64);
     } else {
       // Swapping token1 for token0
-      // amountOut is in token0 (Δx)
+      // amountIn is in token1 (before fee), amountOut is in token0
+      // For token0 output: L = Δx / Δ(1/√P)
       const deltaX = Number(evt.amountOut);
       const deltaSqrtPInverse = (1 / sqrtPriceAfter) - (1 / sqrtPriceBefore);
       

@@ -7,7 +7,7 @@ bun run src/strategies/three_band_pyramid_strategy_runner.ts \
   --token1Name WBTC \
   --decimals0 8 \
   --decimals1 8 \
-  --feeTier 1000 \
+  --feeTier 0.01 \
   --tickIntervalMs 1000 \
   --tickSpacing 2 \
   --initialAmount0 0 \
@@ -21,5 +21,5 @@ bun run src/strategies/three_band_pyramid_strategy_runner.ts \
   --band1-alloc 30 \
   --band2-alloc 30 \
   --band3-alloc 40 \
-  --outside-duration 30 \
-  --cooldown 5
+  --outside-duration-second 7200 \
+  --cooldown-second 3600
