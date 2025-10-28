@@ -1,5 +1,5 @@
 import { VirtualPositionManager } from "./virtual_position_mgr";
-import { PerformanceSummary } from "./performance_tracker";
+import type { PerformanceSummary } from "./performance_tracker";
 
 export type PositionInfo = {
   id: string;
