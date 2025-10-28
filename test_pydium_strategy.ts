@@ -4,7 +4,7 @@ import { parseArgs } from "util";
 import { BacktestEngine } from "./src/backtest_engine";
 import { strategyFactory as pydiumStrategyFactory } from "./src/strategies/three_band_pydium_backtest";
 import {
-  type MomentumEventPage,
+  type Page,
   type Transaction,
   type MomentumEvent,
 } from "./src/event_importer";
@@ -56,9 +56,7 @@ async function main() {
     const filePath = path.join(dir, file);
     console.log(`Processing ${filePath}`);
 
-    const data = JSON.parse(
-      fs.readFileSync(filePath, "utf-8")
-    ) as MomentumEventPage;
+    const data = JSON.parse(fs.readFileSync(filePath, "utf-8")) as Page;
     const transactions = data.data;
 
     for (const tx of transactions) {

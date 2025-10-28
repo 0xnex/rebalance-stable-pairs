@@ -46,8 +46,8 @@ export interface PositionSnapshot {
     collected1: string;
     owed0: string;
     owed1: string;
-    feeGrowthInside0LastX64: string;
-    feeGrowthInside1LastX64: string;
+    // feeGrowthInside0LastX64: string;
+    // feeGrowthInside1LastX64: string;
     accruedFees0: string;
     accruedFees1: string;
     totalFeesUSD: number;
@@ -257,8 +257,10 @@ export class PositionSnapshotTracker {
       : this.summarySnapshots.length;
     if (isInitial || snapshotCount % 10 === 0) {
       console.log(
-        `📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${summarySnapshot.totalPositions
-        } positions, ${summarySnapshot.inRangePositions
+        `📊 Position Snapshot [${summarySnapshot.timestampISO}]: ${
+          summarySnapshot.totalPositions
+        } positions, ${
+          summarySnapshot.inRangePositions
         } in-range, Value=$${summarySnapshot.totalValueUSD.toFixed(2)}`
       );
     }
@@ -316,10 +318,10 @@ export class PositionSnapshotTracker {
         collected1: position.tokensOwed1.toString(),
         owed0: position.tokensOwed0.toString(),
         owed1: position.tokensOwed1.toString(),
-        feeGrowthInside0LastX64: position.feeGrowthInside0LastX64.toString(),
-        feeGrowthInside1LastX64: position.feeGrowthInside1LastX64.toString(),
-        accruedFees0: this.calculateAccruedFees(position, 0).toString(),
-        accruedFees1: this.calculateAccruedFees(position, 1).toString(),
+        // feeGrowthInside0LastX64: position.feeGrowthInside0LastX64.toString(),
+        // feeGrowthInside1LastX64: position.feeGrowthInside1LastX64.toString(),
+        accruedFees0: position.tokensOwed0.toString(),
+        accruedFees1: position.tokensOwed1.toString(),
         totalFeesUSD: this.calculateTotalFeesUSD(position),
         feeYieldAPR: this.calculateFeeYieldAPR(position),
         feeYieldDaily: this.calculateFeeYieldDaily(position),
@@ -433,7 +435,7 @@ export class PositionSnapshotTracker {
     const avgSwapEfficiency =
       swapAnalyses.length > 0
         ? swapAnalyses.reduce((sum, s) => sum + s.swapEfficiency, 0) /
-        swapAnalyses.length
+          swapAnalyses.length
         : 0;
     const roundTripsAvoided = swapAnalyses.filter(
       (s) => s.avoidedRoundTrips
@@ -454,9 +456,9 @@ export class PositionSnapshotTracker {
       averageTickWidth:
         totalPositions > 0
           ? positionSnapshots.reduce(
-            (sum, p) => sum + p.tickRange.tickWidth,
-            0
-          ) / totalPositions
+              (sum, p) => sum + p.tickRange.tickWidth,
+              0
+            ) / totalPositions
           : 0,
       positionDistribution: {
         below: belowRange,
@@ -469,39 +471,39 @@ export class PositionSnapshotTracker {
         avgUnrealizedPnLPct:
           totalPositions > 0
             ? positionSnapshots.reduce(
-              (sum, p) => sum + p.performance.unrealizedPnLPct,
-              0
-            ) / totalPositions
+                (sum, p) => sum + p.performance.unrealizedPnLPct,
+                0
+              ) / totalPositions
             : 0,
         avgRealizedPnL:
           totalPositions > 0 ? totalRealizedPnL / totalPositions : 0,
         avgFeeYield:
           totalPositions > 0
             ? positionSnapshots.reduce(
-              (sum, p) => sum + p.performance.feeYield,
-              0
-            ) / totalPositions
+                (sum, p) => sum + p.performance.feeYield,
+                0
+              ) / totalPositions
             : 0,
         avgFeeYieldAPR:
           totalPositions > 0
             ? positionSnapshots.reduce(
-              (sum, p) => sum + p.fees.feeYieldAPR,
-              0
-            ) / totalPositions
+                (sum, p) => sum + p.fees.feeYieldAPR,
+                0
+              ) / totalPositions
             : 0,
         avgTimeInRange:
           totalPositions > 0
             ? positionSnapshots.reduce(
-              (sum, p) => sum + p.performance.timeInRange,
-              0
-            ) / totalPositions
+                (sum, p) => sum + p.performance.timeInRange,
+                0
+              ) / totalPositions
             : 0,
         avgTimeInRangePct:
           totalPositions > 0
             ? positionSnapshots.reduce(
-              (sum, p) => sum + p.performance.timeInRangePct,
-              0
-            ) / totalPositions
+                (sum, p) => sum + p.performance.timeInRangePct,
+                0
+              ) / totalPositions
             : 0,
         totalImpermanentLoss,
         totalImpermanentLossPct:
@@ -511,14 +513,14 @@ export class PositionSnapshotTracker {
         avgROI:
           totalPositions > 0
             ? positionSnapshots.reduce((sum, p) => sum + p.performance.roi, 0) /
-            totalPositions
+              totalPositions
             : 0,
         avgSharpeRatio:
           totalPositions > 0
             ? positionSnapshots.reduce(
-              (sum, p) => sum + p.performance.sharpeRatio,
-              0
-            ) / totalPositions
+                (sum, p) => sum + p.performance.sharpeRatio,
+                0
+              ) / totalPositions
             : 0,
         totalReturn,
         totalReturnPct:
@@ -573,36 +575,30 @@ export class PositionSnapshotTracker {
     }
   }
 
-  private calculateAccruedFees(
-    position: VirtualPosition,
-    tokenIndex: 0 | 1
-  ): bigint {
-    // Enhanced fee calculation based on fee growth
-    const poolFeeGrowthGlobal =
-      tokenIndex === 0
-        ? (this.pool as any).feeGrowthGlobal0X64 || 0n
-        : (this.pool as any).feeGrowthGlobal1X64 || 0n;
+  // private calculateAccruedFees(
+  //   position: VirtualPosition,
+  //   tokenIndex: 0 | 1
+  // ): bigint {
+  //   // Enhanced fee calculation based on fee growth
+  //   const poolFeeGrowthGlobal =
+  //     tokenIndex === 0
+  //       ? (this.pool as any).feeGrowthGlobal0X64 || 0n
+  //       : (this.pool as any).feeGrowthGlobal1X64 || 0n;
 
-    const positionFeeGrowthInside =
-      tokenIndex === 0
-        ? position.feeGrowthInside0LastX64
-        : position.feeGrowthInside1LastX64;
+  //   const positionFeeGrowthInside =
+  //     tokenIndex === 0
+  //       ? position.feeGrowthInside0LastX64
+  //       : position.feeGrowthInside1LastX64;
 
-    const feeGrowthDelta = poolFeeGrowthGlobal - positionFeeGrowthInside;
-    const accruedFees = (position.liquidity * feeGrowthDelta) / 2n ** 64n;
+  //   const feeGrowthDelta = poolFeeGrowthGlobal - positionFeeGrowthInside;
+  //   const accruedFees = (position.liquidity * feeGrowthDelta) / 2n ** 64n;
 
-    return accruedFees > 0n ? accruedFees : 0n;
-  }
+  //   return accruedFees > 0n ? accruedFees : 0n;
+  // }
 
   private calculateTotalFeesUSD(position: VirtualPosition): number {
-    const fees0USD = this.calculateTokenValue(
-      this.calculateAccruedFees(position, 0),
-      "A"
-    );
-    const fees1USD = this.calculateTokenValue(
-      this.calculateAccruedFees(position, 1),
-      "B"
-    );
+    const fees0USD = this.calculateTokenValue(position.tokensOwed0, "A");
+    const fees1USD = this.calculateTokenValue(position.tokensOwed1, "B");
     return fees0USD + fees1USD;
   }
 
@@ -1299,9 +1295,7 @@ export class PositionSnapshotTracker {
       `position_details_${poolId}_${timestamp}.csv`
     );
 
-    console.log(
-      `📊 CSV streaming enabled for position tracker:`
-    );
+    console.log(`📊 CSV streaming enabled for position tracker:`);
     console.log(`   Summary: ${this.csvFilePath}`);
     console.log(`   Details: ${this.detailedCsvFilePath}`);
   }
@@ -1454,7 +1448,8 @@ export class PositionSnapshotTracker {
       const minPrice = snapshot.priceInfo.lowerPrice;
       const maxPrice = snapshot.priceInfo.upperPrice;
       const currentPrice = snapshot.priceInfo.currentPrice;
-      const positionWidthPercentage = ((maxPrice - minPrice) / currentPrice) * 100;
+      const positionWidthPercentage =
+        ((maxPrice - minPrice) / currentPrice) * 100;
       const tokenAAmount = parseFloat(snapshot.tokens.amount0.toString());
       const tokenBAmount = parseFloat(snapshot.tokens.amount1.toString());
       const currentLiquidityUSD = snapshot.tokens.totalValueUSD;
@@ -1506,7 +1501,11 @@ export class PositionSnapshotTracker {
     }
 
     if (rows.length > 0) {
-      fs.appendFileSync(this.detailedCsvFilePath, rows.join("\n") + "\n", "utf-8");
+      fs.appendFileSync(
+        this.detailedCsvFilePath,
+        rows.join("\n") + "\n",
+        "utf-8"
+      );
     }
   }
 

@@ -42,10 +42,10 @@ type SegmentState = {
 type ThreeBandAction =
   | { action: "none" | "wait"; message: string }
   | {
-    action: "create" | "rebalance";
-    message: string;
-    segments: SegmentState[];
-  };
+      action: "create" | "rebalance";
+      message: string;
+      segments: SegmentState[];
+    };
 
 export class ThreeBandRebalancerStrategyOptionThree {
   private readonly manager: VirtualPositionManager;
@@ -85,7 +85,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const toRemove = this.segments.filter((s) => !keep.includes(s.id));
     for (const seg of toRemove) {
       try {
-        this.manager.removePosition(seg.id, this.getActionCost());
+        this.manager.closePosition(seg.id);
         changed = true;
       } catch {
         // ignore failures
@@ -182,10 +182,12 @@ export class ThreeBandRebalancerStrategyOptionThree {
           };
         }
       }
-      const remaining = Math.max(0, (this.lastRepairAttempt + 300_000) - now);
+      const remaining = Math.max(0, this.lastRepairAttempt + 300_000 - now);
       return {
         action: "wait",
-        message: `Repair cooldown ${Math.ceil(remaining / 1000)}s before retry to open missing bands`,
+        message: `Repair cooldown ${Math.ceil(
+          remaining / 1000
+        )}s before retry to open missing bands`,
       };
     }
 
@@ -275,14 +277,21 @@ export class ThreeBandRebalancerStrategyOptionThree {
             // Rebalance only the middle band to cover current tick.
             // Also ensure the new range overlaps both neighbors so middle is always the band covering price.
             // Compute contiguous layout around current tick using fixed segmentWidth.
-            const newMiddleLower = currentTick - Math.floor(this.segmentWidth / 2);
+            const newMiddleLower =
+              currentTick - Math.floor(this.segmentWidth / 2);
             const newMiddleUpper = newMiddleLower + this.segmentWidth;
-            const newLowerBand = { lower: newMiddleLower - this.segmentWidth, upper: newMiddleLower };
-            const newUpperBand = { lower: newMiddleUpper, upper: newMiddleUpper + this.segmentWidth };
+            const newLowerBand = {
+              lower: newMiddleLower - this.segmentWidth,
+              upper: newMiddleLower,
+            };
+            const newUpperBand = {
+              lower: newMiddleUpper,
+              upper: newMiddleUpper + this.segmentWidth,
+            };
 
             try {
               // remove and reopen the middle position
-              this.manager.removePosition(middle.id, this.getActionCost());
+              this.manager.closePosition(middle.id);
               const replacement = this.openSegment(
                 newMiddleLower,
                 newMiddleUpper,
@@ -307,8 +316,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
             } catch (err) {
               return {
                 action: "none",
-                message: `Failed to rebalance middle band: ${(err as Error).message
-                  }`,
+                message: `Failed to rebalance middle band: ${
+                  (err as Error).message
+                }`,
               };
             }
           } else {
@@ -471,7 +481,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       } catch (error) {
         // Log but continue - allows partial deployment if some positions fail
         console.warn(
-          `[three-band] Failed to open position [${descriptor.lower},${descriptor.upper
+          `[three-band] Failed to open position [${descriptor.lower},${
+            descriptor.upper
           }]: ${error instanceof Error ? error.message : String(error)}`
         );
         // Continue trying to open other positions
@@ -511,7 +522,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const successMessage =
       this.segments.length < segmentCount
         ? `Seeded ${this.segments.length}/${segmentCount} bands (will keep repairing to reach 3)`
-        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(6)} (width: ${rangePercent.toFixed(4)}%)`;
+        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
+            6
+          )} (width: ${rangePercent.toFixed(4)}%)`;
 
     return {
       action: "create",
@@ -529,7 +542,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     if (!removed) return false;
 
     try {
-      this.manager.removePosition(removed.id, this.getActionCost());
+      this.manager.closePosition(removed.id);
     } catch (err) {
       this.segments.unshift(removed);
       return false;
@@ -597,7 +610,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     if (!removed) return false;
 
     try {
-      this.manager.removePosition(removed.id, this.getActionCost());
+      this.manager.closePosition(removed.id);
     } catch (err) {
       this.segments.push(removed);
       return false;
@@ -659,7 +672,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
   private clearSegments() {
     for (const segment of this.segments) {
       try {
-        this.manager.removePosition(segment.id, this.getActionCost());
+        this.manager.closePosition(segment.id);
       } catch (err) {
         // ignore cleanup failures
       }
@@ -701,6 +714,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       const scaledA = (weightedA * BigInt(Math.floor(scale * 100))) / 100n;
       const scaledB = (weightedB * BigInt(Math.floor(scale * 100))) / 100n;
 
+      this.manager.openPosition(tickLower, tickUpper, scaledA, scaledB);
+
       for (const slippage of slippages) {
         try {
           const preSwapTick = this.pool.tickCurrent;
@@ -723,7 +738,10 @@ export class ThreeBandRebalancerStrategyOptionThree {
           const created = this.manager.getPosition(result.positionId);
           if (!created || created.liquidity === 0n) {
             try {
-              this.manager.removePosition(result.positionId, this.getActionCost());
+              this.manager.removePosition(
+                result.positionId,
+                this.getActionCost()
+              );
             } catch {
               // ignore cleanup failures
             }
@@ -743,7 +761,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
               `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
             );
             console.log(
-              `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(6)}`
+              `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(
+                6
+              )}`
             );
             console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
             console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
@@ -769,7 +789,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     throw new Error(
-      `Failed to open segment [${tickLower}, ${tickUpper}]: ${lastError?.message ?? "unknown error"
+      `Failed to open segment [${tickLower}, ${tickUpper}]: ${
+        lastError?.message ?? "unknown error"
       }`
     );
   }
@@ -1161,8 +1182,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       const weights = [0, 0, 0];
       weights[midIdx] = 0.6; // Position 1 (middle)
       // Upper is index midIdx+1, lower is midIdx-1, if present
-      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.20; // Position 2 (upper)
-      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.20; // Position 3 (lower)
+      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.2; // Position 2 (upper)
+      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.2; // Position 3 (lower)
       return weights;
     }
 
@@ -1256,7 +1277,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     // Collect fees from all segments
     for (const segment of this.segments) {
       try {
-        this.manager.collectFees(segment.id);
+        this.manager.collectAllPositionFees();
       } catch (err) {
         // Continue collecting from other positions
       }
@@ -1386,11 +1407,17 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     const desired: Array<{ lower: number; upper: number }> = [];
     // Lower band
-    desired.push({ lower: middleLower - this.segmentWidth, upper: middleLower });
+    desired.push({
+      lower: middleLower - this.segmentWidth,
+      upper: middleLower,
+    });
     // Middle band
     desired.push({ lower: middleLower, upper: middleUpper });
     // Upper band
-    desired.push({ lower: middleUpper, upper: middleUpper + this.segmentWidth });
+    desired.push({
+      lower: middleUpper,
+      upper: middleUpper + this.segmentWidth,
+    });
 
     // Track existing ranges for quick check
     const existing = new Set(
