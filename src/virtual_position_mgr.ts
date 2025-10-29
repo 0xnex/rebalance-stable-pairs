@@ -167,7 +167,7 @@ export class VirtualPositionManager {
    * Calculate total fees for a position using monotonic, non-negative deltas.
    * Ensures we never return negative fees due to wrapped or decreasing checkpoints.
    */
-  private calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
+  calculatePositionFees(positionId: string): { fee0: bigint; fee1: bigint } {
     const position = this.positions.get(positionId);
     if (!position) {
       return { fee0: 0n, fee1: 0n };
@@ -990,14 +990,14 @@ export class VirtualPositionManager {
         if (amount0 > MAX_REASONABLE_AMOUNT || amount1 > MAX_REASONABLE_AMOUNT) {
           // Log the problematic calculation for debugging
           console.warn(`[VirtualPositionManager] Calculated amount too large: amount0=${amount0} amount1=${amount1} liquidity=${position.liquidity} tick=${currentTick} range=[${position.tickLower},${position.tickUpper}]`);
-          amount0 = position.amountA;
-          amount1 = position.amountB;
+          amount0 = position.amount0;
+          amount1 = position.amount1;
         }
 
       } catch (error) {
         // Fallback to stored amounts if calculation fails
-        amount0 = position.amountA;
-        amount1 = position.amountB;
+        amount0 = position.amount0;
+        amount1 = position.amount1;
       }
     }
 
