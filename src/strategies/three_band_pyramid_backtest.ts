@@ -2,9 +2,9 @@ import type { BacktestStrategy, StrategyContext } from "../backtest_engine";
 import { VirtualPositionManager } from "../virtual_position_mgr";
 import { Pool } from "../pool";
 import {
-  ThreeBandPydiumStrategy,
-  type ThreeBandPydiumConfig,
-} from "./three_band_pydium";
+  ThreeBandPydramidStrategy,
+  type ThreeBandPydramidConfig,
+} from "./three_band_pyramid";
 import * as fs from "fs";
 
 type EnvConfig = {
@@ -65,14 +65,17 @@ function readEnvConfig(): EnvConfig {
 
 export function strategyFactory(pool: Pool): BacktestStrategy {
   const env = readEnvConfig();
-  const manager = new VirtualPositionManager(pool);
-  manager.setInitialBalances(env.initialAmountA, env.initialAmountB);
+  const manager = new VirtualPositionManager(
+    env.initialAmountA,
+    env.initialAmountB,
+    pool
+  );
 
   // CSV file writer for separate output
   const csvFilePath = `pydium_backtest_${Date.now()}.csv`;
   let csvInitialized = false;
 
-  const config: Partial<ThreeBandPydiumConfig> = {
+  const config: Partial<ThreeBandPydramidConfig> = {
     position1WidthTicks: env.position1WidthTicks,
     position2WidthTicks: env.position2WidthTicks,
     position3WidthTicks: env.position3WidthTicks,
@@ -88,7 +91,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     bootstrapAttempts: env.bootstrapAttempts,
   };
 
-  const strategy = new ThreeBandPydiumStrategy(manager, pool, config);
+  const strategy = new ThreeBandPydramidStrategy(manager, pool, config);
   let lastTimestamp = -1;
   let lastLogKey: string | null = null;
 
@@ -192,7 +195,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
           );
         } else {
           // Calculate actual current amounts
-          const { currentAmountA, currentAmountB } =
+          const { amount0: currentAmountA, amount1: currentAmountB } =
             manager.calculatePositionAmounts(pos.id);
 
           csvParts.push(
@@ -215,7 +218,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     let sumAmountA = 0n;
     let sumAmountB = 0n;
     for (const pos of positions) {
-      const { currentAmountA, currentAmountB } =
+      const { amount0: currentAmountA, amount1: currentAmountB } =
         manager.calculatePositionAmounts(pos.id);
       sumAmountA += currentAmountA;
       sumAmountB += currentAmountB;
@@ -305,7 +308,6 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       return;
     }
     lastTimestamp = ctx.timestamp;
-    manager.updateAllPositionFees();
     strategy.setCurrentTime(ctx.timestamp);
     const outcome = strategy.execute();
     if (outcome.action !== "none") {
@@ -315,9 +317,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
   return {
     id: "three-band-pydium",
-    manager,
     async onInit(ctx) {
-      manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
       const result = strategy.initialize();
       log(ctx, result.action, result.message);
@@ -325,11 +325,10 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     async onTick(ctx) {
       runOnce(ctx);
     },
-    async onEvent(ctx) {
+    async onSwapEvent(ctx, event) {
       runOnce(ctx);
     },
     async onFinish(ctx) {
-      manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
 
       // Log state before closing positions
@@ -342,12 +341,13 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       );
 
       // Close all positions
-      const pydiumPositions = strategy.getPositions();
-      for (const pos of pydiumPositions) {
-        manager.removePosition(pos.id, {
-          tokenA: env.actionCostTokenA > 0 ? env.actionCostTokenA : undefined,
-          tokenB: env.actionCostTokenB > 0 ? env.actionCostTokenB : undefined,
-        });
+      const pyramidPositions = strategy.getPositions();
+      for (const pos of pyramidPositions) {
+        // manager.removePosition(pos.id, {
+        //   tokenA: env.actionCostTokenA > 0 ? env.actionCostTokenA : undefined,
+        //   tokenB: env.actionCostTokenB > 0 ? env.actionCostTokenB : undefined,
+        // });
+        manager.closePosition(pos.id);
       }
 
       // Log final state

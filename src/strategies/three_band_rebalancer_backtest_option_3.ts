@@ -1,4 +1,8 @@
-import type { BacktestStrategy, StrategyContext } from "../backtest_engine";
+import type {
+  BacktestStrategy,
+  StrategyContext,
+  SwapEvent,
+} from "../backtest_engine";
 import { VirtualPositionManager } from "../virtual_position_mgr";
 import { Pool } from "../pool";
 import * as fs from "fs";
@@ -135,8 +139,11 @@ function readEnvConfig(): EnvConfig {
 
 export function strategyFactory(pool: Pool): BacktestStrategy {
   const env = readEnvConfig();
-  const manager = new VirtualPositionManager(pool);
-  manager.setInitialBalances(env.initialAmountA, env.initialAmountB);
+  const manager = new VirtualPositionManager(
+    env.initialAmountA,
+    env.initialAmountB,
+    pool
+  );
 
   // CSV file writer for separate output
   const token_a = process.env.TOKEN_A_NAME;
@@ -349,18 +356,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
           );
         } else {
           // Calculate actual current amounts based on position's liquidity and current price
-          const { currentAmountA, currentAmountB } =
+          const { amount0: currentAmountA, amount1: currentAmountB } =
             manager.calculatePositionAmounts(pos.id);
-
-          // Convert raw amounts to decimal format using helper function
-          const decimalAmountA = formatAmount(
-            currentAmountA,
-            env.tokenADecimals
-          );
-          const decimalAmountB = formatAmount(
-            currentAmountB,
-            env.tokenBDecimals
-          );
 
           // Track accumulated fees across rebalances
           const currentFeesA = BigInt(posFeesA);
@@ -411,9 +408,9 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             pos.tickLower.toString(),
             pos.tickUpper.toString(),
             currentAmountA.toString(), // Raw amount
-            decimalAmountA, // Decimal amount
+            currentAmountA.toString(), // Decimal amount
             currentAmountB.toString(), // Raw amount
-            decimalAmountB, // Decimal amount
+            currentAmountB.toString(), // Decimal amount
             currentFeesA.toString(), // Raw fee
             decimalFeesA, // Decimal fee
             decimalTotalFeesA,
@@ -434,7 +431,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     let sumAmountA = 0n;
     let sumAmountB = 0n;
     for (const pos of positions) {
-      const { currentAmountA, currentAmountB } =
+      const { amount0: currentAmountA, amount1: currentAmountB } =
         manager.calculatePositionAmounts(pos.id);
       sumAmountA += currentAmountA;
       sumAmountB += currentAmountB;
@@ -598,7 +595,6 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       return;
     }
     lastTimestamp = ctx.timestamp;
-    manager.updateAllPositionFees();
     strategy.setCurrentTime(ctx.timestamp);
     const outcome = strategy.execute();
 
@@ -609,9 +605,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
   return {
     id: "three-band-rebalancer-option3",
-    manager,
     async onInit(ctx) {
-      manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
       const result = strategy.initialize();
       log(ctx, result.action, result.message);
@@ -619,11 +613,10 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     async onTick(ctx) {
       runOnce(ctx);
     },
-    async onEvent(ctx) {
+    async onSwapEvent(ctx, event) {
       runOnce(ctx);
     },
     async onFinish(ctx) {
-      manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
 
       // Log state before closing positions
@@ -637,10 +630,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
       // Close all positions
       for (const segment of strategy.getSegments()) {
-        manager.removePosition(segment.id, {
-          tokenA: env.actionCostTokenA > 0 ? env.actionCostTokenA : undefined,
-          tokenB: env.actionCostTokenB > 0 ? env.actionCostTokenB : undefined,
-        });
+        manager.closePosition(segment.id);
       }
 
       // Log final state after closing positions

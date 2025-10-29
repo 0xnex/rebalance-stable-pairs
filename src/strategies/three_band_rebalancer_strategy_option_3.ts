@@ -314,10 +314,11 @@ export class ThreeBandRebalancerStrategyOptionThree {
               const newMainUpper = newMainLower + this.segmentWidth;
 
               try {
-                this.manager.removePosition(
-                  mainSegment.id,
-                  this.getActionCost()
-                );
+                // this.manager.removePosition(
+                //   mainSegment.id,
+                //   this.getActionCost()
+                // );
+                this.manager.closePosition(mainSegment.id);
                 const replacement = this.openSegment(
                   newMainLower,
                   newMainUpper,
@@ -393,9 +394,10 @@ export class ThreeBandRebalancerStrategyOptionThree {
       if (this.segmentWidth !== null) {
         try {
           // Remove all existing segments
-          for (const segment of this.segments) {
-            this.manager.removePosition(segment.id, this.getActionCost());
-          }
+          // for (const segment of this.segments) {
+          //   this.manager.removePosition(segment.id, this.getActionCost());
+          // }
+          this.manager.closeAllPositions();
 
           // Create 3 new overlapping segments using Option 3 layout
 
@@ -790,95 +792,114 @@ export class ThreeBandRebalancerStrategyOptionThree {
       if (weight === undefined) return baseAvailableB;
       return (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
     })();
-
-    // Size backoff factors to increase success probability under tight bands/slippage
-    const sizeBackoff: number[] = [1.0, 0.5, 0.25];
-
-    let lastError: Error | null = null;
-
-    for (const scale of sizeBackoff) {
-      const scaledA = (weightedA * BigInt(Math.floor(scale * 100))) / 100n;
-      const scaledB = (weightedB * BigInt(Math.floor(scale * 100))) / 100n;
-
-      this.manager.openPosition(tickLower, tickUpper, scaledA, scaledB);
-
-      for (const slippage of slippages) {
-        try {
-          const preSwapTick = this.pool.tickCurrent;
-          const preSwapPrice = this.pool.price;
-
-          const result = this.manager.addLiquidityWithSwap(
-            tickLower,
-            tickUpper,
-            scaledA,
-            scaledB,
-            slippage,
-            this.getActionCost()
-          );
-
-          const postSwapTick = this.pool.tickCurrent;
-          const postSwapPrice = this.pool.price;
-          const inRange = postSwapTick >= tickLower && postSwapTick < tickUpper;
-
-          // Validate the created position actually has liquidity; otherwise, clean up and retry
-          const created = this.manager.getPosition(result.positionId);
-          if (!created || created.liquidity === 0n) {
-            try {
-              this.manager.removePosition(
-                result.positionId,
-                this.getActionCost()
-              );
-            } catch {
-              // ignore cleanup failures
-            }
-            lastError = new Error(
-              `Zero-liquidity open for [${tickLower}, ${tickUpper}] at slippage=${slippage} scale=${scale}`
-            );
-            console.warn(
-              `[three-band] Zero-liquidity open; retrying with backoff. slippage=${slippage} scale=${scale}`
-            );
-            continue;
-          }
-
-          // Log price movement from swap
-          if (postSwapTick !== preSwapTick) {
-            console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
-            console.log(
-              `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
-            );
-            console.log(
-              `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(
-                6
-              )}`
-            );
-            console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
-            console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
-            console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
-          }
-
-          return {
-            id: result.positionId,
-            tickLower,
-            tickUpper,
-            lastMoved: timestamp,
-            lastFeesCollected0: 0n,
-            lastFeesCollected1: 0n,
-            lastFeeCheckTime: timestamp,
-          };
-        } catch (err) {
-          lastError = err as Error;
-          console.warn(
-            `[three-band] Failed to open [${tickLower}, ${tickUpper}] slippage=${slippage} scale=${scale}: ${lastError.message}`
-          );
-        }
-      }
-    }
-
-    throw new Error(
-      `Failed to open segment [${tickLower}, ${tickUpper}]: ${
-        lastError?.message ?? "unknown error"
-      }`
+    const positionId = `pos_${Date.now()}`;
+    this.manager.createPosition(
+      positionId,
+      tickLower,
+      tickUpper,
+      weightedA,
+      weightedB,
+      timestamp
     );
+    return {
+      id: positionId,
+      tickLower,
+      tickUpper,
+      lastMoved: timestamp,
+      lastFeesCollected0: 0n,
+      lastFeesCollected1: 0n,
+      lastFeeCheckTime: timestamp,
+    };
+    // Size backoff factors to increase success probability under tight bands/slippage
+    // const sizeBackoff: number[] = [1.0, 0.5, 0.25];
+
+    // let lastError: Error | null = null;
+
+    // for (const scale of sizeBackoff) {
+    //   const scaledA = (weightedA * BigInt(Math.floor(scale * 100))) / 100n;
+    //   const scaledB = (weightedB * BigInt(Math.floor(scale * 100))) / 100n;
+
+    //   this.manager.openPosition(tickLower, tickUpper, scaledA, scaledB);
+
+    //   for (const slippage of slippages) {
+    //     try {
+    //       const preSwapTick = this.pool.tickCurrent;
+    //       const preSwapPrice = this.pool.price;
+
+    //       const result = this.manager.addLiquidityWithSwap(
+    //         tickLower,
+    //         tickUpper,
+    //         scaledA,
+    //         scaledB,
+    //         slippage,
+    //         this.getActionCost()
+    //       );
+
+    //       const postSwapTick = this.pool.tickCurrent;
+    //       const postSwapPrice = this.pool.price;
+    //       const inRange = postSwapTick >= tickLower && postSwapTick < tickUpper;
+
+    //       // Validate the created position actually has liquidity; otherwise, clean up and retry
+    //       const created = this.manager.getPosition(result.positionId);
+    //       if (!created || created.liquidity === 0n) {
+    //         try {
+    //           this.manager.closePosition(result.positionId);
+    //         } catch (err) {
+    //           // ignore cleanup failures
+    //           console.warn(
+    //             `[three-band] Failed to close position [${tickLower}, ${tickUpper}]: ${
+    //               err instanceof Error ? err.message : String(err)
+    //             }`
+    //           );
+    //         }
+    //         lastError = new Error(
+    //           `Zero-liquidity open for [${tickLower}, ${tickUpper}] at slippage=${slippage} scale=${scale}`
+    //         );
+    //         console.warn(
+    //           `[three-band] Zero-liquidity open; retrying with backoff. slippage=${slippage} scale=${scale}`
+    //         );
+    //         continue;
+    //       }
+
+    //       // Log price movement from swap
+    //       if (postSwapTick !== preSwapTick) {
+    //         console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
+    //         console.log(
+    //           `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
+    //         );
+    //         console.log(
+    //           `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(
+    //             6
+    //           )}`
+    //         );
+    //         console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
+    //         console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
+    //         console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
+    //       }
+
+    //       return {
+    //         id: result.positionId,
+    //         tickLower,
+    //         tickUpper,
+    //         lastMoved: timestamp,
+    //         lastFeesCollected0: 0n,
+    //         lastFeesCollected1: 0n,
+    //         lastFeeCheckTime: timestamp,
+    //       };
+    //     } catch (err) {
+    //       lastError = err as Error;
+    //       console.warn(
+    //         `[three-band] Failed to open [${tickLower}, ${tickUpper}] slippage=${slippage} scale=${scale}: ${lastError.message}`
+    //       );
+    //     }
+    //   }
+    // }
+
+    // throw new Error(
+    //   `Failed to open segment [${tickLower}, ${tickUpper}]: ${
+    //     lastError?.message ?? "unknown error"
+    //   }`
+    // );
   }
 
   private buildSlippageAttempts(): number[] {
@@ -962,7 +983,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     // Collect fees from all positions to get accurate fee totals
     for (const segment of this.segments) {
-      this.manager.collectFees(segment.id);
+      this.manager.calculatePositionFees(segment.id);
     }
 
     const totals = this.manager.getTotals();

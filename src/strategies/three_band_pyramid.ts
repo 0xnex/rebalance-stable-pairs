@@ -1,7 +1,7 @@
 import { Pool } from "../pool";
 import { VirtualPositionManager } from "../virtual_position_mgr";
 
-export interface ThreeBandPydiumConfig {
+export interface ThreeBandPydramidConfig {
   // Position widths in ticks
   position1WidthTicks: number; // Narrow position (default: 2 ticks)
   position2WidthTicks: number; // Medium position (default: 6 ticks)
@@ -36,7 +36,7 @@ type PositionState = {
   lastRebalanceTime: number;
 };
 
-export type PydiumAction =
+export type PydramidAction =
   | { action: "none" | "wait"; message: string }
   | {
       action: "create" | "rebalance";
@@ -44,10 +44,10 @@ export type PydiumAction =
       positions: PositionState[];
     };
 
-export class ThreeBandPydiumStrategy {
+export class ThreeBandPydramidStrategy {
   private readonly manager: VirtualPositionManager;
   private readonly pool: Pool;
-  private config: ThreeBandPydiumConfig;
+  private config: ThreeBandPydramidConfig;
 
   private positions: PositionState[] = [];
   private rebalanceHistory: number[] = []; // Timestamps of rebalances
@@ -57,7 +57,7 @@ export class ThreeBandPydiumStrategy {
   constructor(
     manager: VirtualPositionManager,
     pool: Pool,
-    config: Partial<ThreeBandPydiumConfig> = {}
+    config: Partial<ThreeBandPydramidConfig> = {}
   ) {
     this.manager = manager;
     this.pool = pool;
@@ -91,13 +91,13 @@ export class ThreeBandPydiumStrategy {
     };
   }
 
-  initialize(): PydiumAction {
+  initialize(): PydramidAction {
     const now = this.now();
     this.lastCheckTime = now;
     return this.createInitialPositions();
   }
 
-  execute(): PydiumAction {
+  execute(): PydramidAction {
     if (this.positions.length === 0) {
       return this.createInitialPositions();
     }
@@ -161,11 +161,11 @@ export class ThreeBandPydiumStrategy {
     return this.overrideNow ?? Date.now();
   }
 
-  private createInitialPositions(): PydiumAction {
+  private createInitialPositions(): PydramidAction {
     // Clear any existing positions
     for (const pos of this.positions) {
       try {
-        this.manager.removePosition(pos.id, this.getActionCost());
+        this.manager.closePosition(pos.id);
       } catch (err) {
         // Ignore errors on cleanup
       }
@@ -229,7 +229,8 @@ export class ThreeBandPydiumStrategy {
           tickLower,
           tickUpper,
           capitalA,
-          capitalB
+          capitalB,
+          now
         );
 
         opened.push({
@@ -309,8 +310,7 @@ export class ThreeBandPydiumStrategy {
 
     try {
       // Remove old position
-      this.manager.collectFees(pos1.id);
-      this.manager.removePosition(pos1.id, this.getActionCost());
+      this.manager.closePosition(pos1.id);
 
       // Calculate new range centered on current tick
       const halfWidth = Math.floor(pos1.widthTicks / 2);
@@ -327,7 +327,8 @@ export class ThreeBandPydiumStrategy {
         newTickLower,
         newTickUpper,
         availableA,
-        availableB
+        availableB,
+        now
       );
 
       // Update position state
@@ -360,33 +361,44 @@ export class ThreeBandPydiumStrategy {
     tickLower: number,
     tickUpper: number,
     maxAmountA: bigint,
-    maxAmountB: bigint
+    maxAmountB: bigint,
+    timestamp: number
   ): string {
-    const slippages = this.buildSlippageAttempts();
-    let lastError: Error | null = null;
-
-    for (const slippage of slippages) {
-      try {
-        const result = this.manager.addLiquidityWithSwap(
-          tickLower,
-          tickUpper,
-          maxAmountA,
-          maxAmountB,
-          slippage,
-          this.getActionCost()
-        );
-
-        return result.positionId;
-      } catch (err) {
-        lastError = err as Error;
-      }
-    }
-
-    throw new Error(
-      `Failed to open position [${tickLower}, ${tickUpper}]: ${
-        lastError?.message ?? "unknown error"
-      }`
+    const positionId = `pos_${Date.now()}`;
+    this.manager.createPosition(
+      positionId,
+      tickLower,
+      tickUpper,
+      maxAmountA,
+      maxAmountB,
+      timestamp
     );
+    return positionId;
+    // const slippages = this.buildSlippageAttempts();
+    // let lastError: Error | null = null;
+
+    // for (const slippage of slippages) {
+    //   try {
+    //     const result = this.manager.addLiquidityWithSwap(
+    //       tickLower,
+    //       tickUpper,
+    //       maxAmountA,
+    //       maxAmountB,
+    //       slippage,
+    //       this.getActionCost()
+    //     );
+
+    //     return result.positionId;
+    //   } catch (err) {
+    //     lastError = err as Error;
+    //   }
+    // }
+
+    // throw new Error(
+    //   `Failed to open position [${tickLower}, ${tickUpper}]: ${
+    //     lastError?.message ?? "unknown error"
+    //   }`
+    // );
   }
 
   private buildSlippageAttempts(): number[] {

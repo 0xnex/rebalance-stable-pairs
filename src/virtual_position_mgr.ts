@@ -265,6 +265,54 @@ export class VirtualPositionManager {
     return pos;
   }
 
+  calculatePositionAmounts(id: string): {
+    amount0: bigint;
+    amount1: bigint;
+  } {
+    const position = this.positions.get(id);
+    if (!position) {
+      throw new Error("Position not found");
+    }
+    return position.getTotals(this.pool.sqrtPriceX64);
+  }
+
+  calculatePositionFees(id: string): {
+    fee0: bigint;
+    fee1: bigint;
+  } {
+    const position = this.positions.get(id);
+    if (!position) {
+      throw new Error("Position not found");
+    }
+    return position.getTotals(this.pool.sqrtPriceX64);
+  }
+
+  closeAllPositions(): {
+    amount0: bigint;
+    amount1: bigint;
+    fee0: bigint;
+    fee1: bigint;
+  } {
+    let amount0 = 0n;
+    let amount1 = 0n;
+    let fee0 = 0n;
+    let fee1 = 0n;
+
+    for (const position of this.positions.values()) {
+      const {
+        amount0: posAmount0,
+        amount1: posAmount1,
+        fee0: posFee0,
+        fee1: posFee1,
+      } = position.close(this.pool.sqrtPriceX64);
+      amount0 += posAmount0;
+      amount1 += posAmount1;
+      fee0 += posFee0;
+      fee1 += posFee1;
+    }
+    return { amount0, amount1, fee0, fee1 };
+  }
+
   closePosition(id: string): {
     amount0: bigint;
     amount1: bigint;
