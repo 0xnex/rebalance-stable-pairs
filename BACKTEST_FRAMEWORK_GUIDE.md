@@ -74,6 +74,13 @@ This framework allows you to backtest concentrated liquidity market-making strat
 - `onSwapEvent()`: React to individual swaps
 - `onFinish()`: Clean up at backtest end
 
+### 6. **Error Simulation**
+
+- Simulate transient position creation failures
+- Test retry logic and error handling
+- Configurable failure frequency
+- Automatic tracking of attempts and failures
+
 ---
 
 ## What's Included
@@ -886,3 +893,239 @@ This framework provides a powerful toolkit for backtesting concentrated liquidit
 ❌ **Limitations**: No slippage, gas costs, MEV, or multi-pool support
 
 **Start simple** with a hold strategy, then iterate towards more complex rebalancing logic. Happy backtesting! 🚀
+
+---
+
+## Error Simulation
+
+### Overview
+
+The framework includes an **error simulation feature** that allows you to test how your strategy handles transient failures when creating positions. This is useful for:
+
+- Testing retry logic in your strategies
+- Simulating real-world blockchain failures (RPC errors, network timeouts, etc.)
+- Ensuring your strategy is resilient to temporary issues
+- Validating error handling and recovery mechanisms
+
+### How It Works
+
+When `simulateErrors` is set to N > 0:
+
+- **Position creation will fail (N-1) times**
+- **On the Nth attempt, it will succeed**
+- This pattern repeats for every position creation call
+
+**Example:**
+
+- `simulateErrors = 3` means:
+  - Attempt 1: ❌ Fails
+  - Attempt 2: ❌ Fails
+  - Attempt 3: ✅ Succeeds
+  - Attempt 4: ❌ Fails
+  - Attempt 5: ❌ Fails
+  - Attempt 6: ✅ Succeeds
+  - (pattern continues...)
+
+### Configuration
+
+Add `simulateErrors` to your `BacktestConfig`:
+
+```typescript
+const engine = new BacktestEngine({
+  poolId: "0x737ec...",
+  startTime: new Date("2025-08-20").getTime(),
+  endTime: new Date("2025-08-21").getTime(),
+  // ... other config ...
+  simulateErrors: 3, // Fail twice, succeed on 3rd attempt
+});
+```
+
+### Strategy Example with Retry Logic
+
+```typescript
+export class ResilientStrategy implements BacktestStrategy {
+  readonly id = "resilient-strategy";
+  private maxRetries = 10;
+
+  onInit(ctx: StrategyContext): void {
+    // Attempt to create position with retry logic
+    this.createPositionWithRetry(ctx, "main-position");
+  }
+
+  private createPositionWithRetry(
+    ctx: StrategyContext,
+    positionId: string
+  ): void {
+    const currentTick = ctx.pool.tickCurrent;
+    const tickLower = currentTick - 10;
+    const tickUpper = currentTick + 10;
+    const amount0 = 1000_00000000n;
+    const amount1 = 1000_00000000n;
+
+    for (let attempt = 1; attempt <= this.maxRetries; attempt++) {
+      try {
+        console.log(`Attempt ${attempt} to create position ${positionId}...`);
+
+        const position = ctx.manager.createPosition(
+          positionId,
+          tickLower,
+          tickUpper,
+          amount0,
+          amount1,
+          ctx.timestamp
+        );
+
+        console.log(`✅ Position created successfully on attempt ${attempt}`);
+        return; // Success!
+      } catch (error: any) {
+        console.log(`❌ Failed: ${error.message}`);
+
+        // Check if it's a simulated error (transient) or real error
+        if (!error.message.includes("Simulated")) {
+          console.log("Real error encountered, stopping retries");
+          throw error; // Re-throw non-simulated errors
+        }
+
+        // For simulated errors, continue retrying
+        if (attempt === this.maxRetries) {
+          throw new Error(`Failed after ${this.maxRetries} attempts`);
+        }
+      }
+    }
+  }
+
+  onTick(ctx: StrategyContext): void {
+    // Normal strategy logic
+  }
+}
+```
+
+### Testing Error Scenarios
+
+You can test different failure rates:
+
+```typescript
+// Test 1: No errors (control)
+const engine1 = new BacktestEngine({
+  // ... config ...
+  simulateErrors: 0, // Positions always succeed
+});
+
+// Test 2: Fail once before success
+const engine2 = new BacktestEngine({
+  // ... config ...
+  simulateErrors: 2, // Fail 1 time, succeed on 2nd
+});
+
+// Test 3: Fail 4 times before success
+const engine3 = new BacktestEngine({
+  // ... config ...
+  simulateErrors: 5, // Fail 4 times, succeed on 5th
+});
+```
+
+### Monitoring Simulation
+
+The framework automatically logs simulation events:
+
+```
+[VirtualPositionManager] Simulated error on createPosition attempt #1
+  (will succeed on attempt 3)
+[VirtualPositionManager] Simulated error on createPosition attempt #2
+  (will succeed on attempt 3)
+[VirtualPositionManager] Position creation succeeded on attempt #3
+```
+
+### Internal Tracking
+
+The `VirtualPositionManager` tracks:
+
+- `createPositionAttempts`: Total number of `createPosition()` calls
+- `simulateErrors`: The configured failure frequency (N)
+
+Formula: **Success when `createPositionAttempts % simulateErrors === 0`**
+
+### When to Use
+
+Use error simulation for:
+
+- ✅ **Development**: Test retry logic works correctly
+- ✅ **Validation**: Ensure strategy handles failures gracefully
+- ✅ **Robustness**: Verify no data corruption on failed attempts
+- ✅ **Production prep**: Build confidence in error recovery
+
+Don't use for:
+
+- ❌ **Final performance metrics**: Simulated errors aren't real
+- ❌ **Production backtests**: Use `simulateErrors: 0`
+- ❌ **Comparing strategies**: Introduces artificial variance
+
+### Best Practices
+
+1. **Test with simulation during development:**
+
+   ```typescript
+   simulateErrors: 3; // Test retry logic
+   ```
+
+2. **Disable for production backtests:**
+
+   ```typescript
+   simulateErrors: 0; // Real performance metrics
+   ```
+
+3. **Always implement retry logic:**
+
+   ```typescript
+   // Bad: No retry
+   ctx.manager.createPosition(...); // Fails permanently on error
+
+   // Good: Retry with exponential backoff
+   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+     try {
+       ctx.manager.createPosition(...);
+       break; // Success
+     } catch (error) {
+       if (attempt === maxRetries) throw error;
+       // Continue retrying
+     }
+   }
+   ```
+
+4. **Distinguish simulated vs. real errors:**
+   ```typescript
+   catch (error: any) {
+     if (error.message.includes("Simulated")) {
+       // Transient error, safe to retry
+     } else {
+       // Real error (insufficient balance, etc.), don't retry
+       throw error;
+     }
+   }
+   ```
+
+### Example Test Output
+
+With `simulateErrors: 3`, creating 3 positions:
+
+```
+Position 1:
+  Attempt 1: ❌ Simulated error (attempt 1/3)
+  Attempt 2: ❌ Simulated error (attempt 2/3)
+  Attempt 3: ✅ Success
+
+Position 2:
+  Attempt 4: ❌ Simulated error (attempt 4/6)
+  Attempt 5: ❌ Simulated error (attempt 5/6)
+  Attempt 6: ✅ Success
+
+Position 3:
+  Attempt 7: ❌ Simulated error (attempt 7/9)
+  Attempt 8: ❌ Simulated error (attempt 8/9)
+  Attempt 9: ✅ Success
+
+Summary:
+  Total attempts: 9
+  Failures: 6 (66.7%)
+  Successes: 3 (33.3%)
+```

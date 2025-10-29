@@ -175,13 +175,20 @@ export class VirtualPositionManager {
   slippage0 = 0n;
   slippage1 = 0n;
   pool: Pool;
-
-  constructor(initialAmount0: bigint, initialAmount1: bigint, pool: Pool) {
+  simulateErrors: number = 0;
+  createPositionAttempts: number = 0;
+  constructor(
+    initialAmount0: bigint,
+    initialAmount1: bigint,
+    pool: Pool,
+    simulateErrors?: number
+  ) {
     this.initialAmount0 = initialAmount0;
     this.initialAmount1 = initialAmount1;
     this.amount0 = initialAmount0;
     this.amount1 = initialAmount1;
     this.pool = pool;
+    this.simulateErrors = simulateErrors ?? 0;
   }
 
   getPosition(id: string): VirtualPosition | undefined {
@@ -196,6 +203,29 @@ export class VirtualPositionManager {
     amount1: bigint,
     createdAt: number
   ): VirtualPosition {
+    // Increment attempt counter
+    this.createPositionAttempts++;
+
+    // Simulate error if configured (fail N-1 times, succeed on Nth attempt)
+    if (this.simulateErrors > 0) {
+      if (this.createPositionAttempts % this.simulateErrors !== 0) {
+        console.log(
+          `[VirtualPositionManager] Simulated error on createPosition attempt #${this.createPositionAttempts} ` +
+            `(will succeed on attempt ${
+              Math.ceil(this.createPositionAttempts / this.simulateErrors) *
+              this.simulateErrors
+            })`
+        );
+        throw new Error(
+          `Simulated position creation error (attempt ${this.createPositionAttempts}/${this.simulateErrors})`
+        );
+      } else {
+        console.log(
+          `[VirtualPositionManager] Position creation succeeded on attempt #${this.createPositionAttempts}`
+        );
+      }
+    }
+
     let pos = this.positions.get(id);
     if (!pos) {
       pos = new VirtualPosition(id, tickLower, tickUpper, createdAt);

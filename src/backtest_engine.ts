@@ -44,6 +44,7 @@ export type BacktestConfig = {
   poolSeedEventCount?: number; // Optional: number of earliest events to seed before backtest
   invest0: bigint; // required invest amount with decimals of token0, default 0,
   invest1: bigint; // required invest amount with decimals of token1, default 0
+  simulateErrors?: number; // optional simulate error times before success for open position, default 0
 };
 
 export interface BacktestStrategy {
@@ -109,7 +110,8 @@ export class BacktestEngine {
     this.manager = new VirtualPositionManager(
       config.invest0 || 0n,
       config.invest1 || 0n,
-      this.pool
+      this.pool,
+      config.simulateErrors || 0
     );
 
     this.strategy = this.config.strategyFactory(this.pool, this.manager);
