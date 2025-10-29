@@ -131,7 +131,8 @@ async function main() {
     `⚡ Enhanced Fees: ${config.enableEnhancedFees ? "Enabled" : "Disabled"}`
   );
   console.log(
-    `📋 Detailed Report: ${config.enableDetailedReport ? "Enabled" : "Disabled"
+    `📋 Detailed Report: ${
+      config.enableDetailedReport ? "Enabled" : "Disabled"
     }`
   );
 
@@ -178,6 +179,12 @@ async function main() {
     dataDir: config.dataDir,
     strategyFactory: factory,
     logger: console,
+    decimals0: tokenMetadata.tokenADecimals,
+    decimals1: tokenMetadata.tokenBDecimals,
+    feeRatePpm: 1000,
+    tickSpacing: 2,
+    invest0: BigInt(0),
+    invest1: BigInt(config.initialInvestment),
   });
 
   const report = await engine.run();

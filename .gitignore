@@ -143,3 +143,5 @@ out
 mmt_txs/*
 snapshots/*
 data/
+openspec/*
+reports/*
