@@ -27,6 +27,8 @@ export interface ThreeBandRebalancerConfigOptionThree {
   momentumWindowSize?: number;
   activeBandWeightPercent?: number;
   autoCollectIntervalMs?: number;
+  // Option 3 specific
+  maxDailyRebalances?: number;
 }
 
 type SegmentState = {
@@ -67,6 +69,10 @@ export class ThreeBandRebalancerStrategyOptionThree {
   private tickHistory: number[] = [];
   private lastCompoundingCheck = 0;
   private lastRepairAttempt = 0; // throttle repairs to avoid spamming opens
+
+  // Daily rebalance tracking for Option 3
+  private dailyRebalanceCount = 0;
+  private lastRebalanceDate: string | null = null;
 
   // Remove surplus segments, keeping exactly 3 closest to current tick
   private trimToThreeSegments(now: number, currentTick: number) {
@@ -109,7 +115,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     this.pool = pool;
 
     const fallbackSlow = config.checkIntervalMs ?? 60_000;
-    const desiredSegmentCount = config.segmentCount ?? 5;
+    const desiredSegmentCount = config.segmentCount ?? 3;
     const desiredFastCount = config.fastSegmentCount ?? 2;
 
     this.config = {
@@ -141,6 +147,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       volatilityWindowMs: config.volatilityWindowMs ?? 600_000, // 10 minutes
       momentumWindowSize: config.momentumWindowSize ?? 5,
       activeBandWeightPercent: config.activeBandWeightPercent ?? 60,
+      // Option 3 specific
+      maxDailyRebalances: config.maxDailyRebalances ?? 5,
     };
   }
 
@@ -227,7 +235,6 @@ export class ThreeBandRebalancerStrategyOptionThree {
         message: `Waiting ${Math.ceil(remaining / 1000)}s for next check`,
       };
     }
-    const fastIndices = this.getFastSegmentIndices(currentTick);
 
     const lastSegment = this.segments[this.segments.length - 1];
     const firstSegment = this.segments[0];
@@ -235,7 +242,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
       return { action: "none", message: "Invalid segment state" };
     }
 
-    const priceAbove = currentTick >= lastSegment.tickUpper;
+    const priceAbove = currentTick > lastSegment.tickUpper;
     const priceBelow = currentTick < firstSegment.tickLower;
 
     if (priceAbove) {
@@ -250,136 +257,206 @@ export class ThreeBandRebalancerStrategyOptionThree {
       this.outOfRangeSinceBelow = null;
     }
 
+    // Case 1: tickLower <= currentTick <= tickUpper
     if (!priceAbove && !priceBelow) {
-      // Case 3: Position 1 (middle) still in-range -> No rebalance.
-      // Case 1: Only middle band out-of-range -> Rebalance middle band only.
-
-      // When we have at least 3 bands, treat the middle index as Position 1
       if (this.segments.length >= 3 && this.segmentWidth !== null) {
-        const midIndex = Math.floor(this.segments.length / 2);
-        const middle = this.segments[midIndex];
-        if (middle) {
-          const middleInRange =
-            currentTick >= middle.tickLower && currentTick < middle.tickUpper;
-          if (!middleInRange) {
-            // Dwell guard for the middle band
-            if (now - middle.lastMoved < this.config.minSegmentDwellMs) {
-              const remaining =
-                this.config.minSegmentDwellMs - (now - middle.lastMoved);
-              return {
-                action: "wait",
-                message: `Middle band dwell guard active, ${Math.ceil(
-                  Math.max(0, remaining) / 1000
-                )}s remaining before middle rebalance`,
-              };
-            }
+        // Identify which segment has 60% allocation (middle segment based on weights)
+        const weights = this.calculateSegmentWeights(
+          this.segments.map((s) => ({
+            lower: s.tickLower,
+            upper: s.tickUpper,
+            mid: this.segmentMid(s),
+          })),
+          currentTick
+        );
 
-            // Rebalance only the middle band to cover current tick.
-            // Also ensure the new range overlaps both neighbors so middle is always the band covering price.
-            // Compute contiguous layout around current tick using fixed segmentWidth.
-            const newMiddleLower =
-              currentTick - Math.floor(this.segmentWidth / 2);
-            const newMiddleUpper = newMiddleLower + this.segmentWidth;
-            const newLowerBand = {
-              lower: newMiddleLower - this.segmentWidth,
-              upper: newMiddleLower,
-            };
-            const newUpperBand = {
-              lower: newMiddleUpper,
-              upper: newMiddleUpper + this.segmentWidth,
-            };
+        // Find segment with 60% weight (should be index with weight = 0.6)
+        const mainSegmentIndex = weights.findIndex(
+          (w) => Math.abs(w - 0.6) < 0.01
+        );
 
-            try {
-              // remove and reopen the middle position
-              this.manager.closePosition(middle.id);
-              const replacement = this.openSegment(
-                newMiddleLower,
-                newMiddleUpper,
-                now
-              );
-              // Replace middle segment in-place to preserve ordering
-              this.segments[midIndex] = replacement;
+        if (mainSegmentIndex !== -1) {
+          const mainSegment = this.segments[mainSegmentIndex];
 
-              // Case 1 requirement: do not touch positions 2 and 3
+          if (mainSegment) {
+            // Check if current tick is in main segment (60% capital)
+            const inMainSegment =
+              currentTick >= mainSegment.tickLower &&
+              currentTick < mainSegment.tickUpper;
 
-              // Update fee tracking for all segments after rebalance
-              for (const segment of this.segments) {
-                this.updateSegmentFeeTracking(segment.id);
+            if (!inMainSegment) {
+              // Current tick NOT in 60% segment -> rebalance this segment
+
+              // Check daily rebalance limit first
+              const rebalanceCheck = this.canRebalanceToday(now);
+              if (!rebalanceCheck.allowed) {
+                return {
+                  action: "wait",
+                  message: `${rebalanceCheck.reason} - cannot rebalance main segment at ${now}`,
+                };
               }
 
-              this.captureFeeBaseline();
-              return {
-                action: "rebalance",
-                message: `Rebalanced middle band to cover tick ${currentTick}`,
-                segments: this.getSegments(),
-              };
-            } catch (err) {
-              return {
-                action: "none",
-                message: `Failed to rebalance middle band: ${
-                  (err as Error).message
-                }`,
-              };
-            }
-          } else {
-            // Middle in range: ensure we still have 3 contiguous bands.
-            // If some bands were missing due to previous failures, try to restore them
-            const repaired = this.ensureThreeBands(now, currentTick);
-            if (repaired) {
-              this.captureFeeBaseline();
-              return {
-                action: "rebalance",
-                message: `Restored missing bands around middle to maintain 3 positions`,
-                segments: this.getSegments(),
-              };
+              // Dwell guard
+              if (now - mainSegment.lastMoved < this.config.minSegmentDwellMs) {
+                const remaining =
+                  this.config.minSegmentDwellMs - (now - mainSegment.lastMoved);
+                return {
+                  action: "wait",
+                  message: `Main band (60%) dwell guard active, ${Math.ceil(
+                    Math.max(0, remaining) / 1000
+                  )}s remaining before rebalance`,
+                };
+              }
+
+              // Rebalance main segment to cover current tick
+              const newMainLower =
+                currentTick - Math.floor(this.segmentWidth / 2);
+              const newMainUpper = newMainLower + this.segmentWidth;
+
+              try {
+                this.manager.removePosition(
+                  mainSegment.id,
+                  this.getActionCost()
+                );
+                const replacement = this.openSegment(
+                  newMainLower,
+                  newMainUpper,
+                  now,
+                  0.6 // Maintain 60% weight
+                );
+                this.segments[mainSegmentIndex] = replacement;
+
+                // Update fee tracking
+                for (const segment of this.segments) {
+                  this.updateSegmentFeeTracking(segment.id);
+                }
+
+                this.captureFeeBaseline();
+
+                // Track this rebalance
+                this.trackRebalance(now);
+
+                return {
+                  action: "rebalance",
+                  message: `Rebalanced main segment (60% capital) to cover tick ${currentTick}`,
+                  segments: this.getSegments(),
+                };
+              } catch (err) {
+                return {
+                  action: "none",
+                  message: `Failed to rebalance main segment: ${
+                    (err as Error).message
+                  }`,
+                };
+              }
             }
           }
         }
       }
 
-      // Check for predictive rotation
-      if (this.config.enablePredictiveRotation) {
-        const predictiveDirection = this.shouldPreemptivelyRotate(currentTick);
-        if (predictiveDirection) {
-          return this.handleRotation(
-            predictiveDirection,
-            now,
-            fastDue,
-            slowDue,
-            fastIndices,
-            currentTick
-          );
-        }
-      }
-
+      // If in main segment or no rebalance needed
       if (fastDue) this.lastFastCheck = now;
       if (slowDue) this.lastSlowCheck = now;
       return {
         action: "none",
-        message: `Bands still covering price at tick ${currentTick}`,
+        message: `Price at tick ${currentTick} within main band (60% capital) - no rebalance needed`,
       };
     }
 
-    if (priceAbove) {
-      return this.handleRotation(
-        "up",
-        now,
-        fastDue,
-        slowDue,
-        fastIndices,
-        currentTick
-      );
-    }
+    // Case 2: currentTick < tickLower OR currentTick > tickUpper
+    // Rebalance all 3 segments
+    if (priceAbove || priceBelow) {
+      // Check daily rebalance limit first
+      const rebalanceCheck = this.canRebalanceToday(now);
+      if (!rebalanceCheck.allowed) {
+        return {
+          action: "wait",
+          message: `${rebalanceCheck.reason} - cannot rebalance all segments at ${now}`,
+        };
+      }
 
-    if (priceBelow) {
-      return this.handleRotation(
-        "down",
-        now,
-        fastDue,
-        slowDue,
-        fastIndices,
-        currentTick
-      );
+      // Check dwell guard for all segments
+      for (const segment of this.segments) {
+        if (now - segment.lastMoved < this.config.minSegmentDwellMs) {
+          const remaining =
+            this.config.minSegmentDwellMs - (now - segment.lastMoved);
+          return {
+            action: "wait",
+            message: `Segment dwell guard active, ${Math.ceil(
+              Math.max(0, remaining) / 1000
+            )}s remaining before rebalancing all 3 segments`,
+          };
+        }
+      }
+
+      // Rebalance all 3 segments around current tick
+      if (this.segmentWidth !== null) {
+        try {
+          // Remove all existing segments
+          for (const segment of this.segments) {
+            this.manager.removePosition(segment.id, this.getActionCost());
+          }
+
+          // Create 3 new overlapping segments using Option 3 layout
+
+          // Position 1: Core band [currentTick-1, currentTick+1] - 2 ticks, 60%
+          const p1Lower = currentTick - 1;
+          const p1Upper = currentTick + 1;
+
+          // Position 2: Upper overlap [currentTick-1, currentTick+3] - 4 ticks, 20%
+          const p2Lower = p1Lower;
+          const p2Upper = currentTick + 3;
+
+          // Position 3: Lower overlap [currentTick-3, currentTick+1] - 4 ticks, 20%
+          const p3Lower = currentTick - 3;
+          const p3Upper = p1Upper;
+
+          const newSegments = [
+            { lower: p1Lower, upper: p1Upper, weight: 0.6 }, // Core band (60%)
+            { lower: p2Lower, upper: p2Upper, weight: 0.2 }, // Upper overlap (20%)
+            { lower: p3Lower, upper: p3Upper, weight: 0.2 }, // Lower overlap (20%)
+          ];
+
+          const opened: SegmentState[] = [];
+          for (const desc of newSegments) {
+            const segment = this.openSegment(
+              desc.lower,
+              desc.upper,
+              now,
+              desc.weight
+            );
+            opened.push(segment);
+          }
+
+          this.segments = opened;
+
+          // Update fee tracking
+          for (const segment of this.segments) {
+            this.updateSegmentFeeTracking(segment.id);
+          }
+
+          this.captureFeeBaseline();
+
+          // Track this rebalance
+          this.trackRebalance(now);
+
+          if (fastDue) this.lastFastCheck = now;
+          if (slowDue) this.lastSlowCheck = now;
+
+          return {
+            action: "rebalance",
+            message: `Rebalanced all 3 segments (60%/20%/20%) to cover tick ${currentTick}`,
+            segments: this.getSegments(),
+          };
+        } catch (err) {
+          return {
+            action: "none",
+            message: `Failed to rebalance all segments: ${
+              (err as Error).message
+            }`,
+          };
+        }
+      }
     }
 
     if (fastDue) this.lastFastCheck = now;
@@ -424,28 +501,36 @@ export class ThreeBandRebalancerStrategyOptionThree {
       };
     }
 
-    const segmentCount = this.config.segmentCount;
-    const startLower = lowerTick - width * Math.floor(segmentCount / 2);
-
-    const descriptors: Array<{ lower: number; upper: number; mid: number }> =
-      [];
-    let currentLower = startLower;
-    for (let i = 0; i < segmentCount; i++) {
-      const currentUpper = currentLower + width;
-      const mid = Math.floor((currentLower + currentUpper) / 2);
-      descriptors.push({ lower: currentLower, upper: currentUpper, mid });
-      currentLower = currentUpper;
-    }
-
     const currentTick = this.pool.tickCurrent;
-    const openOrder = descriptors.slice().sort((a, b) => {
-      const aContains = currentTick >= a.lower && currentTick < a.upper ? 0 : 1;
-      const bContains = currentTick >= b.lower && currentTick < b.upper ? 0 : 1;
-      if (aContains !== bContains) {
-        return aContains - bContains;
-      }
-      return Math.abs(currentTick - a.mid) - Math.abs(currentTick - b.mid);
-    });
+    // Position 1: Core band [currentTick-1, currentTick+1]
+    const p1Lower = currentTick - 1;
+    const p1Upper = currentTick + 1;
+
+    // Position 2: Upper overlap [currentTick-1, currentTick+3]
+    const p2Lower = p1Lower;
+    const p2Upper = currentTick + 3;
+
+    // Position 3: Lower overlap [currentTick-3, currentTick+1]
+    const p3Lower = currentTick - 3;
+    const p3Upper = p1Upper;
+
+    const descriptors: Array<{ lower: number; upper: number; mid: number }> = [
+      {
+        lower: p1Lower,
+        upper: p1Upper,
+        mid: Math.floor((p1Lower + p1Upper) / 2),
+      }, // Position 1 (60%)
+      {
+        lower: p2Lower,
+        upper: p2Upper,
+        mid: Math.floor((p2Lower + p2Upper) / 2),
+      }, // Position 2 (20%)
+      {
+        lower: p3Lower,
+        upper: p3Upper,
+        mid: Math.floor((p3Lower + p3Upper) / 2),
+      }, // Position 3 (20%)
+    ];
 
     const now = this.now();
     const opened: SegmentState[] = [];
@@ -458,8 +543,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const initialCapitalA = initialTotals.cashAmountA ?? initialTotals.amountA;
     const initialCapitalB = initialTotals.cashAmountB ?? initialTotals.amountB;
 
-    for (let i = 0; i < openOrder.length; i++) {
-      const descriptor = openOrder[i];
+    for (let i = 0; i < descriptors.length; i++) {
+      const descriptor = descriptors[i];
       if (!descriptor) continue;
 
       const originalIndex = descriptors.findIndex(
@@ -493,7 +578,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
     this.segmentWidth = width;
 
     // Try to ensure we end with 3 bands even if some opens failed
-    if (opened.length < segmentCount) {
+    const targetSegmentCount = 3; // Option 3 always uses 3 positions
+    if (opened.length < targetSegmentCount) {
       // Apply the same 5-minute cooldown between repair attempts during seed
       const cooldownMs = 300_000; // 5 minutes
       const sinceLast = now - this.lastRepairAttempt;
@@ -520,11 +606,11 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     const successMessage =
-      this.segments.length < segmentCount
-        ? `Seeded ${this.segments.length}/${segmentCount} bands (will keep repairing to reach 3)`
-        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
+      this.segments.length < targetSegmentCount
+        ? `Seeded ${this.segments.length}/${targetSegmentCount} bands (will keep repairing to reach 3)`
+        : `Seeded ${targetSegmentCount} overlapping bands (60%/20%/20%) around price ${currentPrice.toFixed(
             6
-          )} (width: ${rangePercent.toFixed(4)}%)`;
+          )}`;
 
     return {
       action: "create",
@@ -1149,41 +1235,23 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
   /**
    * Calculate weights for capital allocation
-   * Simplified to always use equal weights
+   * Option 3: Fixed allocation 60%/20%/20%
    */
   private calculateSegmentWeights(
     descriptors: Array<{ lower: number; upper: number; mid: number }>,
     currentTick: number
   ): number[] {
-    // Option 3: If we have three segments, allocate 60%/25%/15%
+    // Option 3: Fixed allocation pattern
+    // Position 1 (Core Band - 2 ticks): 60%
+    // Position 2 (Upper Overlap - 4 ticks): 20%
+    // Position 3 (Lower Overlap - 4 ticks): 20%
     if (descriptors.length === 3) {
-      // Find middle descriptor (whose range contains or is closest to current tick)
-      const midIdx = (() => {
-        const contains = descriptors.map((d) =>
-          currentTick >= d.lower && currentTick < d.upper ? 1 : 0
-        );
-        const idx = contains.findIndex((v) => v === 1);
-        if (idx !== -1) return idx;
-        // Fallback: closest by mid
-        let best = 0;
-        const firstMid = descriptors[0]?.mid ?? currentTick;
-        let bestDist = Math.abs(currentTick - firstMid);
-        for (let i = 1; i < descriptors.length; i++) {
-          const mid = descriptors[i]?.mid ?? currentTick;
-          const dist = Math.abs(currentTick - mid);
-          if (dist < bestDist) {
-            best = i;
-            bestDist = dist;
-          }
-        }
-        return best;
-      })();
-
-      const weights = [0, 0, 0];
-      weights[midIdx] = 0.6; // Position 1 (middle)
-      // Upper is index midIdx+1, lower is midIdx-1, if present
-      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.2; // Position 2 (upper)
-      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.2; // Position 3 (lower)
+      // Identify positions by their width
+      // Core band has width = 2, overlaps have width = 4
+      const weights = descriptors.map((d) => {
+        const width = d.upper - d.lower;
+        return width === 2 ? 0.6 : 0.2;
+      });
       return weights;
     }
 
@@ -1402,21 +1470,21 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     // If we have 0-2 bands, try to fill missing bands by opening around middle
     // Determine desired contiguous layout centered on current tick
-    const middleLower = currentTick - Math.floor(this.segmentWidth / 2);
-    const middleUpper = middleLower + this.segmentWidth;
+    const middleLower = currentTick - 1;
+    const middleUpper = currentTick + 1;
 
     const desired: Array<{ lower: number; upper: number }> = [];
-    // Lower band
-    desired.push({
-      lower: middleLower - this.segmentWidth,
-      upper: middleLower,
-    });
-    // Middle band
+    // Position 1: Core band [currentTick-1, currentTick+1] - 2 ticks, 60%
     desired.push({ lower: middleLower, upper: middleUpper });
-    // Upper band
+    // Position 2: Upper overlap [currentTick-1, currentTick+3] - 4 ticks, 20%
     desired.push({
-      lower: middleUpper,
-      upper: middleUpper + this.segmentWidth,
+      lower: middleLower,
+      upper: currentTick + 3,
+    });
+    // Position 3: Lower overlap [currentTick-3, currentTick+1] - 4 ticks, 20%
+    desired.push({
+      lower: currentTick - 3,
+      upper: middleUpper,
     });
 
     // Track existing ranges for quick check
@@ -1443,6 +1511,49 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     return changed;
+  }
+
+  /**
+   * Check if daily rebalance limit has been reached
+   * Returns true if rebalancing is allowed
+   */
+  private canRebalanceToday(now: number): { allowed: boolean; reason: string } {
+    const maxRebalances = this.config.maxDailyRebalances ?? 5;
+    const currentDate = new Date(now).toDateString();
+
+    // Reset counter if new day
+    if (this.lastRebalanceDate !== currentDate) {
+      this.dailyRebalanceCount = 0;
+      this.lastRebalanceDate = currentDate;
+    }
+
+    // Check if limit reached
+    if (this.dailyRebalanceCount >= maxRebalances) {
+      return {
+        allowed: false,
+        reason: `Daily rebalance limit reached (${this.dailyRebalanceCount}/${maxRebalances})`,
+      };
+    }
+
+    return {
+      allowed: true,
+      reason: `Rebalances today: ${this.dailyRebalanceCount}/${maxRebalances}`,
+    };
+  }
+
+  /**
+   * Increment daily rebalance counter
+   */
+  private trackRebalance(now: number) {
+    const currentDate = new Date(now).toDateString();
+
+    // Ensure counter is for current day
+    if (this.lastRebalanceDate !== currentDate) {
+      this.dailyRebalanceCount = 0;
+      this.lastRebalanceDate = currentDate;
+    }
+
+    this.dailyRebalanceCount++;
   }
 }
 
