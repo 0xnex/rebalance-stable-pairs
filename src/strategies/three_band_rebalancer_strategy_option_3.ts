@@ -792,7 +792,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
       if (weight === undefined) return baseAvailableB;
       return (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
     })();
-    const positionId = `pos_${Date.now()}`;
+    const positionId = this.manager.newPositionId();
     this.manager.createPosition(
       positionId,
       tickLower,

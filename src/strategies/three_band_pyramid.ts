@@ -364,7 +364,7 @@ export class ThreeBandPydramidStrategy {
     maxAmountB: bigint,
     timestamp: number
   ): string {
-    const positionId = `pos_${Date.now()}`;
+    const positionId = this.manager.newPositionId();
     this.manager.createPosition(
       positionId,
       tickLower,

@@ -177,6 +177,8 @@ export class VirtualPositionManager {
   pool: Pool;
   simulateErrors: number = 0;
   createPositionAttempts: number = 0;
+  positionIdCounter: number = 0;
+
   constructor(
     initialAmount0: bigint,
     initialAmount1: bigint,
@@ -193,6 +195,10 @@ export class VirtualPositionManager {
 
   getPosition(id: string): VirtualPosition | undefined {
     return this.positions.get(id);
+  }
+
+  newPositionId(): string {
+    return `pos_${this.positionIdCounter}`;
   }
 
   createPosition(
