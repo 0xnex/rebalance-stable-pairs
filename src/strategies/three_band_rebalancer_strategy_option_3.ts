@@ -235,7 +235,6 @@ export class ThreeBandRebalancerStrategyOptionThree {
         message: `Waiting ${Math.ceil(remaining / 1000)}s for next check`,
       };
     }
-    const fastIndices = this.getFastSegmentIndices(currentTick);
 
     const lastSegment = this.segments[this.segments.length - 1];
     const firstSegment = this.segments[0];
@@ -398,22 +397,24 @@ export class ThreeBandRebalancerStrategyOptionThree {
             this.manager.removePosition(segment.id, this.getActionCost());
           }
 
-          // Create 3 new contiguous segments centered on current tick
-          const middleLower = currentTick - Math.floor(this.segmentWidth / 2);
-          const middleUpper = middleLower + this.segmentWidth;
+          // Create 3 new overlapping segments using Option 3 layout
+
+          // Position 1: Core band [currentTick-1, currentTick+1) - 2 ticks, 60%
+          const p1Lower = currentTick - 1;
+          const p1Upper = currentTick + 1;
+
+          // Position 2: Upper overlap [currentTick-1, currentTick+3) - 4 ticks, 20%
+          const p2Lower = p1Lower;
+          const p2Upper = currentTick + 3;
+
+          // Position 3: Lower overlap [currentTick-5, currentTick-1) - 4 ticks, 20%
+          const p3Lower = currentTick - 5;
+          const p3Upper = p1Lower;
 
           const newSegments = [
-            { lower: middleLower, upper: middleUpper, weight: 0.6 }, // Middle band (60%)
-            {
-              lower: middleLower - this.segmentWidth,
-              upper: middleLower,
-              weight: 0.2,
-            }, // Lower band
-            {
-              lower: middleUpper,
-              upper: middleUpper + this.segmentWidth,
-              weight: 0.2,
-            }, // Upper band
+            { lower: p1Lower, upper: p1Upper, weight: 0.6 }, // Core band (60%)
+            { lower: p2Lower, upper: p2Upper, weight: 0.2 }, // Upper overlap (20%)
+            { lower: p3Lower, upper: p3Upper, weight: 0.2 }, // Lower overlap (20%)
           ];
 
           const opened: SegmentState[] = [];
@@ -500,28 +501,36 @@ export class ThreeBandRebalancerStrategyOptionThree {
       };
     }
 
-    const segmentCount = this.config.segmentCount;
-    const startLower = lowerTick - width * Math.floor(segmentCount / 2);
-
-    const descriptors: Array<{ lower: number; upper: number; mid: number }> =
-      [];
-    let currentLower = startLower;
-    for (let i = 0; i < segmentCount; i++) {
-      const currentUpper = currentLower + width;
-      const mid = Math.floor((currentLower + currentUpper) / 2);
-      descriptors.push({ lower: currentLower, upper: currentUpper, mid });
-      currentLower = currentUpper;
-    }
-
     const currentTick = this.pool.tickCurrent;
-    const openOrder = descriptors.slice().sort((a, b) => {
-      const aContains = currentTick >= a.lower && currentTick < a.upper ? 0 : 1;
-      const bContains = currentTick >= b.lower && currentTick < b.upper ? 0 : 1;
-      if (aContains !== bContains) {
-        return aContains - bContains;
-      }
-      return Math.abs(currentTick - a.mid) - Math.abs(currentTick - b.mid);
-    });
+    // Position 1: Core band [currentTick-1, currentTick+1)
+    const p1Lower = currentTick - 1;
+    const p1Upper = currentTick + 1;
+
+    // Position 2: Upper overlap [currentTick-1, currentTick+3)
+    const p2Lower = p1Lower;
+    const p2Upper = currentTick + 3;
+
+    // Position 3: Lower overlap [currentTick-5, currentTick-1)
+    const p3Lower = currentTick - 5;
+    const p3Upper = p1Lower;
+
+    const descriptors: Array<{ lower: number; upper: number; mid: number }> = [
+      {
+        lower: p1Lower,
+        upper: p1Upper,
+        mid: Math.floor((p1Lower + p1Upper) / 2),
+      }, // Position 1 (60%)
+      {
+        lower: p2Lower,
+        upper: p2Upper,
+        mid: Math.floor((p2Lower + p2Upper) / 2),
+      }, // Position 2 (20%)
+      {
+        lower: p3Lower,
+        upper: p3Upper,
+        mid: Math.floor((p3Lower + p3Upper) / 2),
+      }, // Position 3 (20%)
+    ];
 
     const now = this.now();
     const opened: SegmentState[] = [];
@@ -534,8 +543,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const initialCapitalA = initialTotals.cashAmountA ?? initialTotals.amountA;
     const initialCapitalB = initialTotals.cashAmountB ?? initialTotals.amountB;
 
-    for (let i = 0; i < openOrder.length; i++) {
-      const descriptor = openOrder[i];
+    for (let i = 0; i < descriptors.length; i++) {
+      const descriptor = descriptors[i];
       if (!descriptor) continue;
 
       const originalIndex = descriptors.findIndex(
@@ -569,7 +578,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
     this.segmentWidth = width;
 
     // Try to ensure we end with 3 bands even if some opens failed
-    if (opened.length < segmentCount) {
+    const targetSegmentCount = 3; // Option 3 always uses 3 positions
+    if (opened.length < targetSegmentCount) {
       // Apply the same 5-minute cooldown between repair attempts during seed
       const cooldownMs = 300_000; // 5 minutes
       const sinceLast = now - this.lastRepairAttempt;
@@ -596,11 +606,11 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     const successMessage =
-      this.segments.length < segmentCount
-        ? `Seeded ${this.segments.length}/${segmentCount} bands (will keep repairing to reach 3)`
-        : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
+      this.segments.length < targetSegmentCount
+        ? `Seeded ${this.segments.length}/${targetSegmentCount} bands (will keep repairing to reach 3)`
+        : `Seeded ${targetSegmentCount} overlapping bands (60%/20%/20%) around price ${currentPrice.toFixed(
             6
-          )} (width: ${rangePercent.toFixed(4)}%)`;
+          )}`;
 
     return {
       action: "create",
@@ -1223,41 +1233,23 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
   /**
    * Calculate weights for capital allocation
-   * Simplified to always use equal weights
+   * Option 3: Fixed allocation 60%/20%/20%
    */
   private calculateSegmentWeights(
     descriptors: Array<{ lower: number; upper: number; mid: number }>,
     currentTick: number
   ): number[] {
-    // Option 3: If we have three segments, allocate 60%/25%/15%
+    // Option 3: Fixed allocation pattern
+    // Position 1 (Core Band - 2 ticks): 60%
+    // Position 2 (Upper Overlap - 4 ticks): 20%
+    // Position 3 (Lower Overlap - 4 ticks): 20%
     if (descriptors.length === 3) {
-      // Find middle descriptor (whose range contains or is closest to current tick)
-      const midIdx = (() => {
-        const contains = descriptors.map((d) =>
-          currentTick >= d.lower && currentTick < d.upper ? 1 : 0
-        );
-        const idx = contains.findIndex((v) => v === 1);
-        if (idx !== -1) return idx;
-        // Fallback: closest by mid
-        let best = 0;
-        const firstMid = descriptors[0]?.mid ?? currentTick;
-        let bestDist = Math.abs(currentTick - firstMid);
-        for (let i = 1; i < descriptors.length; i++) {
-          const mid = descriptors[i]?.mid ?? currentTick;
-          const dist = Math.abs(currentTick - mid);
-          if (dist < bestDist) {
-            best = i;
-            bestDist = dist;
-          }
-        }
-        return best;
-      })();
-
-      const weights = [0, 0, 0];
-      weights[midIdx] = 0.6; // Position 1 (middle)
-      // Upper is index midIdx+1, lower is midIdx-1, if present
-      if (midIdx + 1 < 3) weights[midIdx + 1] = 0.2; // Position 2 (upper)
-      if (midIdx - 1 >= 0) weights[midIdx - 1] = 0.2; // Position 3 (lower)
+      // Identify positions by their width
+      // Core band has width = 2, overlaps have width = 4
+      const weights = descriptors.map((d) => {
+        const width = d.upper - d.lower;
+        return width === 2 ? 0.6 : 0.2;
+      });
       return weights;
     }
 
@@ -1476,21 +1468,21 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     // If we have 0-2 bands, try to fill missing bands by opening around middle
     // Determine desired contiguous layout centered on current tick
-    const middleLower = currentTick - Math.floor(this.segmentWidth / 2);
-    const middleUpper = middleLower + this.segmentWidth;
+    const middleLower = currentTick - 1;
+    const middleUpper = currentTick + 1;
 
     const desired: Array<{ lower: number; upper: number }> = [];
     // Lower band
     desired.push({
-      lower: middleLower - this.segmentWidth,
+      lower: currentTick - 5,
       upper: middleLower,
     });
     // Middle band
     desired.push({ lower: middleLower, upper: middleUpper });
     // Upper band
     desired.push({
-      lower: middleUpper,
-      upper: middleUpper + this.segmentWidth,
+      lower: middleLower,
+      upper: currentTick + 3,
     });
 
     // Track existing ranges for quick check
