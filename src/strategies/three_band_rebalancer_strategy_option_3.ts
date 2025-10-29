@@ -399,17 +399,17 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
           // Create 3 new overlapping segments using Option 3 layout
 
-          // Position 1: Core band [currentTick-1, currentTick+1) - 2 ticks, 60%
+          // Position 1: Core band [currentTick-1, currentTick+1] - 2 ticks, 60%
           const p1Lower = currentTick - 1;
           const p1Upper = currentTick + 1;
 
-          // Position 2: Upper overlap [currentTick-1, currentTick+3) - 4 ticks, 20%
+          // Position 2: Upper overlap [currentTick-1, currentTick+3] - 4 ticks, 20%
           const p2Lower = p1Lower;
           const p2Upper = currentTick + 3;
 
-          // Position 3: Lower overlap [currentTick-5, currentTick-1) - 4 ticks, 20%
-          const p3Lower = currentTick - 5;
-          const p3Upper = p1Lower;
+          // Position 3: Lower overlap [currentTick-3, currentTick+1] - 4 ticks, 20%
+          const p3Lower = currentTick - 3;
+          const p3Upper = p1Upper;
 
           const newSegments = [
             { lower: p1Lower, upper: p1Upper, weight: 0.6 }, // Core band (60%)
@@ -502,17 +502,17 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     const currentTick = this.pool.tickCurrent;
-    // Position 1: Core band [currentTick-1, currentTick+1)
+    // Position 1: Core band [currentTick-1, currentTick+1]
     const p1Lower = currentTick - 1;
     const p1Upper = currentTick + 1;
 
-    // Position 2: Upper overlap [currentTick-1, currentTick+3)
+    // Position 2: Upper overlap [currentTick-1, currentTick+3]
     const p2Lower = p1Lower;
     const p2Upper = currentTick + 3;
 
-    // Position 3: Lower overlap [currentTick-5, currentTick-1)
-    const p3Lower = currentTick - 5;
-    const p3Upper = p1Lower;
+    // Position 3: Lower overlap [currentTick-3, currentTick+1]
+    const p3Lower = currentTick - 3;
+    const p3Upper = p1Upper;
 
     const descriptors: Array<{ lower: number; upper: number; mid: number }> = [
       {
@@ -1472,17 +1472,17 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const middleUpper = currentTick + 1;
 
     const desired: Array<{ lower: number; upper: number }> = [];
-    // Lower band
-    desired.push({
-      lower: currentTick - 5,
-      upper: middleLower,
-    });
-    // Middle band
+    // Position 1: Core band [currentTick-1, currentTick+1] - 2 ticks, 60%
     desired.push({ lower: middleLower, upper: middleUpper });
-    // Upper band
+    // Position 2: Upper overlap [currentTick-1, currentTick+3] - 4 ticks, 20%
     desired.push({
       lower: middleLower,
       upper: currentTick + 3,
+    });
+    // Position 3: Lower overlap [currentTick-3, currentTick+1] - 4 ticks, 20%
+    desired.push({
+      lower: currentTick - 3,
+      upper: middleUpper,
     });
 
     // Track existing ranges for quick check
