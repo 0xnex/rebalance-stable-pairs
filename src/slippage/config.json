@@ -1,0 +1,120 @@
+{
+  "LBTC-wBTC": [
+    {
+      "tokenA": "LBTC",
+      "tokenB": "wBTC",
+      "configs": [
+        {
+          "amountThreshold": 0.01,
+          "maxSlippage": 0.000008
+        },
+        {
+          "amountThreshold": 0.1,
+          "maxSlippage": 0.000699
+        },
+        {
+          "amountThreshold": 0.5,
+          "maxSlippage": 0.001854
+        },
+        {
+          "amountThreshold": 1.0,
+          "maxSlippage": 0.003782
+        },
+        {
+          "amountThreshold": 2.0,
+          "maxSlippage": 0.001082
+        },
+        {
+          "amountThreshold": 3.0,
+          "maxSlippage": 0.001622
+        },
+        {
+          "amountThreshold": 5.0,
+          "maxSlippage": 0.002622
+        },
+        {
+          "amountThreshold": 10.0,
+          "maxSlippage": 0.005244
+        },
+        {
+          "amountThreshold": 20.0,
+          "maxSlippage": 0.009819
+        },
+        {
+          "amountThreshold": 30.0,
+          "maxSlippage": 0.021513
+        },
+        {
+          "amountThreshold": 40.0,
+          "maxSlippage": 0.021231
+        },
+        {
+          "amountThreshold": 50.0,
+          "maxSlippage": 0.046985
+        },
+        {
+          "amountThreshold": 60.0,
+          "maxSlippage": 0.084125
+        },
+        {
+          "amountThreshold": 65.0,
+          "maxSlippage": 0.161848
+        }
+      ]
+    },
+    {
+      "tokenA": "wBTC",
+      "tokenB": "LBTC",
+      "configs": [
+        {
+          "amountThreshold": 0.01,
+          "maxSlippage": 0.00103900
+        },
+        {
+          "amountThreshold": 0.1,
+          "maxSlippage": 0.00504600
+        },
+        {
+          "amountThreshold": 0.5,
+          "maxSlippage": 0.00529100
+        },
+        {
+          "amountThreshold": 1.0,
+          "maxSlippage": 0.00719000
+        },
+        {
+          "amountThreshold": 2.0,
+          "maxSlippage": 0.00773200
+        },
+        {
+          "amountThreshold": 3.0,
+          "maxSlippage": 0.01159900
+        },
+        {
+          "amountThreshold": 5.0,
+          "maxSlippage": 0.00262200
+        },
+        {
+          "amountThreshold": 10.0,
+          "maxSlippage": 0.00524400
+        },
+        {
+          "amountThreshold": 20.0,
+          "maxSlippage": 0.01048900
+        },
+        {
+          "amountThreshold": 30.0,
+          "maxSlippage": 0.03786500
+        },
+        {
+          "amountThreshold": 40.0,
+          "maxSlippage": 0.07339000
+        },
+        {
+          "amountThreshold": 45.0,
+          "maxSlippage": 0.09644800
+        }
+      ]
+    }
+  ]
+}
