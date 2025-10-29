@@ -38,6 +38,19 @@ export type MaxLiquidityResult = {
  */
 export class LiquidityCalculator {
   /**
+   * Convert sqrtPriceX64 to human-readable price
+   * @param sqrtPriceX64 - Sqrt price in Q64.64 format
+   * @returns Price as a number (token1/token0)
+   */
+  static sqrtPriceX64ToPrice(sqrtPriceX64: bigint): number {
+    const Q64 = LiquidityConstants.Q64;
+    const Q128 = LiquidityConstants.Q128;
+    // price = (sqrtPriceX64 / 2^64)^2 = (sqrtPriceX64)^2 / 2^128
+    const priceX128 = sqrtPriceX64 * sqrtPriceX64;
+    return Number(priceX128) / Number(Q128);
+  }
+
+  /**
    * Calculate maximum liquidity for given token amounts, allowing one optimal swap
    * @param sqrtPriceX64 - Current sqrt price in Q64.64 format
    * @param feeRatePpm - Fee rate in parts per million (e.g., 3000 for 0.3%)
@@ -68,8 +81,8 @@ export class LiquidityCalculator {
     }
 
     // Convert ticks to sqrt prices
-    const sqrtPriceLower = this.tickToSqrtPrice(lowerTick);
-    const sqrtPriceUpper = this.tickToSqrtPrice(upperTick);
+    const sqrtPriceLower = this.tickToSqrtPriceX64(lowerTick);
+    const sqrtPriceUpper = this.tickToSqrtPriceX64(upperTick);
 
     // Validate price range
     if (sqrtPriceLower >= sqrtPriceUpper) {
@@ -606,7 +619,7 @@ export class LiquidityCalculator {
    * Convert tick to sqrt price
    * Formula: sqrt(1.0001^tick) * 2^64
    */
-  static tickToSqrtPrice(tick: number): bigint {
+  static tickToSqrtPriceX64(tick: number): bigint {
     if (
       tick < LiquidityConstants.MIN_TICK ||
       tick > LiquidityConstants.MAX_TICK
@@ -657,8 +670,8 @@ export class LiquidityCalculator {
     }
 
     // Check for extreme values that would clamp to min/max tick
-    const minSqrtPrice = this.tickToSqrtPrice(LiquidityConstants.MIN_TICK);
-    const maxSqrtPrice = this.tickToSqrtPrice(LiquidityConstants.MAX_TICK);
+    const minSqrtPrice = this.tickToSqrtPriceX64(LiquidityConstants.MIN_TICK);
+    const maxSqrtPrice = this.tickToSqrtPriceX64(LiquidityConstants.MAX_TICK);
 
     if (sqrtPriceX64 < minSqrtPrice) {
       return LiquidityConstants.MIN_TICK;

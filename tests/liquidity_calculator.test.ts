@@ -183,7 +183,7 @@ describe("LiquidityCalculator", () => {
   describe("tickToSqrtPrice", () => {
     it("should convert tick to sqrt price", () => {
       const tick = 0; // Should give price = 1.0
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPrice(tick);
+      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
 
       expect(sqrtPrice).toBeGreaterThan(0n);
       // For tick 0, sqrt price should be close to Q64 (price = 1.0)
@@ -192,14 +192,14 @@ describe("LiquidityCalculator", () => {
 
     it("should handle positive ticks", () => {
       const tick = 1000; // Positive tick
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPrice(tick);
+      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
 
       expect(sqrtPrice).toBeGreaterThan(Q64); // Should be higher than base price
     });
 
     it("should handle negative ticks", () => {
       const tick = -1000; // Negative tick
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPrice(tick);
+      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
 
       expect(sqrtPrice).toBeLessThan(Q64); // Should be lower than base price
       expect(sqrtPrice).toBeGreaterThan(0n);
@@ -207,13 +207,13 @@ describe("LiquidityCalculator", () => {
 
     it("should throw error for tick out of range", () => {
       expect(() => {
-        LiquidityCalculator.tickToSqrtPrice(1000000); // Way out of range
+        LiquidityCalculator.tickToSqrtPriceX64(1000000); // Way out of range
       }).toThrow("Tick");
     });
 
     it("should throw error for minimum tick out of range", () => {
       expect(() => {
-        LiquidityCalculator.tickToSqrtPrice(-1000000); // Way out of range
+        LiquidityCalculator.tickToSqrtPriceX64(-1000000); // Way out of range
       }).toThrow("Tick");
     });
   });
@@ -247,11 +247,11 @@ describe("LiquidityCalculator", () => {
       const testCases = [
         { sqrtPrice: LiquidityConstants.Q64, expectedTick: 0 }, // Price = 1.0, should be tick 0
         {
-          sqrtPrice: LiquidityCalculator.tickToSqrtPrice(100),
+          sqrtPrice: LiquidityCalculator.tickToSqrtPriceX64(100),
           shouldBePositive: true,
         }, // Should be positive
         {
-          sqrtPrice: LiquidityCalculator.tickToSqrtPrice(-100),
+          sqrtPrice: LiquidityCalculator.tickToSqrtPriceX64(-100),
           shouldBeNegative: true,
         }, // Should be negative
       ];
@@ -304,7 +304,7 @@ describe("LiquidityCalculator", () => {
 
       // Test case 3: Test with a sqrt price that we know works
       const workingTick = 0; // We know tick 0 works
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPrice(workingTick);
+      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(workingTick);
       const alignedTick = LiquidityCalculator.sqrtPriceToTick(sqrtPrice, 60);
 
       // Should align to nearest 60-multiple (which is 0)
@@ -522,7 +522,8 @@ describe("LiquidityCalculator", () => {
         });
 
         it("should handle token0 only at lower boundary", () => {
-          const lowerSqrtPrice = LiquidityCalculator.tickToSqrtPrice(lowerTick);
+          const lowerSqrtPrice =
+            LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
           const result = LiquidityCalculator.maxLiquidity(
             lowerSqrtPrice, // price exactly at lower boundary
             feeRatePpm,
@@ -535,7 +536,8 @@ describe("LiquidityCalculator", () => {
         });
 
         it("should handle token0 only at upper boundary", () => {
-          const upperSqrtPrice = LiquidityCalculator.tickToSqrtPrice(upperTick);
+          const upperSqrtPrice =
+            LiquidityCalculator.tickToSqrtPriceX64(upperTick);
           const result = LiquidityCalculator.maxLiquidity(
             upperSqrtPrice, // price exactly at upper boundary
             feeRatePpm,
@@ -588,7 +590,8 @@ describe("LiquidityCalculator", () => {
         });
 
         it("should handle token1 only at lower boundary", () => {
-          const lowerSqrtPrice = LiquidityCalculator.tickToSqrtPrice(lowerTick);
+          const lowerSqrtPrice =
+            LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
           const result = LiquidityCalculator.maxLiquidity(
             lowerSqrtPrice, // price exactly at lower boundary
             feeRatePpm,
@@ -601,7 +604,8 @@ describe("LiquidityCalculator", () => {
         });
 
         it("should handle token1 only at upper boundary", () => {
-          const upperSqrtPrice = LiquidityCalculator.tickToSqrtPrice(upperTick);
+          const upperSqrtPrice =
+            LiquidityCalculator.tickToSqrtPriceX64(upperTick);
           const result = LiquidityCalculator.maxLiquidity(
             upperSqrtPrice, // price exactly at upper boundary
             feeRatePpm,

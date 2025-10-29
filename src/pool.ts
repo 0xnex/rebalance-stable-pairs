@@ -46,6 +46,25 @@ class Pool {
         event.amountOut,
         event.zeroForOne
       );
+
+    const priceBefore = LiquidityCalculator.sqrtPriceX64ToPrice(
+      event.sqrtPriceBeforeX64
+    );
+    const priceAfter = LiquidityCalculator.sqrtPriceX64ToPrice(
+      event.sqrtPriceAfterX64
+    );
+
+    console.log(
+      `[Pool] Swap event: ` +
+        `direction=${event.zeroForOne ? "0→1" : "1→0"}, ` +
+        `tick: ${this.tickCurrent}→${event.tick}, ` +
+        `price: ${priceBefore.toFixed(6)}→${priceAfter.toFixed(6)}, ` +
+        `liquidity: ${this.liquidity.toString()}→${activeLiquidity.toString()}, ` +
+        `amountIn=${event.amountIn.toString()}, ` +
+        `amountOut=${event.amountOut.toString()}, ` +
+        `fee=${event.fee.toString()}`
+    );
+
     this.liquidity = activeLiquidity;
     this.tickCurrent = event.tick;
     this.sqrtPriceX64 = event.sqrtPriceAfterX64;

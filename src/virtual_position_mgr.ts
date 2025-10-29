@@ -49,8 +49,8 @@ export class VirtualPosition {
     return LiquidityCalculator.calculateAmountsForLiquidity(
       amount,
       sqrtPriceCurrent,
-      LiquidityCalculator.tickToSqrtPrice(this.tickLower),
-      LiquidityCalculator.tickToSqrtPrice(this.tickUpper)
+      LiquidityCalculator.tickToSqrtPriceX64(this.tickLower),
+      LiquidityCalculator.tickToSqrtPriceX64(this.tickUpper)
     );
   }
 
@@ -96,8 +96,8 @@ export class VirtualPosition {
       LiquidityCalculator.calculateAmountsForLiquidity(
         this.liquidity,
         sqrtPriceCurrent,
-        LiquidityCalculator.tickToSqrtPrice(this.tickLower),
-        LiquidityCalculator.tickToSqrtPrice(this.tickUpper)
+        LiquidityCalculator.tickToSqrtPriceX64(this.tickLower),
+        LiquidityCalculator.tickToSqrtPriceX64(this.tickUpper)
       );
     return {
       amount0,
@@ -112,8 +112,8 @@ export class VirtualPosition {
     lower: bigint;
     upper: bigint;
   } {
-    const lower = LiquidityCalculator.tickToSqrtPrice(this.tickLower);
-    const upper = LiquidityCalculator.tickToSqrtPrice(this.tickUpper);
+    const lower = LiquidityCalculator.tickToSqrtPriceX64(this.tickLower);
+    const upper = LiquidityCalculator.tickToSqrtPriceX64(this.tickUpper);
     return {
       lower,
       upper,
@@ -324,13 +324,33 @@ export class VirtualPositionManager {
   }
 
   collectAllPositionFees(): { fee0: bigint; fee1: bigint } {
+    let totalFee0 = 0n;
+    let totalFee1 = 0n;
+    let positionsWithFees = 0;
+
     for (const pos of this.positions.values()) {
       const { fee0, fee1 } = pos.collectFees();
+      if (fee0 > 0n || fee1 > 0n) {
+        positionsWithFees++;
+        console.log(
+          `[VirtualPositionManager] Collected fees from position ${pos.id}: ` +
+            `fee0=${fee0.toString()}, fee1=${fee1.toString()}`
+        );
+      }
       this.feeCollected0 += fee0;
       this.feeCollected1 += fee1;
       this.amount0 += fee0;
       this.amount1 += fee1;
+      totalFee0 += fee0;
+      totalFee1 += fee1;
     }
+
+    console.log(
+      `[VirtualPositionManager] Collected fees from ${positionsWithFees} positions: ` +
+        `total fee0=${totalFee0.toString()}, total fee1=${totalFee1.toString()}, ` +
+        `cumulative: fee0=${this.feeCollected0.toString()}, fee1=${this.feeCollected1.toString()}`
+    );
+
     return { fee0: this.feeCollected0, fee1: this.feeCollected1 };
   }
 
@@ -346,6 +366,10 @@ export class VirtualPositionManager {
     const crossedPositions = this.findCrossedPositions(tickBefore, tickAfter);
 
     if (crossedPositions.length === 0) {
+      console.log(
+        `[VirtualPositionManager] No positions crossed by swap: ` +
+          `tickBefore=${tickBefore}, tickAfter=${tickAfter}, totalPositions=${this.positions.size}`
+      );
       return; // No positions to distribute fees to
     }
 
@@ -367,6 +391,21 @@ export class VirtualPositionManager {
 
     // Total pool liquidity ≈ Active Liquidity + Our Crossed Liquidity
     const totalPoolLiquidity = activePoolLiquidity + ourCrossedLiquidity;
+
+    console.log(
+      `[VirtualPositionManager] Distributing fees from swap: ` +
+        `direction=${event.zeroForOne ? "0→1" : "1→0"}, ` +
+        `fee0=${fee0.toString()}, fee1=${fee1.toString()}, ` +
+        `crossedPositions=${crossedPositions.length}, ` +
+        `activePoolLiq=${activePoolLiquidity.toString()}, ` +
+        `ourLiq=${ourCrossedLiquidity.toString()}, ` +
+        `totalLiq=${totalPoolLiquidity.toString()}, ` +
+        `ourShare=${
+          totalPoolLiquidity > 0n
+            ? Number((ourCrossedLiquidity * 10000n) / totalPoolLiquidity) / 100
+            : 0
+        }%`
+    );
 
     // Distribute fees proportionally
     this.distributeFees(crossedPositions, fee0, fee1, totalPoolLiquidity);

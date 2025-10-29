@@ -42,8 +42,8 @@ export type BacktestConfig = {
   poolSeedEndTime?: number; // Optional: time to seed pool up to (defaults to startTime)
   metricsIntervalMs?: number; // Optional interval for performance sampling
   poolSeedEventCount?: number; // Optional: number of earliest events to seed before backtest
-  amount0: bigint;
-  amount1: bigint;
+  invest0: bigint; // required invest amount with decimals of token0, default 0,
+  invest1: bigint; // required invest amount with decimals of token1, default 0
 };
 
 export interface BacktestStrategy {
@@ -103,12 +103,12 @@ export class BacktestEngine {
       config.tickSpacing
     );
 
-    if (config.amount0 < 0n || config.amount1 < 0n) {
+    if (config.invest0 < 0n || config.invest1 < 0n) {
       throw new Error("no funds provided");
     }
     this.manager = new VirtualPositionManager(
-      config.amount0,
-      config.amount1,
+      config.invest0 || 0n,
+      config.invest1 || 0n,
       this.pool
     );
 
@@ -116,7 +116,9 @@ export class BacktestEngine {
     this.performance = new PerformanceTracker(
       this.pool,
       this.manager,
-      this.metricsIntervalMs
+      this.metricsIntervalMs,
+      this.config.decimals0,
+      this.config.decimals1
     );
   }
 
@@ -244,7 +246,18 @@ export class BacktestEngine {
     // Load swap events from event importer
     const eventIterator = importEvents(poolId, { dataDir, startTime, endTime });
 
-    // Initialize backtest components
+    // Load and process the first event to initialize pool state
+    let nextEvent = await eventIterator.next();
+    if (!nextEvent.done) {
+      this.pool.update(nextEvent.value);
+      this.manager.updateAllPositionFees(nextEvent.value);
+      this.logger?.log?.(
+        `[backtest] Initialized pool state from first event: ` +
+          `tick=${this.pool.tickCurrent}, price=${this.pool.price.toFixed(6)}`
+      );
+    }
+
+    // Initialize backtest components (now pool has valid state)
     await this.initialize(startTime);
 
     // Main backtest loop - global clock management
@@ -254,7 +267,12 @@ export class BacktestEngine {
     const totalSteps = Math.ceil((endTime - startTime) / this.stepMs);
 
     let eventBuffer: SwapEvent[] = [];
-    let nextEvent = await eventIterator.next();
+
+    // Add the first event to the buffer if it exists
+    if (!nextEvent.done) {
+      eventBuffer.push(nextEvent.value);
+      nextEvent = await eventIterator.next();
+    }
 
     // Execute backtest with time-stepped simulation
     while (timestamp <= endTime) {

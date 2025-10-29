@@ -183,8 +183,8 @@ async function main() {
     decimals1: tokenMetadata.tokenBDecimals,
     feeRatePpm: 1000,
     tickSpacing: 2,
-    amount0: BigInt(0),
-    amount1: BigInt(config.initialInvestment),
+    invest0: BigInt(0),
+    invest1: BigInt(config.initialInvestment),
   });
 
   const report = await engine.run();

@@ -27,12 +27,19 @@ export class PerformanceTracker {
   private lastSampleTs: number | null = null;
   private readonly samples: PerformanceSample[] = [];
   private readonly maxSamples = 10000; // Limit memory usage
+  private readonly decimals0Scale: number;
+  private readonly decimals1Scale: number;
 
   constructor(
     private readonly pool: Pool,
     private readonly manager: VirtualPositionManager,
-    private readonly intervalMs: number
-  ) {}
+    private readonly intervalMs: number,
+    private readonly decimals0: number = 8,
+    private readonly decimals1: number = 8
+  ) {
+    this.decimals0Scale = Math.pow(10, decimals0);
+    this.decimals1Scale = Math.pow(10, decimals1);
+  }
 
   record(timestamp: number, force = false) {
     const value = this.computeValue();
@@ -40,8 +47,10 @@ export class PerformanceTracker {
       // Use the manager's initial balances as the true initial value
       // (not the computed value which may include positions already created)
       const totals = this.manager.getTotals();
-      const initialA = Number(totals.initialAmountA || 0n);
-      const initialB = Number(totals.initialAmountB || 0n);
+      const initialA =
+        Number(totals.initialAmountA || 0n) / this.decimals0Scale;
+      const initialB =
+        Number(totals.initialAmountB || 0n) / this.decimals1Scale;
       this.initialValue = initialA * this.pool.price + initialB;
     }
     this.finalValue = value;
@@ -102,27 +111,18 @@ export class PerformanceTracker {
     const totals = this.manager.getTotals();
     const price = this.pool.price;
 
-    const amountA = Number(totals.amountA ?? 0n);
-    const amountB = Number(totals.amountB ?? 0n);
-    const cashA = Number(
-      (totals as any).cashAmountA ?? totals.initialAmountA ?? 0n
-    );
-    const cashB = Number(
-      (totals as any).cashAmountB ?? totals.initialAmountB ?? 0n
-    );
-    const feesOwed0 = Number(totals.feesOwed0 ?? 0n);
-    const feesOwed1 = Number(totals.feesOwed1 ?? 0n);
-    const collectedFees0 = Number((totals as any).collectedFees0 ?? 0n);
-    const collectedFees1 = Number((totals as any).collectedFees1 ?? 0n);
-    const costA = (totals as any).totalCostTokenA ?? 0;
-    const costB = (totals as any).totalCostTokenB ?? 0;
+    // Convert raw bigint to decimal-adjusted numbers
+    // Note: amountA and amountB already include cash + position amounts
+    const amountA = Number(totals.amountA ?? 0n) / this.decimals0Scale;
+    const amountB = Number(totals.amountB ?? 0n) / this.decimals1Scale;
+    const feesOwed0 = Number(totals.feesOwed0 ?? 0n) / this.decimals0Scale;
+    const feesOwed1 = Number(totals.feesOwed1 ?? 0n) / this.decimals1Scale;
 
-    // Total value = cash + positions + fees (both owed and collected)
-    // Note: Collected fees are already in cash after position close
-    // So we only add feesOwed (uncollected) to avoid double counting
-    const valueTokenB = cashB + amountB + feesOwed1;
-    const valueTokenAinB = (cashA + amountA + feesOwed0) * price;
-    const costValue = costB + costA * price;
-    return valueTokenB + valueTokenAinB - costValue;
+    // Total value = wallet amounts + uncollected fees
+    // Wallet amounts already include both cash and position values
+    const valueTokenB = amountB + feesOwed1;
+    const valueTokenAinB = (amountA + feesOwed0) * price;
+
+    return valueTokenB + valueTokenAinB;
   }
 }
