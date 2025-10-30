@@ -708,11 +708,31 @@ export function strategyFactory(
           `${swapCostToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
       );
 
-      // Net fees (earned - paid)
-      const netFeeToken0 = totalFeesToken0 - swapCostToken0;
-      const netFeeToken1 = totalFeesToken1 - swapCostToken1;
+      // Calculate slippage costs in human-readable decimals
+      const slippageToken0 = totals.slippageTokenA / Math.pow(10, decimals0);
+      const slippageToken1 = totals.slippageTokenB / Math.pow(10, decimals1);
+      const totalSlippage = slippageToken0 + slippageToken1;
+
       ctx.logger?.log?.(
-        `  📊 NET FEES (earned - paid): ${netFeeToken0.toFixed(6)} ${
+        `  💧 SLIPPAGE LOST: ${slippageToken0.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ` +
+          `${slippageToken1.toFixed(6)} ${
+            process.env.TOKEN_B_NAME || "B"
+          } = $${totalSlippage.toFixed(2)}`
+      );
+
+      // Total swap costs (fees + slippage)
+      const totalSwapCosts = swapCostToken0 + swapCostToken1 + totalSlippage;
+      ctx.logger?.log?.(
+        `  💰 TOTAL SWAP COSTS: $${totalSwapCosts.toFixed(2)} (fees + slippage)`
+      );
+
+      // Net fees (earned - paid - slippage)
+      const netFeeToken0 = totalFeesToken0 - swapCostToken0 - slippageToken0;
+      const netFeeToken1 = totalFeesToken1 - swapCostToken1 - slippageToken1;
+      ctx.logger?.log?.(
+        `  📊 NET FEES (earned - fees - slippage): ${netFeeToken0.toFixed(6)} ${
           process.env.TOKEN_A_NAME || "A"
         } + ` + `${netFeeToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
       );

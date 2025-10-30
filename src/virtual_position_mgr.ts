@@ -319,6 +319,15 @@ export class VirtualPositionManager {
       swapInfo = "No swap";
     }
 
+    // Calculate swap cost percentages for better analysis
+    const totalInputValue = input0Display + input1Display;
+    const totalSwapFees = swapFee0Display + swapFee1Display;
+    const totalSlippage = slip0Display + slip1Display;
+    const totalSwapCosts = totalSwapFees + totalSlippage;
+    const swapCostPercentage = totalInputValue > 0 ? (totalSwapCosts / totalInputValue) * 100 : 0;
+    const feePercentage = totalInputValue > 0 ? (totalSwapFees / totalInputValue) * 100 : 0;
+    const slippagePercentage = totalInputValue > 0 ? (totalSlippage / totalInputValue) * 100 : 0;
+
     console.log(
       `[maxLiquidity] Input: ${input0Display.toFixed(6)} ${
         process.env.TOKEN_A_NAME || "A"
@@ -338,11 +347,19 @@ export class VirtualPositionManager {
           process.env.TOKEN_A_NAME || "A"
         }, ${swapFee1Display.toFixed(6)} ${
           process.env.TOKEN_B_NAME || "B"
-        } | ` +
+        } (${feePercentage.toFixed(4)}%) | ` +
         `Slip: ${slip0Display.toFixed(6)} ${
           process.env.TOKEN_A_NAME || "A"
-        }, ${slip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+        }, ${slip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} (${slippagePercentage.toFixed(4)}%)`
     );
+    
+    if (totalSwapCosts > 0) {
+      console.log(
+        `[SwapCostAnalysis] Total swap costs: ${totalSwapCosts.toFixed(6)} (${swapCostPercentage.toFixed(4)}% of input) | ` +
+        `Fees: ${totalSwapFees.toFixed(6)} (${feePercentage.toFixed(4)}%) | ` +
+        `Slippage: ${totalSlippage.toFixed(6)} (${slippagePercentage.toFixed(4)}%)`
+      );
+    }
     if (result.swapFee0 > 0n || result.swapFee1 > 0n) {
       const swapFee0Display = Number(result.swapFee0) / Math.pow(10, decimals0);
       const swapFee1Display = Number(result.swapFee1) / Math.pow(10, decimals1);
@@ -367,6 +384,26 @@ export class VirtualPositionManager {
     this.swapCost1 += result.swapFee1;
     this.slippage0 += result.slip0;
     this.slippage1 += result.slip1;
+
+    // Log slippage if any occurred
+    if (result.slip0 > 0n || result.slip1 > 0n) {
+      const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
+      const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+      const slip0Display = Number(result.slip0) / Math.pow(10, decimals0);
+      const slip1Display = Number(result.slip1) / Math.pow(10, decimals1);
+      const totalSlip0Display = Number(this.slippage0) / Math.pow(10, decimals0);
+      const totalSlip1Display = Number(this.slippage1) / Math.pow(10, decimals1);
+      
+      console.log(
+        `[Slippage] 💧 This position: ${slip0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ${slip1Display.toFixed(6)} ${
+          process.env.TOKEN_B_NAME || "B"
+        } | Cumulative: ${totalSlip0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ${totalSlip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+      );
+    }
 
     return pos;
   }
@@ -488,6 +525,8 @@ export class VirtualPositionManager {
     collectedFees1: bigint;
     totalCostTokenA: number;
     totalCostTokenB: number;
+    slippageTokenA: number;
+    slippageTokenB: number;
   } {
     let amountA = this.amount0;
     let amountB = this.amount1;
@@ -518,6 +557,8 @@ export class VirtualPositionManager {
       collectedFees1: this.feeCollected1,
       totalCostTokenA: Number(this.swapCost0),
       totalCostTokenB: Number(this.swapCost1),
+      slippageTokenA: Number(this.slippage0),
+      slippageTokenB: Number(this.slippage1),
     };
   }
 
@@ -597,16 +638,27 @@ export class VirtualPositionManager {
         ? Number((ourCrossedLiquidity * 10000n) / totalPoolLiquidity) / 100
         : 0;
 
+    // Calculate fee distribution metrics
+    const totalFees = fee0 + fee1;
+    const feeRate = event.amountIn > 0n ? 
+      (Number(totalFees) / Number(event.amountIn)) * 100 : 0;
+    const ourEstimatedFees0 = ourShareOfPool > 0 ? 
+      (fee0 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n : 0n;
+    const ourEstimatedFees1 = ourShareOfPool > 0 ? 
+      (fee1 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n : 0n;
+
     console.log(
       `[VirtualPositionManager] Distributing fees from swap: ` +
         `direction=${event.zeroForOne ? "0→1" : "1→0"}, ` +
         `fee0=${fee0.toString()}, fee1=${fee1.toString()}, ` +
+        `totalFees=${totalFees.toString()} (${feeRate.toFixed(4)}% of amountIn), ` +
         `crossedPositions=${crossedPositions.length}`
     );
     console.log(
       `  Pool liquidity: ${totalPoolLiquidity.toString()}, ` +
         `Our liquidity: ${ourCrossedLiquidity.toString()}, ` +
-        `Our share: ${ourShareOfPool.toFixed(6)}%`
+        `Our share: ${ourShareOfPool.toFixed(6)}%, ` +
+        `Estimated fees earned: ${ourEstimatedFees0.toString()}/${ourEstimatedFees1.toString()}`
     );
     console.log(
       `  Calculated activePoolLiq: ${activePoolLiquidity.toString()} ` +

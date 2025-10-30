@@ -551,13 +551,28 @@ export class LiquidityCalculator {
       amountOut = BigInt(Math.floor(Number(amountInAfterFee) / currentPrice));
     }
 
-    // Apply slippage (reduce output)
+    // Calculate slippage (reduce output)
     const slippage = (amountOut * BigInt(slippageBps)) / 10000n;
+    const amountOutBeforeSlippage = amountOut;
     amountOut = amountOut - slippage;
 
     if (amountOut < 0n) {
       amountOut = 0n;
     }
+
+    // Log detailed swap simulation for analysis
+    const feeRate = (Number(fee) / Number(amountIn)) * 100;
+    const slippageRate = amountOutBeforeSlippage > 0n ? 
+      (Number(slippage) / Number(amountOutBeforeSlippage)) * 100 : 0;
+    
+    console.log(
+      `[SimulateSwap] ${zeroForOne ? "Token0→Token1" : "Token1→Token0"}: ` +
+      `amountIn=${amountIn.toString()}, ` +
+      `fee=${fee.toString()} (${feeRate.toFixed(4)}%), ` +
+      `amountOut=${amountOut.toString()}, ` +
+      `slippage=${slippage.toString()} (${slippageRate.toFixed(4)}%), ` +
+      `price=${currentPrice.toFixed(6)}`
+    );
 
     return { amountOut, fee, slippage };
   }

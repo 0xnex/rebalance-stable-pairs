@@ -249,27 +249,10 @@ export class ReportGenerator {
     const decimals0Scale = Math.pow(10, decimals0);
     const decimals1Scale = Math.pow(10, decimals1);
 
-    console.log(
-      `[ReportGen] Raw totals: initialAmountA=${totals.initialAmountA}, initialAmountB=${totals.initialAmountB}`
-    );
-    console.log(
-      `[ReportGen] Decimals: decimals0=${decimals0}, decimals1=${decimals1}`
-    );
-    console.log(
-      `[ReportGen] Scales: decimals0Scale=${decimals0Scale}, decimals1Scale=${decimals1Scale}`
-    );
-
     // Use actual initial values from backtest with decimal conversion (matching PerformanceTracker)
     const initialValueA = Number(totals.initialAmountA || 0n) / decimals0Scale;
     const initialValueB = Number(totals.initialAmountB || 0n) / decimals1Scale;
     const actualInitialInvestment = initialValueA + initialValueB;
-
-    console.log(
-      `[ReportGen] Converted: initialValueA=${initialValueA}, initialValueB=${initialValueB}`
-    );
-    console.log(
-      `[ReportGen] actualInitialInvestment=${actualInitialInvestment}`
-    );
 
     // Current portfolio value with decimal conversion (matching PerformanceTracker)
     // NOTE: totals.amountA and totals.amountB already include both cash AND positions
@@ -289,32 +272,16 @@ export class ReportGenerator {
       this.backtest.performance.finalValue
     ) {
       finalValue = this.backtest.performance.finalValue;
-      console.log(`[ReportGen] Using backtest finalValue: ${finalValue}`);
-      console.log(`[ReportGen] Initial investment: ${actualInitialInvestment}`);
-      console.log(
-        `[ReportGen] backtest.performance:`,
-        this.backtest.performance
-      );
     } else {
       // Calculate final value
       // Note: currentValue already includes collectedFees (they're in cash after positions are closed)
       // We only add feesOwed (uncollected fees still in open positions)
       finalValue = currentValueA + currentValueB + feesOwed0 + feesOwed1;
-      console.log(`[ReportGen] Calculated finalValue: ${finalValue}`);
-      console.log(
-        `[ReportGen] currentValueA: ${currentValueA}, currentValueB: ${currentValueB}`
-      );
-      console.log(
-        `[ReportGen] feesOwed0: ${feesOwed0}, feesOwed1: ${feesOwed1}`
-      );
     }
 
     // Total fees for reporting (both collected and still owed)
     const totalFees = feesOwed0 + feesOwed1 + collectedFees0 + collectedFees1;
     const netProfit = finalValue - actualInitialInvestment;
-    console.log(
-      `[ReportGen] netProfit = ${finalValue} - ${actualInitialInvestment} = ${netProfit}`
-    );
     const netProfitPercentage =
       actualInitialInvestment > 0
         ? (netProfit / actualInitialInvestment) * 100

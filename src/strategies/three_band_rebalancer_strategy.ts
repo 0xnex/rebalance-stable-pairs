@@ -547,8 +547,12 @@ export class ThreeBandRebalancerStrategy {
         const postSwapPrice = this.pool.price;
         const inRange = postSwapTick >= tickLower && postSwapTick < tickUpper;
 
-        // Log price movement from swap
+        // Log price movement and swap costs from swap
         if (postSwapTick !== preSwapTick) {
+          const priceImpact = preSwapPrice > 0 ? 
+            Math.abs((postSwapPrice - preSwapPrice) / preSwapPrice) * 100 : 0;
+          const tickMovement = postSwapTick - preSwapTick;
+          
           console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
           console.log(
             `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
@@ -556,9 +560,24 @@ export class ThreeBandRebalancerStrategy {
           console.log(
             `  After:  tick=${postSwapTick}, price=${postSwapPrice.toFixed(6)}`
           );
-          console.log(`  Delta:  ${postSwapTick - preSwapTick} ticks`);
+          console.log(
+            `  Delta:  ${tickMovement} ticks (${priceImpact.toFixed(4)}% price impact)`
+          );
           console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
           console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
+          
+          // Log swap cost impact on strategy
+          const totals = this.manager.getTotals();
+          const totalSwapCosts = totals.swapCost0 + totals.swapCost1;
+          const totalSlippage = totals.slippage0 + totals.slippage1;
+          if (totalSwapCosts > 0n || totalSlippage > 0n) {
+            console.log(
+              `[ThreeBand-SwapCosts] Cumulative costs: ` +
+              `fees=${totalSwapCosts.toString()}, ` +
+              `slippage=${totalSlippage.toString()}, ` +
+              `slippage=${slippage} bps used`
+            );
+          }
         }
 
         return {
