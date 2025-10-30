@@ -145,3 +145,4 @@ snapshots/*
 data/
 openspec/*
 reports/*
+*.csv

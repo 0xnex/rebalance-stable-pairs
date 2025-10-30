@@ -248,15 +248,19 @@ export class BacktestEngine {
     // Load swap events from event importer
     const eventIterator = importEvents(poolId, { dataDir, startTime, endTime });
 
-    // Load and process the first event to initialize pool state
+    // Load the first event to initialize pool state (but don't process fees yet)
     let nextEvent = await eventIterator.next();
+    let firstEventProcessed = false;
     if (!nextEvent.done) {
       this.pool.update(nextEvent.value);
-      this.manager.updateAllPositionFees(nextEvent.value);
+      // DON'T call updateAllPositionFees yet - no positions exist!
+      firstEventProcessed = true;
       this.logger?.log?.(
         `[backtest] Initialized pool state from first event: ` +
           `tick=${this.pool.tickCurrent}, price=${this.pool.price.toFixed(6)}`
       );
+      // Move to next event - don't reprocess the first one
+      nextEvent = await eventIterator.next();
     }
 
     // Initialize backtest components (now pool has valid state)
@@ -269,12 +273,6 @@ export class BacktestEngine {
     const totalSteps = Math.ceil((endTime - startTime) / this.stepMs);
 
     let eventBuffer: SwapEvent[] = [];
-
-    // Add the first event to the buffer if it exists
-    if (!nextEvent.done) {
-      eventBuffer.push(nextEvent.value);
-      nextEvent = await eventIterator.next();
-    }
 
     // Execute backtest with time-stepped simulation
     while (timestamp <= endTime) {

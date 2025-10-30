@@ -137,13 +137,17 @@ function readEnvConfig(): EnvConfig {
   };
 }
 
-export function strategyFactory(pool: Pool): BacktestStrategy {
+export function strategyFactory(
+  pool: Pool,
+  manager: VirtualPositionManager
+): BacktestStrategy {
   const env = readEnvConfig();
-  const manager = new VirtualPositionManager(
-    env.initialAmountA,
-    env.initialAmountB,
-    pool
-  );
+  // Use the manager provided by the backtest engine (don't create a new one!)
+  // const manager = new VirtualPositionManager(
+  //   env.initialAmountA,
+  //   env.initialAmountB,
+  //   pool
+  // );
 
   // CSV file writer for separate output
   const token_a = process.env.TOKEN_A_NAME;
@@ -220,7 +224,16 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     csvPath: string = csvFilePath,
     isFilter = false
   ) => {
-    const key = `${action}:${message}`;
+    // For 'wait' actions, only log once per minute to reduce spam
+    let key: string;
+    if (action === "wait") {
+      const minuteKey = Math.floor(ctx.timestamp / 60000); // Group by minute
+      key = `${action}:${message}:${minuteKey}`;
+    } else {
+      // For other actions, check if it's the exact same action+message
+      key = `${action}:${message}`;
+    }
+
     if (lastLogKey === key) return;
     lastLogKey = key;
 
@@ -622,7 +635,20 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       // Log state before closing positions
       const beforeTotals = manager.getTotals();
       ctx.logger?.log?.(
-        `[three-band-option3] before closing: positions=${beforeTotals.positions} amountA=${beforeTotals.amountA} amountB=${beforeTotals.amountB} cashA=${beforeTotals.cashAmountA} cashB=${beforeTotals.cashAmountB}`
+        `[three-band-option3] BEFORE closing: positions=${beforeTotals.positions}`
+      );
+      ctx.logger?.log?.(
+        `  Total: amountA=${beforeTotals.amountA} amountB=${beforeTotals.amountB} (cash + positions)`
+      );
+      ctx.logger?.log?.(
+        `  Cash only: cashA=${beforeTotals.cashAmountA} cashB=${beforeTotals.cashAmountB}`
+      );
+      ctx.logger?.log?.(
+        `  In positions: amountA=${
+          Number(beforeTotals.amountA) - Number(beforeTotals.cashAmountA)
+        } amountB=${
+          Number(beforeTotals.amountB) - Number(beforeTotals.cashAmountB)
+        }`
       );
       ctx.logger?.log?.(
         `[three-band-option3] initial investment: initialA=${beforeTotals.initialAmountA} initialB=${beforeTotals.initialAmountB}`
@@ -635,12 +661,17 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
       // Log final state after closing positions
       const totals = manager.getTotals();
-      ctx.logger?.log?.(`[three-band-option3] FINISH TOTALS:`);
       ctx.logger?.log?.(
-        `  Positions (in open positions): amountA=${totals.amountA} amountB=${totals.amountB}`
+        `[three-band-option3] FINISH TOTALS (after closing all positions):`
       );
       ctx.logger?.log?.(
-        `  Cash (free balance): cashA=${totals.cashAmountA} cashB=${totals.cashAmountB}`
+        `  Total Assets: amountA=${totals.amountA} amountB=${totals.amountB}`
+      );
+      ctx.logger?.log?.(
+        `  Cash Balance: cashA=${totals.cashAmountA} cashB=${totals.cashAmountB}`
+      );
+      ctx.logger?.log?.(
+        `  Open Positions: ${totals.positions} (liquidity=0 means closed, kept for tracking)`
       );
       ctx.logger?.log?.(
         `  Fees Owed: feesOwed0=${totals.feesOwed0} feesOwed1=${totals.feesOwed1}`
@@ -648,6 +679,44 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       ctx.logger?.log?.(
         `  Fees Collected: collected0=${totals.collectedFees0} collected1=${totals.collectedFees1}`
       );
+
+      // Calculate total fees earned (in human-readable decimals)
+      const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
+      const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+      const totalFeesToken0 =
+        Number(totals.collectedFees0 + totals.feesOwed0) /
+        Math.pow(10, decimals0);
+      const totalFeesToken1 =
+        Number(totals.collectedFees1 + totals.feesOwed1) /
+        Math.pow(10, decimals1);
+
+      ctx.logger?.log?.(
+        `  💰 TOTAL FEES EARNED: ${totalFeesToken0.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ` +
+          `${totalFeesToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+      );
+
+      // Calculate swap costs in human-readable decimals
+      const swapCostToken0 = totals.totalCostTokenA / Math.pow(10, decimals0);
+      const swapCostToken1 = totals.totalCostTokenB / Math.pow(10, decimals1);
+
+      ctx.logger?.log?.(
+        `  💸 SWAP FEES PAID: ${swapCostToken0.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ` +
+          `${swapCostToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+      );
+
+      // Net fees (earned - paid)
+      const netFeeToken0 = totalFeesToken0 - swapCostToken0;
+      const netFeeToken1 = totalFeesToken1 - swapCostToken1;
+      ctx.logger?.log?.(
+        `  📊 NET FEES (earned - paid): ${netFeeToken0.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ` + `${netFeeToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+      );
+
       ctx.logger?.log?.(
         `  Costs: costA=${totals.totalCostTokenA.toFixed(
           4
@@ -655,16 +724,17 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       );
       ctx.logger?.log?.(
         `  TOTAL VALUE: ${
-          Number(totals.cashAmountA) +
           Number(totals.amountA) +
           Number(totals.collectedFees0) +
           Number(totals.feesOwed0)
         } A + ${
-          Number(totals.cashAmountB) +
           Number(totals.amountB) +
           Number(totals.collectedFees1) +
           Number(totals.feesOwed1)
         } B`
+      );
+      ctx.logger?.log?.(
+        `  NOTE: After closing, amountA/B = cashA/B (all assets are now in cash)`
       );
       ctx.logger?.log?.(
         `[three-band-option3] Option 3 Summary: Total rebalances today=${dailyRebalanceCount}/${env.maxDailyRebalances}`

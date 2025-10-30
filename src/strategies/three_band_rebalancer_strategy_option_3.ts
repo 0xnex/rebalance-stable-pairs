@@ -777,9 +777,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
     initialCapitalB?: bigint
   ): SegmentState {
     const slippages = this.buildSlippageAttempts();
-    const totals = this.manager.getTotals();
-    const baseAvailableA = totals.cashAmountA ?? totals.amountA;
-    const baseAvailableB = totals.cashAmountB ?? totals.amountB;
+    const totalsBefore = this.manager.getTotals();
+    const baseAvailableA = totalsBefore.cashAmountA ?? totalsBefore.amountA;
+    const baseAvailableB = totalsBefore.cashAmountB ?? totalsBefore.amountB;
 
     // Apply desired weight (equal allocation across segments) against initial capital if provided
     const weightedA = (() => {
@@ -792,6 +792,16 @@ export class ThreeBandRebalancerStrategyOptionThree {
       if (weight === undefined) return baseAvailableB;
       return (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
     })();
+    
+    console.log(
+      `[OpenSegment] BEFORE range[${tickLower},${tickUpper}] weight=${((weight ?? 1) * 100).toFixed(1)}%: ` +
+      `cashA=${totalsBefore.cashAmountA} cashB=${totalsBefore.cashAmountB} ` +
+      `totalA=${totalsBefore.amountA} totalB=${totalsBefore.amountB}`
+    );
+    console.log(
+      `[OpenSegment] Allocating: weightedA=${weightedA} weightedB=${weightedB}`
+    );
+    
     const positionId = this.manager.newPositionId();
     this.manager.createPosition(
       positionId,
@@ -801,6 +811,29 @@ export class ThreeBandRebalancerStrategyOptionThree {
       weightedB,
       timestamp
     );
+    
+    const totalsAfter = this.manager.getTotals();
+    const position = this.manager.getPosition(positionId);
+    const positionTotals = position?.getTotals(this.manager.pool.sqrtPriceX64);
+    
+    console.log(
+      `[OpenSegment] AFTER created positionId=${positionId}: ` +
+      `cashA=${totalsAfter.cashAmountA} cashB=${totalsAfter.cashAmountB} ` +
+      `totalA=${totalsAfter.amountA} totalB=${totalsAfter.amountB}`
+    );
+    console.log(
+      `[OpenSegment] Position contains: ` +
+      `posA=${positionTotals?.amount0 ?? 0n} posB=${positionTotals?.amount1 ?? 0n} ` +
+      `liquidity=${position?.liquidity ?? 0n}`
+    );
+    console.log(
+      `[OpenSegment] Fund change: ` +
+      `ΔcashA=${Number(totalsAfter.cashAmountA) - Number(totalsBefore.cashAmountA)} ` +
+      `ΔcashB=${Number(totalsAfter.cashAmountB) - Number(totalsBefore.cashAmountB)} ` +
+      `ΔtotalA=${Number(totalsAfter.amountA) - Number(totalsBefore.amountA)} ` +
+      `ΔtotalB=${Number(totalsAfter.amountB) - Number(totalsBefore.amountB)}`
+    );
+    
     return {
       id: positionId,
       tickLower,

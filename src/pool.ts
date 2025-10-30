@@ -71,6 +71,17 @@ class Pool {
     this.reserve0 = event.reserve0;
     this.reserve1 = event.reserve1;
   }
+
+  // @TODO compare to the swap event
+  getValidationStats() {
+    return {
+      totalSwaps: 0,
+      exactMatchRate: 0.0,
+      amountOutMatchRate: 0.0,
+      feeMatchRate: 0.0,
+      protocolFeeMatchRate: 0.0,
+    };
+  }
 }
 
 export { Pool };

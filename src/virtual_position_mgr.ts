@@ -198,7 +198,7 @@ export class VirtualPositionManager {
   }
 
   newPositionId(): string {
-    return `pos_${this.positionIdCounter}`;
+    return `pos_${this.positionIdCounter++}`;
   }
 
   createPosition(
@@ -209,6 +209,26 @@ export class VirtualPositionManager {
     amount1: bigint,
     createdAt: number
   ): VirtualPosition {
+    // Validate tick values before proceeding
+    const MAX_TICK = 443636; // Uniswap V3 max tick
+    const MIN_TICK = -443636; // Uniswap V3 min tick
+
+    if (tickLower < MIN_TICK || tickLower > MAX_TICK) {
+      throw new Error(
+        `Invalid tickLower: ${tickLower} (must be between ${MIN_TICK} and ${MAX_TICK})`
+      );
+    }
+    if (tickUpper < MIN_TICK || tickUpper > MAX_TICK) {
+      throw new Error(
+        `Invalid tickUpper: ${tickUpper} (must be between ${MIN_TICK} and ${MAX_TICK})`
+      );
+    }
+    if (tickLower >= tickUpper) {
+      throw new Error(
+        `Invalid tick range: tickLower (${tickLower}) must be less than tickUpper (${tickUpper})`
+      );
+    }
+
     // Increment attempt counter
     this.createPositionAttempts++;
 
@@ -254,20 +274,50 @@ export class VirtualPositionManager {
       amount1
     );
 
-    const actualAmount0 = amount0 - result.remain0;
-    const actualAmount1 = amount1 - result.remain1;
+    // Convert to human-readable for swap fee display
+    const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
+    const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+    if (result.swapFee0 > 0n || result.swapFee1 > 0n) {
+      const swapFee0Display = Number(result.swapFee0) / Math.pow(10, decimals0);
+      const swapFee1Display = Number(result.swapFee1) / Math.pow(10, decimals1);
+      console.log(
+        `[createPosition] 💸 Swap fees paid: ${swapFee0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ` +
+          `${swapFee1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+      );
+    }
 
-    if (this.amount0 < actualAmount0 || this.amount1 < actualAmount1) {
-      throw new Error("Insufficient balance");
+    // NEW LOGIC: The actual cost is what we used plus fees
+    // remain0/remain1 already account for swaps, so:
+    // - If we swapped token1→token0, then remain0 includes the swapped amount
+    // - Total cost = (original amount - remain) + swap fees + slippage
+    const totalCost0 =
+      amount0 - result.remain0 + result.swapFee0 + result.slip0;
+    const totalCost1 =
+      amount1 - result.remain1 + result.swapFee1 + result.slip1;
+
+    // Check if we have sufficient balance for position + swap costs
+    if (this.amount0 < totalCost0 || this.amount1 < totalCost1) {
+      throw new Error(
+        `Insufficient balance: need ${totalCost0} token0 (have ${this.amount0}), ` +
+          `need ${totalCost1} token1 (have ${this.amount1})`
+      );
     }
 
     pos.liquidity = result.liquidity;
-    this.amount0 = this.amount0 - amount0 + result.remain0;
-    this.amount1 = this.amount1 - amount1 + result.remain1;
+
+    // Deduct the total costs from our balances
+    // After the deduction, we should have: amount0/1 = original - (used + fees)
+    this.amount0 = this.amount0 - totalCost0;
+    this.amount1 = this.amount1 - totalCost1;
+
+    // Track costs separately for reporting
     this.swapCost0 += result.swapFee0;
     this.swapCost1 += result.swapFee1;
     this.slippage0 += result.slip0;
     this.slippage1 += result.slip1;
+
     return pos;
   }
 
@@ -316,6 +366,16 @@ export class VirtualPositionManager {
       fee0 += posFee0;
       fee1 += posFee1;
     }
+
+    // Add closed amounts to cash
+    this.amount0 += amount0 + fee0;
+    this.amount1 += amount1 + fee1;
+    this.feeCollected0 += fee0;
+    this.feeCollected1 += fee1;
+
+    // Don't delete positions - keep them for historical tracking
+    // Positions with liquidity=0 indicate they're closed
+
     return { amount0, amount1, fee0, fee1 };
   }
 
@@ -335,6 +395,10 @@ export class VirtualPositionManager {
     this.amount1 += result.amount1 + result.fee1;
     this.feeCollected0 += result.fee0;
     this.feeCollected1 += result.fee1;
+
+    // Don't delete position - keep for historical tracking
+    // Position with liquidity=0 indicates it's closed
+
     return result;
   }
   /**
@@ -473,22 +537,42 @@ export class VirtualPositionManager {
       0n
     );
 
-    // Total pool liquidity ≈ Active Liquidity + Our Crossed Liquidity
-    const totalPoolLiquidity = activePoolLiquidity + ourCrossedLiquidity;
+    // Use pool's actual liquidity (from real on-chain state)
+    // This includes all LPs, not just our virtual positions
+    const totalPoolLiquidity = this.pool.liquidity;
+
+    // Calculate our share of the total pool
+    const ourShareOfPool =
+      totalPoolLiquidity > 0n
+        ? Number((ourCrossedLiquidity * 10000n) / totalPoolLiquidity) / 100
+        : 0;
 
     console.log(
       `[VirtualPositionManager] Distributing fees from swap: ` +
         `direction=${event.zeroForOne ? "0→1" : "1→0"}, ` +
         `fee0=${fee0.toString()}, fee1=${fee1.toString()}, ` +
-        `crossedPositions=${crossedPositions.length}, ` +
-        `activePoolLiq=${activePoolLiquidity.toString()}, ` +
-        `ourLiq=${ourCrossedLiquidity.toString()}, ` +
-        `totalLiq=${totalPoolLiquidity.toString()}, ` +
-        `ourShare=${
+        `crossedPositions=${crossedPositions.length}`
+    );
+    console.log(
+      `  Pool liquidity: ${totalPoolLiquidity.toString()}, ` +
+        `Our liquidity: ${ourCrossedLiquidity.toString()}, ` +
+        `Our share: ${ourShareOfPool.toFixed(6)}%`
+    );
+    console.log(
+      `  Calculated activePoolLiq: ${activePoolLiquidity.toString()} ` +
+        `(${
           totalPoolLiquidity > 0n
-            ? Number((ourCrossedLiquidity * 10000n) / totalPoolLiquidity) / 100
+            ? Number((activePoolLiquidity * 10000n) / totalPoolLiquidity) / 100
             : 0
-        }%`
+        }% of pool)`
+    );
+    console.log(
+      `  Fee distribution: Total fee0=${fee0}, fee1=${fee1}, ` +
+        `Our estimated share: fee0≈${(
+          (Number(fee0) * ourShareOfPool) /
+          100
+        ).toFixed(2)}, ` +
+        `fee1≈${((Number(fee1) * ourShareOfPool) / 100).toFixed(2)}`
     );
 
     // Distribute fees proportionally

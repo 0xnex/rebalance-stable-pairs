@@ -31,6 +31,9 @@ export type MaxLiquidityResult = {
   swapFee1: bigint;
   slip0: bigint;
   slip1: bigint;
+  // Track actual amounts used for liquidity (after swap)
+  usedAmount0: bigint;
+  usedAmount1: bigint;
 };
 
 /**
@@ -77,6 +80,8 @@ export class LiquidityCalculator {
         swapFee1: 0n,
         slip0: 0n,
         slip1: 0n,
+        usedAmount0: 0n,
+        usedAmount1: 0n,
       };
     }
 
@@ -137,6 +142,8 @@ export class LiquidityCalculator {
       swapFee1: 0n,
       slip0: 0n,
       slip1: 0n,
+      usedAmount0: 0n,
+      usedAmount1: 0n,
     };
 
     // Determine what swap is needed to reach optimal ratio
@@ -173,7 +180,13 @@ export class LiquidityCalculator {
         const swapCost = swapResult.fee + swapResult.slippage;
         const improvement = liquidity - bestResult.liquidity;
 
-        if (improvement > 0n && Number(improvement) > Number(swapCost) * 2) {
+        // Force swap if we started with only one token (amount1 was 0)
+        // Otherwise require 2x improvement over swap cost
+        const shouldSwap =
+          amount1 === 0n ||
+          (improvement > 0n && Number(improvement) > Number(swapCost) * 2);
+
+        if (shouldSwap) {
           // Calculate amounts used for liquidity
           const usedAmounts = this.calculateAmountsForLiquidity(
             liquidity,
@@ -184,18 +197,15 @@ export class LiquidityCalculator {
 
           bestResult = {
             liquidity,
-            remain0:
-              newAmount0 > usedAmounts.amount0
-                ? newAmount0 - usedAmounts.amount0
-                : 0n,
-            remain1:
-              newAmount1 > usedAmounts.amount1
-                ? newAmount1 - usedAmounts.amount1
-                : 0n,
+            // Remain is calculated from ORIGINAL amounts minus what was used
+            remain0: amount0 - swapAmount0 - usedAmounts.amount0,
+            remain1: amount1 + swapResult.amountOut - usedAmounts.amount1,
             swapFee0: swapResult.fee,
             swapFee1: 0n,
             slip0: swapResult.slippage,
             slip1: 0n,
+            usedAmount0: usedAmounts.amount0,
+            usedAmount1: usedAmounts.amount1,
           };
         }
       }
@@ -227,7 +237,13 @@ export class LiquidityCalculator {
         const swapCost = swapResult.fee + swapResult.slippage;
         const improvement = liquidity - bestResult.liquidity;
 
-        if (improvement > 0n && Number(improvement) > Number(swapCost) * 2) {
+        // Force swap if we started with only one token (amount0 was 0)
+        // Otherwise require 2x improvement over swap cost
+        const shouldSwap =
+          amount0 === 0n ||
+          (improvement > 0n && Number(improvement) > Number(swapCost) * 2);
+
+        if (shouldSwap) {
           // Calculate amounts used for liquidity
           const usedAmounts = this.calculateAmountsForLiquidity(
             liquidity,
@@ -238,18 +254,15 @@ export class LiquidityCalculator {
 
           bestResult = {
             liquidity,
-            remain0:
-              newAmount0 > usedAmounts.amount0
-                ? newAmount0 - usedAmounts.amount0
-                : 0n,
-            remain1:
-              newAmount1 > usedAmounts.amount1
-                ? newAmount1 - usedAmounts.amount1
-                : 0n,
+            // Remain is calculated from ORIGINAL amounts minus what was used
+            remain0: amount0 + swapResult.amountOut - usedAmounts.amount0,
+            remain1: amount1 - swapAmount1 - usedAmounts.amount1,
             swapFee0: 0n,
             swapFee1: swapResult.fee,
             slip0: 0n,
             slip1: swapResult.slippage,
+            usedAmount0: usedAmounts.amount0,
+            usedAmount1: usedAmounts.amount1,
           };
         }
       }
@@ -268,6 +281,8 @@ export class LiquidityCalculator {
         amount0 > usedAmounts.amount0 ? amount0 - usedAmounts.amount0 : 0n;
       bestResult.remain1 =
         amount1 > usedAmounts.amount1 ? amount1 - usedAmounts.amount1 : 0n;
+      bestResult.usedAmount0 = usedAmounts.amount0;
+      bestResult.usedAmount1 = usedAmounts.amount1;
     }
 
     return bestResult;
