@@ -41,10 +41,10 @@ type SegmentState = {
 export type ThreeBandAction =
   | { action: "none" | "wait"; message: string }
   | {
-      action: "create" | "rebalance";
-      message: string;
-      segments: SegmentState[];
-    };
+    action: "create" | "rebalance";
+    message: string;
+    segments: SegmentState[];
+  };
 
 export class ThreeBandRebalancerStrategy {
   private readonly manager: VirtualPositionManager;
@@ -140,7 +140,7 @@ export class ThreeBandRebalancerStrategy {
 
     // Check for fee compounding opportunity
     if (this.config.enableFeeCompounding && this.shouldCompoundFees(now)) {
-      this.compoundFees();
+      this.manager.collectAllPositionFees();
     }
 
     const fastDue = now - this.lastFastCheck >= this.config.fastIntervalMs;
@@ -325,8 +325,7 @@ export class ThreeBandRebalancerStrategy {
       } catch (error) {
         // Log but continue - allows partial deployment if some positions fail
         console.warn(
-          `[three-band] Failed to open position [${descriptor.lower},${
-            descriptor.upper
+          `[three-band] Failed to open position [${descriptor.lower},${descriptor.upper
           }]: ${error instanceof Error ? error.message : String(error)}`
         );
         // Continue trying to open other positions
@@ -348,8 +347,8 @@ export class ThreeBandRebalancerStrategy {
       opened.length < segmentCount
         ? `Seeded ${opened.length}/${segmentCount} bands (some failed due to slippage/capital)`
         : `Seeded ${segmentCount} contiguous bands around price ${currentPrice.toFixed(
-            6
-          )} (width: ${rangePercent.toFixed(4)}%)`;
+          6
+        )} (width: ${rangePercent.toFixed(4)}%)`;
 
     return {
       action: "create",
@@ -367,7 +366,7 @@ export class ThreeBandRebalancerStrategy {
     if (!removed) return false;
 
     try {
-      this.manager.removePosition(removed.id, this.getActionCost());
+      this.manager.closePosition(removed.id, timestamp);
     } catch (err) {
       this.segments.unshift(removed);
       return false;
@@ -435,7 +434,7 @@ export class ThreeBandRebalancerStrategy {
     if (!removed) return false;
 
     try {
-      this.manager.removePosition(removed.id, this.getActionCost());
+      this.manager.closePosition(removed.id, timestamp);
     } catch (err) {
       this.segments.push(removed);
       return false;
@@ -497,7 +496,7 @@ export class ThreeBandRebalancerStrategy {
   private clearSegments() {
     for (const segment of this.segments) {
       try {
-        this.manager.removePosition(segment.id, this.getActionCost());
+        this.manager.closePosition(segment.id);
       } catch (err) {
         // ignore cleanup failures
       }
@@ -534,13 +533,13 @@ export class ThreeBandRebalancerStrategy {
         const preSwapTick = this.pool.tickCurrent;
         const preSwapPrice = this.pool.price;
 
-        const result = this.manager.addLiquidityWithSwap(
+        const result = this.manager.createPosition(
+          this.manager.newPositionId(),
           tickLower,
           tickUpper,
-          availableA,
-          availableB,
-          slippage,
-          this.getActionCost()
+          availableA ?? 0n,
+          availableB ?? 0n,
+          timestamp
         );
 
         const postSwapTick = this.pool.tickCurrent;
@@ -549,10 +548,10 @@ export class ThreeBandRebalancerStrategy {
 
         // Log price movement and swap costs from swap
         if (postSwapTick !== preSwapTick) {
-          const priceImpact = preSwapPrice > 0 ? 
+          const priceImpact = preSwapPrice > 0 ?
             Math.abs((postSwapPrice - preSwapPrice) / preSwapPrice) * 100 : 0;
           const tickMovement = postSwapTick - preSwapTick;
-          
+
           console.log(`[ThreeBand-PriceImpact] Swap moved price:`);
           console.log(
             `  Before: tick=${preSwapTick}, price=${preSwapPrice.toFixed(6)}`
@@ -565,15 +564,15 @@ export class ThreeBandRebalancerStrategy {
           );
           console.log(`  Position range: [${tickLower}, ${tickUpper}]`);
           console.log(`  In range: ${inRange ? "✓ YES" : "✗ NO"}`);
-          
+
           // Log swap cost impact on strategy
           const totals = this.manager.getTotals();
-          const totalSwapCosts = totals.swapCost0 + totals.swapCost1;
-          const totalSlippage = totals.slippage0 + totals.slippage1;
+          const totalSwapCosts = totals.totalCostTokenA + totals.totalCostTokenB;
+          const totalSlippage = totals.slippageTokenA + totals.slippageTokenB;
           if (totalSwapCosts > 0n || totalSlippage > 0n) {
             console.log(
               `[ThreeBand-SwapCosts] Cumulative costs: ` +
-              `fees=${totalSwapCosts.toString()}, ` +
+              `costs=${totalSwapCosts.toString()}, ` +
               `slippage=${totalSlippage.toString()}, ` +
               `slippage=${slippage} bps used`
             );
@@ -581,13 +580,10 @@ export class ThreeBandRebalancerStrategy {
         }
 
         return {
-          id: result.positionId,
+          id: this.manager.newPositionId(),
           tickLower,
           tickUpper,
           lastMoved: timestamp,
-          lastFeesCollected0: 0n,
-          lastFeesCollected1: 0n,
-          lastFeeCheckTime: timestamp,
         };
       } catch (err) {
         lastError = err as Error;
@@ -595,8 +591,7 @@ export class ThreeBandRebalancerStrategy {
     }
 
     throw new Error(
-      `Failed to open segment [${tickLower}, ${tickUpper}]: ${
-        lastError?.message ?? "unknown error"
+      `Failed to open segment [${tickLower}, ${tickUpper}]: ${lastError?.message ?? "unknown error"
       }`
     );
   }
@@ -678,11 +673,6 @@ export class ThreeBandRebalancerStrategy {
 
     if (this.config.minRotationProfitTokenB <= 0) {
       return true;
-    }
-
-    // Collect fees from all positions to get accurate fee totals
-    for (const segment of this.segments) {
-      this.manager.collectFees(segment.id);
     }
 
     const totals = this.manager.getTotals();
@@ -1042,23 +1032,6 @@ export class ThreeBandRebalancerStrategy {
       (totalValue * BigInt(Math.floor(thresholdPct * 100))) / 10000n;
 
     return unclaimedFees > threshold;
-  }
-
-  /**
-   * Collect and compound fees back into positions
-   */
-  private compoundFees() {
-    // Collect fees from all segments
-    for (const segment of this.segments) {
-      try {
-        this.manager.collectFees(segment.id);
-      } catch (err) {
-        // Continue collecting from other positions
-      }
-    }
-
-    // Note: Fees are automatically added to cash balance by collectFees
-    // They will be redeployed during next rotation or rebalance
   }
 
   /**

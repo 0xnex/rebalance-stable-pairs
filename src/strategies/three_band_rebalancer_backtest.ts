@@ -96,10 +96,8 @@ function readEnvConfig(): EnvConfig {
   };
 }
 
-export function strategyFactory(pool: Pool): BacktestStrategy {
+export function strategyFactory(pool: Pool, manager: VirtualPositionManager): BacktestStrategy {
   const env = readEnvConfig();
-  const manager = new VirtualPositionManager(pool);
-  manager.setInitialBalances(env.initialAmountA, env.initialAmountB);
 
   // CSV file writer for separate output
   const tradingPair = process.env.TRADING_PAIR || "SUI/USDC";
@@ -240,13 +238,13 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
           );
         } else {
           // Calculate actual current amounts based on position's liquidity and current price
-          const { currentAmountA, currentAmountB } =
+          const { amount0, amount1 } =
             manager.calculatePositionAmounts(pos.id);
 
           // Debug: log if position has zero amounts but has liquidity
           if (
-            currentAmountA === 0n &&
-            currentAmountB === 0n &&
+            amount0 === 0n &&
+            amount1 === 0n &&
             pos.liquidity > 0n
           ) {
             ctx.logger?.log?.(
@@ -274,20 +272,20 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             }
           };
 
-          const amountANum = safeBigIntToNumber(currentAmountA);
-          const amountBNum = safeBigIntToNumber(currentAmountB);
+          const amountANum = safeBigIntToNumber(amount0);
+          const amountBNum = safeBigIntToNumber(amount1);
 
           if (amountANum > MAX_REASONABLE_AMOUNT || amountBNum > MAX_REASONABLE_AMOUNT ||
-            posFeesA > MAX_REASONABLE_FEES || posFeesB > MAX_REASONABLE_FEES) {
+            BigInt(posFeesA) > MAX_REASONABLE_FEES || BigInt(posFeesB) > MAX_REASONABLE_FEES) {
             ctx.logger?.log?.(
-              `[three-band-SPIKE] Position ${i + 1} UNREALISTIC VALUES: amountA=${currentAmountA} amountB=${currentAmountB} feesA=${posFeesA} feesB=${posFeesB} liquidity=${pos.liquidity} tick=${tick} range=[${pos.tickLower},${pos.tickUpper}]`
+              `[three-band-SPIKE] Position ${i + 1} UNREALISTIC VALUES: amountA=${amount0} amountB=${amount1} feesA=${posFeesA} feesB=${posFeesB} liquidity=${pos.liquidity} tick=${tick} range=[${pos.tickLower},${pos.tickUpper}]`
             );
 
             // Cap the values to prevent CSV corruption
-            const cappedAmountA = amountANum > MAX_REASONABLE_AMOUNT ? pos.amountA : currentAmountA;
-            const cappedAmountB = amountBNum > MAX_REASONABLE_AMOUNT ? pos.amountB : currentAmountB;
-            const cappedFeesA = posFeesA > MAX_REASONABLE_FEES ? 0 : posFeesA;
-            const cappedFeesB = posFeesB > MAX_REASONABLE_FEES ? 0 : posFeesB;
+            const cappedAmountA = amountANum > MAX_REASONABLE_AMOUNT ? amount0 : amount0;
+            const cappedAmountB = amountBNum > MAX_REASONABLE_AMOUNT ? amount1 : amount1;
+            const cappedFeesA = BigInt(posFeesA) > MAX_REASONABLE_FEES ? 0 : BigInt(posFeesA);
+            const cappedFeesB = BigInt(posFeesB) > MAX_REASONABLE_FEES ? 0 : BigInt(posFeesB);
 
             csvParts.push(
               pos.tickLower.toString(),
@@ -302,8 +300,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
             csvParts.push(
               pos.tickLower.toString(),
               pos.tickUpper.toString(),
-              currentAmountA.toString(),
-              currentAmountB.toString(),
+              amount0.toString(),
+              amount1.toString(),
               posFeesA.toString(),
               posFeesB.toString(),
               posInRange
@@ -322,28 +320,19 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     const MAX_TOTAL_AMOUNT = 1000000000000000000n; // 1e18 - realistic DeFi limit
 
     for (const pos of positions) {
-      try {
-        const { currentAmountA, currentAmountB } =
-          manager.calculatePositionAmounts(pos.id);
+      const { amount0, amount1 } =
+        manager.calculatePositionAmounts(pos.id);
 
-        // Safety check to prevent overflow accumulation
-        if (currentAmountA < MAX_TOTAL_AMOUNT && currentAmountB < MAX_TOTAL_AMOUNT) {
-          sumAmountA += currentAmountA;
-          sumAmountB += currentAmountB;
-        } else {
-          // Fallback to stored amounts for unrealistic calculated amounts
-          sumAmountA += pos.amountA;
-          sumAmountB += pos.amountB;
-          ctx.logger?.log?.(
-            `[three-band-SPIKE] Position ${pos.id} calculated amounts too large, using stored amounts`
-          );
-        }
-      } catch (error) {
-        // Fallback to stored amounts if calculation fails
-        sumAmountA += pos.amountA;
-        sumAmountB += pos.amountB;
+      // Safety check to prevent overflow accumulation
+      if (amount0 < MAX_TOTAL_AMOUNT && amount1 < MAX_TOTAL_AMOUNT) {
+        sumAmountA += amount0;
+        sumAmountB += amount1;
+      } else {
+        // Fallback to stored amounts for unrealistic calculated amounts
+        sumAmountA += amount0;
+        sumAmountB += amount1;
         ctx.logger?.log?.(
-          `[three-band-error] Failed to calculate amounts for position ${pos.id}, using stored amounts`
+          `[three-band-SPIKE] Position ${pos.id} calculated amounts too large, using stored amounts`
         );
       }
     }
@@ -381,8 +370,8 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
         `[three-band-SPIKE] UNREALISTIC TOTALS: totalA=${totalCurrentA} totalB=${totalCurrentB} - using fallback`
       );
       // Fallback to sum of stored amounts + cash
-      finalTotalA = positions.reduce((sum, pos) => sum + pos.amountA, 0n) + cashA;
-      finalTotalB = positions.reduce((sum, pos) => sum + pos.amountB, 0n) + cashB;
+      finalTotalA = positions.reduce((sum, pos) => sum + BigInt(pos.tokensOwed0), 0n) + cashA;
+      finalTotalB = positions.reduce((sum, pos) => sum + BigInt(pos.tokensOwed1), 0n) + cashB;
     }
 
     // Add totals (sum of actual position amounts + cash)
@@ -510,7 +499,6 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
       return;
     }
     lastTimestamp = ctx.timestamp;
-    manager.updateAllPositionFees();
     strategy.setCurrentTime(ctx.timestamp);
     const outcome = strategy.execute();
     if (outcome.action !== "none") {
@@ -520,9 +508,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
   return {
     id: "three-band-rebalancer",
-    manager,
     async onInit(ctx) {
-      manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
       const result = strategy.initialize();
       log(ctx, result.action, result.message);
@@ -530,11 +516,10 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
     async onTick(ctx) {
       runOnce(ctx);
     },
-    async onEvent(ctx) {
+    async onSwapEvent(ctx, event) {
       runOnce(ctx);
     },
     async onFinish(ctx) {
-      manager.updateAllPositionFees();
       strategy.setCurrentTime(ctx.timestamp);
 
       // Log state before closing positions
@@ -548,10 +533,7 @@ export function strategyFactory(pool: Pool): BacktestStrategy {
 
       // Close all positions
       for (const segment of strategy.getSegments()) {
-        manager.removePosition(segment.id, {
-          tokenA: env.actionCostTokenA > 0 ? env.actionCostTokenA : undefined,
-          tokenB: env.actionCostTokenB > 0 ? env.actionCostTokenB : undefined,
-        });
+        manager.closePosition(segment.id, ctx.timestamp);
       }
 
       // Log final state after closing positions
