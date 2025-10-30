@@ -80,6 +80,7 @@ async function* fetchEventsFromDb(
   endTime: number
 ): AsyncGenerator<SwapEvent> {
   let offset = 0;
+  const allEvents: SwapEvent[] = [];
   while (true) {
     const rawEvents = await rawEventService.getEvents({
       poolAddress: poolId,
@@ -95,28 +96,20 @@ async function* fetchEventsFromDb(
       // Handle DB event structure - rawEvent.data contains the actual event data
       const eventData = rawEvent.data;
       if (!eventData) continue;
-
-      const tx = {
-        digest: rawEvent.tx_id,
-        timestampMs: Number(rawEvent.timestamp_ms),
-        events: [
-          {
-            id: {
-              txDigest: rawEvent.tx_id,
-              eventSeq: Number(rawEvent.num_of_events || 0),
-            },
-            type: rawEvent.event_name, // Event type from DB
-            parsedJson: eventData, // Actual event data
-          },
-        ],
-      };
-
-      if (tx.timestampMs < startTime) continue;
-      if (tx.timestampMs > endTime) return;
-      yield* processTransaction(tx, poolId);
+      allEvents.push(...processTransaction(eventData, poolId));
     }
     if (rawEvents.length < 100) break;
     offset += 100;
+  }
+  allEvents.sort((a, b) => {
+    if (a.timestampMs !== b.timestampMs) {
+      return a.timestampMs - b.timestampMs;
+    }
+    return a.digest.localeCompare(b.digest);
+  });
+
+  for (const event of allEvents) {
+    yield event;
   }
 }
 
