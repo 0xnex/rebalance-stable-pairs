@@ -741,6 +741,18 @@ export class VirtualPositionManager {
       event.amountIn > 0n
         ? (Number(totalFees) / Number(event.amountIn)) * 100
         : 0;
+
+    // Calculate our actual share of fees based on our liquidity proportion
+    const ourFees0 =
+      totalPoolLiquidity > 0n
+        ? (fee0 * ourCrossedLiquidity) / totalPoolLiquidity
+        : 0n;
+    const ourFees1 =
+      totalPoolLiquidity > 0n
+        ? (fee1 * ourCrossedLiquidity) / totalPoolLiquidity
+        : 0n;
+
+    // Also calculate estimated fees for comparison (less precise due to floating point)
     const ourEstimatedFees0 =
       ourShareOfPool > 0
         ? (fee0 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n
@@ -763,7 +775,8 @@ export class VirtualPositionManager {
       `  Pool liquidity: ${totalPoolLiquidity.toString()}, ` +
         `Our liquidity: ${ourCrossedLiquidity.toString()}, ` +
         `Our share: ${ourShareOfPool.toFixed(6)}%, ` +
-        `Estimated fees earned: ${ourEstimatedFees0.toString()}/${ourEstimatedFees1.toString()}`
+        `Our fees: ${ourFees0.toString()}/${ourFees1.toString()} ` +
+        `(Estimated: ${ourEstimatedFees0.toString()}/${ourEstimatedFees1.toString()})`
     );
     console.log(
       `  Calculated activePoolLiq: ${activePoolLiquidity.toString()} ` +
@@ -774,16 +787,17 @@ export class VirtualPositionManager {
         }% of pool)`
     );
     console.log(
-      `  Fee distribution: Total fee0=${fee0}, fee1=${fee1}, ` +
-        `Our estimated share: fee0≈${(
-          (Number(fee0) * ourShareOfPool) /
-          100
-        ).toFixed(2)}, ` +
-        `fee1≈${((Number(fee1) * ourShareOfPool) / 100).toFixed(2)}`
+      `  Fee distribution: Total pool fee0=${fee0}, fee1=${fee1}, ` +
+        `Our share: fee0=${ourFees0}, fee1=${ourFees1}`
     );
 
-    // Distribute fees proportionally
-    this.distributeFees(crossedPositions, fee0, fee1, totalPoolLiquidity);
+    // Distribute OUR fees (not total pool fees) among our positions
+    this.distributeFees(
+      crossedPositions,
+      ourFees0,
+      ourFees1,
+      ourCrossedLiquidity
+    );
   }
 
   private distributeFees(
