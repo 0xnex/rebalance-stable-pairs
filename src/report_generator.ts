@@ -454,7 +454,9 @@ export class ReportGenerator {
       return Math.min(1.0, Math.max(0.0, score));
     } catch (error) {
       // getValidationStats might not be available or might throw
-      console.warn('[ReportGen] getValidationStats not available, using default score');
+      console.warn(
+        "[ReportGen] getValidationStats not available, using default score"
+      );
       return 0.95; // Default high score
     }
   }

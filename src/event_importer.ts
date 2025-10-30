@@ -255,13 +255,13 @@ function* processTransaction(
         const protocolFee = BigInt(parsedJson.protocol_fee || 0);
         const reserve0 = BigInt(parsedJson.reserve_x);
         const reserve1 = BigInt(parsedJson.reserve_y);
-        
+
         // Convert tick from unsigned 32-bit to signed 32-bit integer
         // tick_index.bits is stored as u32, but tick values are i32 (can be negative)
         // For example: 4294967294 (0xFFFFFFFE) should be -2
         let tickBits = Number(parsedJson.tick_index.bits);
         // Convert unsigned to signed: if value > 2^31-1, subtract 2^32
-        const tick = tickBits > 0x7FFFFFFF ? tickBits - 0x100000000 : tickBits;
+        const tick = tickBits > 0x7fffffff ? tickBits - 0x100000000 : tickBits;
 
         yield {
           timestampMs,
