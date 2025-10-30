@@ -277,6 +277,23 @@ export class VirtualPositionManager {
     // Convert to human-readable for swap fee display
     const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
     const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+    
+    // Log maxL input and output to show swap costs
+    const input0Display = Number(amount0) / Math.pow(10, decimals0);
+    const input1Display = Number(amount1) / Math.pow(10, decimals1);
+    const used0Display = Number(result.usedAmount0) / Math.pow(10, decimals0);
+    const used1Display = Number(result.usedAmount1) / Math.pow(10, decimals1);
+    const swapFee0Display = Number(result.swapFee0) / Math.pow(10, decimals0);
+    const swapFee1Display = Number(result.swapFee1) / Math.pow(10, decimals1);
+    const slip0Display = Number(result.slip0) / Math.pow(10, decimals0);
+    const slip1Display = Number(result.slip1) / Math.pow(10, decimals1);
+    
+    console.log(
+      `[maxLiquidity] Input: ${input0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${input1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+      `Used: ${used0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${used1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+      `SwapCost(fee): ${swapFee0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${swapFee1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+      `Slippage: ${slip0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${slip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+    );
     if (result.swapFee0 > 0n || result.swapFee1 > 0n) {
       const swapFee0Display = Number(result.swapFee0) / Math.pow(10, decimals0);
       const swapFee1Display = Number(result.swapFee1) / Math.pow(10, decimals1);
