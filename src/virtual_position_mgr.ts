@@ -265,6 +265,21 @@ export class VirtualPositionManager {
     pos.tickLower = tickLower;
     pos.tickUpper = tickUpper;
 
+    // reduct amount0 and amount1 from VPM balance first
+    if (this.amount0 < amount0) {
+      throw new Error(
+        `Insufficient balance for token0: need ${amount0} (have ${this.amount0})`
+      );
+    }
+    if (this.amount1 < amount1) {
+      throw new Error(
+        `Insufficient balance for token1: need ${amount1} (have ${this.amount1})`
+      );
+    }
+
+    this.amount0 -= amount0;
+    this.amount1 -= amount1;
+
     const result = LiquidityCalculator.maxLiquidity(
       this.pool.sqrtPriceX64,
       this.pool.feeRatePpm,
@@ -277,22 +292,56 @@ export class VirtualPositionManager {
     // Convert to human-readable for swap fee display
     const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
     const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
-    
+
     // Log maxL input and output to show swap costs
     const input0Display = Number(amount0) / Math.pow(10, decimals0);
     const input1Display = Number(amount1) / Math.pow(10, decimals1);
-    const used0Display = Number(result.usedAmount0) / Math.pow(10, decimals0);
-    const used1Display = Number(result.usedAmount1) / Math.pow(10, decimals1);
+    const deposited0Display =
+      Number(result.depositedAmount0) / Math.pow(10, decimals0);
+    const deposited1Display =
+      Number(result.depositedAmount1) / Math.pow(10, decimals1);
     const swapFee0Display = Number(result.swapFee0) / Math.pow(10, decimals0);
     const swapFee1Display = Number(result.swapFee1) / Math.pow(10, decimals1);
     const slip0Display = Number(result.slip0) / Math.pow(10, decimals0);
     const slip1Display = Number(result.slip1) / Math.pow(10, decimals1);
-    
+    const remain0Display = Number(result.remain0) / Math.pow(10, decimals0);
+    const remain1Display = Number(result.remain1) / Math.pow(10, decimals1);
+
+    // Determine swap direction and show swap details
+    let swapInfo = "";
+    if (result.swapFee0 > 0n) {
+      // Swapped token0 -> token1
+      swapInfo = `Swap: ${process.env.TOKEN_A_NAME}→${process.env.TOKEN_B_NAME}`;
+    } else if (result.swapFee1 > 0n) {
+      // Swapped token1 -> token0
+      swapInfo = `Swap: ${process.env.TOKEN_B_NAME}→${process.env.TOKEN_A_NAME}`;
+    } else {
+      swapInfo = "No swap";
+    }
+
     console.log(
-      `[maxLiquidity] Input: ${input0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${input1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
-      `Used: ${used0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${used1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
-      `SwapCost(fee): ${swapFee0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${swapFee1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
-      `Slippage: ${slip0Display.toFixed(6)} ${process.env.TOKEN_A_NAME || "A"}, ${slip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+      `[maxLiquidity] Input: ${input0Display.toFixed(6)} ${
+        process.env.TOKEN_A_NAME || "A"
+      }, ${input1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+        `Deposited: ${deposited0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ${deposited1Display.toFixed(6)} ${
+          process.env.TOKEN_B_NAME || "B"
+        } | ` +
+        `Remain: ${remain0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ${remain1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+    );
+    console.log(
+      `               ${swapInfo} | ` +
+        `Fee: ${swapFee0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ${swapFee1Display.toFixed(6)} ${
+          process.env.TOKEN_B_NAME || "B"
+        } | ` +
+        `Slip: ${slip0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        }, ${slip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
     );
     if (result.swapFee0 > 0n || result.swapFee1 > 0n) {
       const swapFee0Display = Number(result.swapFee0) / Math.pow(10, decimals0);
@@ -305,29 +354,13 @@ export class VirtualPositionManager {
       );
     }
 
-    // NEW LOGIC: The actual cost is what we used plus fees
-    // remain0/remain1 already account for swaps, so:
-    // - If we swapped token1→token0, then remain0 includes the swapped amount
-    // - Total cost = (original amount - remain) + swap fees + slippage
-    const totalCost0 =
-      amount0 - result.remain0 + result.swapFee0 + result.slip0;
-    const totalCost1 =
-      amount1 - result.remain1 + result.swapFee1 + result.slip1;
-
-    // Check if we have sufficient balance for position + swap costs
-    if (this.amount0 < totalCost0 || this.amount1 < totalCost1) {
-      throw new Error(
-        `Insufficient balance: need ${totalCost0} token0 (have ${this.amount0}), ` +
-          `need ${totalCost1} token1 (have ${this.amount1})`
-      );
-    }
-
     pos.liquidity = result.liquidity;
 
-    // Deduct the total costs from our balances
-    // After the deduction, we should have: amount0/1 = original - (used + fees)
-    this.amount0 = this.amount0 - totalCost0;
-    this.amount1 = this.amount1 - totalCost1;
+    // Step 3: Add back actualRemain (physical balance left) to VPM balance
+    // Note: We use actualRemain instead of remain because remain is an accounting
+    // construct that can be negative to satisfy the invariant amount = usedAmount + remain
+    this.amount0 = this.amount0 + result.actualRemain0;
+    this.amount1 = this.amount1 + result.actualRemain1;
 
     // Track costs separately for reporting
     this.swapCost0 += result.swapFee0;

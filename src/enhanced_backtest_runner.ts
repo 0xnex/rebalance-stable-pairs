@@ -456,7 +456,6 @@ async function outputStandardResults(
     console.log(`📄 Report saved to: ${config.outputFile}`);
   } else {
     console.log("\n📊 BACKTEST RESULTS");
-    console.log(JSON.stringify(jsonOutput, null, 2));
   }
 }
 

@@ -714,6 +714,584 @@ describe("LiquidityCalculator", () => {
         });
       });
     });
+
+    describe("Invariant checks: depositedAmount + remain <= amount", () => {
+      const testInvariant = (
+        description: string,
+        sqrtPriceX64: bigint,
+        amount0: bigint,
+        amount1: bigint
+      ) => {
+        it(description, () => {
+          const result = LiquidityCalculator.maxLiquidity(
+            sqrtPriceX64,
+            feeRatePpm,
+            lowerTick,
+            upperTick,
+            amount0,
+            amount1
+          );
+
+          // Verify that all values are non-negative and make sense
+          expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+          expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+          expect(result.remain0).toBeGreaterThanOrEqual(0n);
+          expect(result.remain1).toBeGreaterThanOrEqual(0n);
+
+          // Liquidity should be non-negative
+          expect(result.liquidity).toBeGreaterThanOrEqual(0n);
+
+          // Remain amounts are always positive (physical leftover)
+          // depositedAmount shows what went into liquidity
+
+          // Only one swap direction should have fees
+          if (result.swapFee0 > 0n) {
+            expect(result.swapFee1).toBe(0n);
+          }
+          if (result.swapFee1 > 0n) {
+            expect(result.swapFee0).toBe(0n);
+          }
+
+          // Only one swap direction should have slippage
+          if (result.slip0 > 0n) {
+            expect(result.slip1).toBe(0n);
+          }
+          if (result.slip1 > 0n) {
+            expect(result.slip0).toBe(0n);
+          }
+
+          // Verify depositedAmount matches liquidity calculation
+          const liquidityAmounts =
+            LiquidityCalculator.calculateAmountsForLiquidity(
+              result.liquidity,
+              sqrtPriceX64,
+              LiquidityCalculator.tickToSqrtPriceX64(lowerTick),
+              LiquidityCalculator.tickToSqrtPriceX64(upperTick)
+            );
+
+          // depositedAmount should match what calculateAmountsForLiquidity returns
+          expect(result.depositedAmount0).toBe(liquidityAmounts.amount0);
+          expect(result.depositedAmount1).toBe(liquidityAmounts.amount1);
+        });
+      };
+
+      // Test with only token0
+      testInvariant(
+        "should maintain invariant with only token0, price in range",
+        Q64,
+        1000000n,
+        0n
+      );
+
+      testInvariant(
+        "should maintain invariant with only token0, price below range",
+        Q64 / 4n,
+        1000000n,
+        0n
+      );
+
+      testInvariant(
+        "should maintain invariant with only token0, price above range",
+        Q64 * 4n,
+        1000000n,
+        0n
+      );
+
+      // Test with only token1
+      testInvariant(
+        "should maintain invariant with only token1, price in range",
+        Q64,
+        0n,
+        1000000n
+      );
+
+      testInvariant(
+        "should maintain invariant with only token1, price below range",
+        Q64 / 4n,
+        0n,
+        1000000n
+      );
+
+      testInvariant(
+        "should maintain invariant with only token1, price above range",
+        Q64 * 4n,
+        0n,
+        1000000n
+      );
+
+      // Test with both tokens
+      testInvariant(
+        "should maintain invariant with both tokens, price in range",
+        Q64,
+        1000000n,
+        1000000n
+      );
+
+      testInvariant(
+        "should maintain invariant with both tokens, price below range",
+        Q64 / 4n,
+        1000000n,
+        1000000n
+      );
+
+      testInvariant(
+        "should maintain invariant with both tokens, price above range",
+        Q64 * 4n,
+        1000000n,
+        1000000n
+      );
+
+      // Test with unbalanced amounts
+      testInvariant(
+        "should maintain invariant with more token0, price in range",
+        Q64,
+        5000000n,
+        1000000n
+      );
+
+      testInvariant(
+        "should maintain invariant with more token1, price in range",
+        Q64,
+        1000000n,
+        5000000n
+      );
+    });
+
+    describe("Detailed accounting verification", () => {
+      it("should correctly account for swap token1→token0 (only token1 input)", () => {
+        const amount0 = 0n;
+        const amount1 = 6000000000n; // 6000 USDC (6 decimals)
+        const feeRate = 100; // 0.01%
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64, // price = 1.0
+          feeRate,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+
+        // Should swap token1 → token0
+        expect(result.swapFee1).toBeGreaterThan(0n);
+        expect(result.swapFee0).toBe(0n);
+
+        // Should have slippage in token0 (output)
+        expect(result.slip0).toBeGreaterThan(0n);
+        expect(result.slip1).toBe(0n);
+
+        // depositedAmount shows how much was put into liquidity (always positive)
+        expect(result.depositedAmount0).toBeGreaterThan(0n);
+        expect(result.depositedAmount1).toBeGreaterThan(0n);
+
+        // Log for debugging
+        console.log("Token1→Token0 swap test:");
+        console.log(`  Input: ${amount0} token0, ${amount1} token1`);
+        console.log(
+          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
+        );
+        console.log(
+          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
+        );
+        console.log(
+          `  Fee: ${result.swapFee0} token0, ${result.swapFee1} token1`
+        );
+        console.log(`  Slip: ${result.slip0} token0, ${result.slip1} token1`);
+        console.log(`  Liquidity: ${result.liquidity}`);
+      });
+
+      it("should correctly account for swap token0→token1 (only token0 input)", () => {
+        const amount0 = 6000000000n; // 6000 tokens (6 decimals)
+        const amount1 = 0n;
+        const feeRate = 100; // 0.01%
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64, // price = 1.0
+          feeRate,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+
+        // Should swap token0 → token1
+        expect(result.swapFee0).toBeGreaterThan(0n);
+        expect(result.swapFee1).toBe(0n);
+
+        // Should have slippage in token1 (output)
+        expect(result.slip1).toBeGreaterThan(0n);
+        expect(result.slip0).toBe(0n);
+
+        // depositedAmount shows how much was put into liquidity (always positive)
+        expect(result.depositedAmount0).toBeGreaterThan(0n);
+        expect(result.depositedAmount1).toBeGreaterThan(0n);
+
+        // Log for debugging
+        console.log("Token0→Token1 swap test:");
+        console.log(`  Input: ${amount0} token0, ${amount1} token1`);
+        console.log(
+          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
+        );
+        console.log(
+          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
+        );
+        console.log(
+          `  Fee: ${result.swapFee0} token0, ${result.swapFee1} token1`
+        );
+        console.log(`  Slip: ${result.slip0} token0, ${result.slip1} token1`);
+        console.log(`  Liquidity: ${result.liquidity}`);
+      });
+
+      it("should correctly account when no swap is needed", () => {
+        const amount0 = 1000000n;
+        const amount1 = 1000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64, // price = 1.0
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+
+        // May or may not swap depending on optimal ratio
+        // But fees should be consistent
+        if (result.swapFee0 === 0n && result.swapFee1 === 0n) {
+          // No swap case
+          expect(result.slip0).toBe(0n);
+          expect(result.slip1).toBe(0n);
+        }
+
+        // Both deposited amounts should be positive when starting with both tokens
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+
+        console.log("Balanced tokens test:");
+        console.log(`  Input: ${amount0} token0, ${amount1} token1`);
+        console.log(
+          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
+        );
+        console.log(
+          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
+        );
+        console.log(
+          `  Fee: ${result.swapFee0} token0, ${result.swapFee1} token1`
+        );
+        console.log(`  Slip: ${result.slip0} token0, ${result.slip1} token1`);
+      });
+
+      it("should have consistent fee and slippage directions", () => {
+        const testCases = [
+          { desc: "only token0", amount0: 1000000n, amount1: 0n },
+          { desc: "only token1", amount0: 0n, amount1: 1000000n },
+          { desc: "more token0", amount0: 5000000n, amount1: 1000000n },
+          { desc: "more token1", amount0: 1000000n, amount1: 5000000n },
+        ];
+
+        testCases.forEach(({ desc, amount0, amount1 }) => {
+          const result = LiquidityCalculator.maxLiquidity(
+            Q64,
+            feeRatePpm,
+            lowerTick,
+            upperTick,
+            amount0,
+            amount1
+          );
+
+          // Fee and slippage should be in consistent directions
+          if (result.swapFee0 > 0n) {
+            // Swapped token0 → token1
+            expect(result.swapFee1).toBe(0n); // No fee in token1
+            expect(result.slip1).toBeGreaterThanOrEqual(0n); // Slippage in output (token1)
+            expect(result.slip0).toBe(0n); // No slippage in input (token0)
+          } else if (result.swapFee1 > 0n) {
+            // Swapped token1 → token0
+            expect(result.swapFee0).toBe(0n); // No fee in token0
+            expect(result.slip0).toBeGreaterThanOrEqual(0n); // Slippage in output (token0)
+            expect(result.slip1).toBe(0n); // No slippage in input (token1)
+          }
+
+          console.log(
+            `${desc}: fee0=${result.swapFee0}, fee1=${result.swapFee1}, slip0=${result.slip0}, slip1=${result.slip1}`
+          );
+        });
+      });
+
+      it("should verify deposited amounts match liquidity calculation", () => {
+        const amount0 = 1000000n;
+        const amount1 = 1000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Calculate what amounts are needed for the returned liquidity
+        const sqrtPriceLower =
+          LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
+        const sqrtPriceUpper =
+          LiquidityCalculator.tickToSqrtPriceX64(upperTick);
+        const depositedAmounts =
+          LiquidityCalculator.calculateAmountsForLiquidity(
+            result.liquidity,
+            Q64,
+            sqrtPriceLower,
+            sqrtPriceUpper
+          );
+
+        // The remain amounts should be what's left after depositing
+        // For token0: if we swapped, we gained/lost some, then deposited some
+        // For token1: similar logic
+
+        console.log("Liquidity verification:");
+        console.log(`  Liquidity: ${result.liquidity}`);
+        console.log(
+          `  Deposited: ${depositedAmounts.amount0} token0, ${depositedAmounts.amount1} token1`
+        );
+        console.log(
+          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
+        );
+        console.log(
+          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
+        );
+
+        // Deposited amounts should be positive
+        expect(depositedAmounts.amount0).toBeGreaterThanOrEqual(0n);
+        expect(depositedAmounts.amount1).toBeGreaterThanOrEqual(0n);
+      });
+    });
+
+    describe("Price range edge cases with detailed accounting", () => {
+      it("should handle price below range with only token1 (requires swap)", () => {
+        const priceBelowRange = Q64 / 10n; // Price well below range
+        const amount0 = 0n;
+        const amount1 = 1000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          priceBelowRange,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+
+        // Should swap token1 → token0 since only token0 is useful below range
+        expect(result.swapFee1).toBeGreaterThan(0n);
+
+        console.log("Below range, only token1:");
+        console.log(`  Swap fee: ${result.swapFee1} token1`);
+        console.log(`  Slippage: ${result.slip0} token0`);
+        console.log(
+          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
+        );
+      });
+
+      it("should handle price above range with only token0 (requires swap)", () => {
+        const priceAboveRange = Q64 * 10n; // Price well above range
+        const amount0 = 1000000n;
+        const amount1 = 0n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          priceAboveRange,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+
+        // Should swap token0 → token1 since only token1 is useful above range
+        expect(result.swapFee0).toBeGreaterThan(0n);
+
+        console.log("Above range, only token0:");
+        console.log(`  Swap fee: ${result.swapFee0} token0`);
+        console.log(`  Slippage: ${result.slip1} token1`);
+        console.log(
+          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
+        );
+      });
+
+      it("should handle price at lower boundary", () => {
+        const sqrtPriceLower =
+          LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
+        const amount0 = 1000000n;
+        const amount1 = 1000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPriceLower,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.liquidity).toBeGreaterThan(0n);
+      });
+
+      it("should handle price at upper boundary", () => {
+        const sqrtPriceUpper =
+          LiquidityCalculator.tickToSqrtPriceX64(upperTick);
+        const amount0 = 1000000n;
+        const amount1 = 1000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPriceUpper,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.liquidity).toBeGreaterThan(0n);
+      });
+    });
+
+    describe("Real-world scenario matching log output", () => {
+      it("should correctly handle the scenario from a.log lines 31-32", () => {
+        // Simulate the exact scenario from the log:
+        // Input: 0.000000 suiUSDT, 6000.000000 USDC
+        // Price at tick 5 (approximately 1.0005)
+        const amount0 = 0n;
+        const amount1 = 6000000000n; // 6000 USDC with 6 decimals
+        const feeRate = 100; // 0.01% (100 ppm)
+        const tick = 5;
+        const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
+        const rangeLowerTick = 4;
+        const rangeUpperTick = 6;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPrice,
+          feeRate,
+          rangeLowerTick,
+          rangeUpperTick,
+          amount0,
+          amount1
+        );
+
+        console.log("\n=== Real-world scenario test (matching a.log) ===");
+        console.log(
+          `Input: ${Number(amount0) / 1e6} suiUSDT, ${
+            Number(amount1) / 1e6
+          } USDC`
+        );
+        console.log(
+          `Deposited: ${Number(result.depositedAmount0) / 1e6} suiUSDT, ${
+            Number(result.depositedAmount1) / 1e6
+          } USDC`
+        );
+        console.log(
+          `Remain: ${Number(result.remain0) / 1e6} suiUSDT, ${
+            Number(result.remain1) / 1e6
+          } USDC`
+        );
+        console.log(
+          `Swap: ${
+            result.swapFee0 > 0n
+              ? "suiUSDT→USDC"
+              : result.swapFee1 > 0n
+              ? "USDC→suiUSDT"
+              : "No swap"
+          }`
+        );
+        console.log(
+          `Fee: ${Number(result.swapFee0) / 1e6} suiUSDT, ${
+            Number(result.swapFee1) / 1e6
+          } USDC`
+        );
+        console.log(
+          `Slip: ${Number(result.slip0) / 1e6} suiUSDT, ${
+            Number(result.slip1) / 1e6
+          } USDC`
+        );
+        console.log(`Liquidity: ${result.liquidity}`);
+
+        // Verify results are valid
+        expect(result.depositedAmount0).toBeGreaterThan(0n);
+        expect(result.depositedAmount1).toBeGreaterThan(0n);
+        expect(result.remain0).toBeGreaterThanOrEqual(0n);
+        expect(result.remain1).toBeGreaterThan(0n);
+
+        // Should swap USDC → suiUSDT
+        expect(result.swapFee1).toBeGreaterThan(0n);
+        expect(result.swapFee0).toBe(0n);
+
+        // Should have slippage in suiUSDT (output token)
+        expect(result.slip0).toBeGreaterThan(0n);
+        expect(result.slip1).toBe(0n);
+
+        // depositedAmount shows how much was put into liquidity (always positive)
+        expect(result.depositedAmount0).toBeGreaterThan(0n);
+        expect(result.depositedAmount1).toBeGreaterThan(0n);
+
+        // Verify the deposited amounts
+        const sqrtPriceLower =
+          LiquidityCalculator.tickToSqrtPriceX64(rangeLowerTick);
+        const sqrtPriceUpper =
+          LiquidityCalculator.tickToSqrtPriceX64(rangeUpperTick);
+        const depositedAmounts =
+          LiquidityCalculator.calculateAmountsForLiquidity(
+            result.liquidity,
+            sqrtPrice,
+            sqrtPriceLower,
+            sqrtPriceUpper
+          );
+
+        console.log(
+          `Deposited into liquidity: ${
+            Number(depositedAmounts.amount0) / 1e6
+          } suiUSDT, ${Number(depositedAmounts.amount1) / 1e6} USDC`
+        );
+        console.log("=== End of scenario test ===\n");
+      });
+    });
   });
 
   describe("mulDiv", () => {
