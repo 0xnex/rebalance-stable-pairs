@@ -331,7 +331,7 @@ export class BacktestEngine {
       const widthPercent = ((priceUpper - priceLower) / midPrice) * 100;
 
       // Check if position is active (current tick is in range)
-      const isActive = pos.isInRange(this.pool.tickCurrent);
+      const isActive = !pos.isClosed;
 
       // Calculate distance from current price
       const distanceFromCurrentPercent =

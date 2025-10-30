@@ -16,6 +16,7 @@ export class VirtualPosition {
   tokensOwed0: bigint = 0n;
   tokensOwed1: bigint = 0n;
   liquidity: bigint = 0n;
+  isClosed: boolean = false;
 
   constructor(
     id: string,
@@ -118,6 +119,10 @@ export class VirtualPosition {
       lower,
       upper,
     };
+  }
+
+  setClosed(closed: boolean): void {
+    this.isClosed = closed;
   }
 }
 
@@ -452,6 +457,7 @@ export class VirtualPositionManager {
       amount1 += posAmount1;
       fee0 += posFee0;
       fee1 += posFee1;
+      position.setClosed(true);
     }
 
     // Add closed amounts to cash
@@ -476,7 +482,7 @@ export class VirtualPositionManager {
     if (!position) {
       throw new Error("Position not found");
     }
-
+    position.setClosed(true);
     const result = position.close(this.pool.sqrtPriceX64);
     this.amount0 += result.amount0 + result.fee0;
     this.amount1 += result.amount1 + result.fee1;
