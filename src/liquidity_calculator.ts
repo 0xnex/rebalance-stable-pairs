@@ -40,10 +40,10 @@ export interface AmountResult {
  * @property depositedAmount0 - Amount of token0 deposited into the liquidity position (always >= 0)
  * @property depositedAmount1 - Amount of token1 deposited into the liquidity position (always >= 0)
  *
- * @property remain0 - Amount of token0 left over after all operations (always >= 0)
- * @property remain1 - Amount of token1 left over after all operations (always >= 0)
- * @property actualRemain0 - Same as remain0 (kept for compatibility)
- * @property actualRemain1 - Same as remain1 (kept for compatibility)
+ * @property remain0 - Amount of token0 left over after accounting for costs (can be negative if costs exceed input)
+ * @property remain1 - Amount of token1 left over after accounting for costs (can be negative if costs exceed input)
+ * @property actualRemain0 - Physical amount of token0 left over (always >= 0)
+ * @property actualRemain1 - Physical amount of token1 left over (always >= 0)
  *
  * @property swapFee0 - Swap fee paid in token0 (> 0 if swapped token0→token1, otherwise 0)
  * @property swapFee1 - Swap fee paid in token1 (> 0 if swapped token1→token0, otherwise 0)
@@ -51,22 +51,48 @@ export interface AmountResult {
  * @property slip0 - Slippage lost in token0 (> 0 if swapped token1→token0, otherwise 0)
  * @property slip1 - Slippage lost in token1 (> 0 if swapped token0→token1, otherwise 0)
  *
+ * ACCOUNTING MODEL (Approach A - Track ALL tokens separately):
+ * ================================================================
+ * The accounting invariant is:
+ *   amount0 = depositedAmount0 + swapFee0 + slip0 + remain0
+ *   amount1 = depositedAmount1 + swapFee1 + slip1 + remain1
+ *
  * Key points:
  * - depositedAmount shows how much of each token went into the liquidity position
- * - remain shows what's physically left over
- * - Fee is paid in the INPUT token of the swap (deducted before swap happens)
- * - Slippage reduces the OUTPUT token of the swap (less received than expected)
+ * - swapFee shows fee paid in the INPUT token of the swap
+ * - slip shows slippage lost in the OUTPUT token of the swap
+ * - remain shows what's left after accounting for deposits and costs (can be negative)
+ * - actualRemain shows what's physically left (always >= 0)
  * - Only one of (swapFee0, swapFee1) will be > 0 (the input token)
  * - Only one of (slip0, slip1) will be > 0 (the output token)
+ * - remain can be negative when costs exceed what's available in that token
+ * - actualRemain is always non-negative (physical reality)
  *
- * Example: Start with 0 token0, 6000 token1
- * - Swap 1392 token1 → 1384 token0 (after fee 0.3 token1, slippage 15 token0)
- * - Deposit 2983 token0 + 2985 token1 into liquidity
+ * Example 1: Token0→Token1 swap
+ * - Start with: 1000 token0, 0 token1
+ * - Swap: 500 token0 → 495 token1 (fee: 5 token0, slippage: 5 token1 expected but not received)
+ * - Deposit: 450 token0 + 450 token1 into liquidity
  * - Result:
- *   - depositedAmount0 = 2983, depositedAmount1 = 2985
- *   - remain0 = 0.000001, remain1 = 15.3
- *   - swapFee0 = 0, swapFee1 = 0.3
- *   - slip0 = 15, slip1 = 0
+ *   - depositedAmount0 = 450, depositedAmount1 = 450
+ *   - swapFee0 = 5, swapFee1 = 0
+ *   - slip0 = 0, slip1 = 5
+ *   - remain0 = 1000 - 450 - 5 - 0 = 545
+ *   - remain1 = 0 - 450 - 0 - 5 = -455 (negative! we "borrowed" from received swap output)
+ *   - actualRemain0 = 50 (physically left: 1000 - 500 - 450)
+ *   - actualRemain1 = 45 (physically left: 0 + 495 - 450)
+ *
+ * Example 2: Token1→Token0 swap
+ * - Start with: 0 token0, 6000 token1
+ * - Swap: 3000 token1 → 2985 token0 (fee: 3 token1, slippage: 12 token0 expected but not received)
+ * - Deposit: 2900 token0 + 2900 token1 into liquidity
+ * - Result:
+ *   - depositedAmount0 = 2900, depositedAmount1 = 2900
+ *   - swapFee0 = 0, swapFee1 = 3
+ *   - slip0 = 12, slip1 = 0
+ *   - remain0 = 0 - 2900 - 0 - 12 = -2912 (negative! we "borrowed" from received swap output)
+ *   - remain1 = 6000 - 2900 - 3 - 0 = 3097
+ *   - actualRemain0 = 85 (physically left: 0 + 2985 - 2900)
+ *   - actualRemain1 = 100 (physically left: 6000 - 3000 - 2900)
  */
 export type MaxLiquidityResult = {
   liquidity: bigint;
@@ -249,53 +275,61 @@ export class LiquidityCalculator {
             sqrtPriceUpper
           );
 
-          // Calculate remain amounts
-          // To satisfy: usedAmount0 = fee + liquidityAmount0 and usedAmount1 = slip + liquidityAmount1
-          // We need: amount0 = usedAmount0 + remain0, amount1 = usedAmount1 + remain1
-          // Therefore:
-          //   remain0 = amount0 - (fee + liquidityAmount0) = amount0 - swapResult.fee - liquidityAmounts.amount0
-          //   remain1 = amount1 - (slip + liquidityAmount1) = amount1 - swapResult.slippage - liquidityAmounts.amount1
+          // APPROACH A: Track ALL tokens separately
+          // Accounting invariant for token0→token1 swap:
+          //   amount0 = depositedAmount0 + swapFee0 + remain0
+          //   amount1 = depositedAmount1 + slip1 + remain1
           //
-          // However, the actual remain after operations is:
-          //   actualRemain0 = amount0 - swapAmount0 - liquidityAmount0
-          //   actualRemain1 = amount1 + amountOut - liquidityAmount1
+          // Physical flow:
+          //   1. Start with: amount0, amount1
+          //   2. Swap: spend swapAmount0 (which includes fee), receive amountOut (reduced by slippage)
+          //      - Fee paid: swapResult.fee (from token0)
+          //      - Slippage lost: swapResult.slippage (from expected token1 output)
+          //   3. After swap: (amount0 - swapAmount0), (amount1 + amountOut)
+          //   4. Deposit into liquidity: liquidityAmounts.amount0, liquidityAmounts.amount1
+          //   5. Remain: what's physically left
           //
-          // For token0: swapAmount0 includes the fee, so:
-          //   remain0 = amount0 - swapAmount0 - liquidityAmount0
-          // Since swapAmount0 = what we spent (including fee), and fee is part of it:
-          //   We want: remain0 = amount0 - fee - liquidityAmount0
-          //   Actual: remain0 = amount0 - swapAmount0 - liquidityAmount0
-          // These are different! swapAmount0 > fee because swapAmount0 also includes the amount that gets converted.
-          //
-          // Let's keep the actual physical remain, and adjust remain1 to account for slippage:
-          const remain0 = amount0 - swapAmount0 - liquidityAmounts.amount0;
-          // For remain1, we need to subtract slippage to make used Amount1 = slip + liquidityAmount1
-          // amount1 = usedAmount1 + remain1
-          // amount1 = (slip + liquidityAmount1) + remain1
-          // remain1 = amount1 - slip - liquidityAmount1
-          const remain1 =
-            amount1 - swapResult.slippage - liquidityAmounts.amount1;
-
-          // Calculate what's physically left after all operations
+          // Calculate physical remain:
           const actualRemain0 =
             amount0 - swapAmount0 - liquidityAmounts.amount0;
           const actualRemain1 =
             amount1 + swapResult.amountOut - liquidityAmounts.amount1;
 
-          // Invariant: amount0 = depositedAmount0 + swapCost0 + remain0
-          // With this formula, remain = actualRemain (no negative values!)
+          // Verify invariant (for debugging):
+          // amount0 = swapAmount0 + actualRemain0 + depositedAmount0
+          //         = (swapResult.fee + amountInAfterFee) + actualRemain0 + depositedAmount0
+          //         = swapResult.fee + <converted> + actualRemain0 + depositedAmount0
+          // We want: amount0 = swapFee0 + depositedAmount0 + remain0
+          // Since swapAmount0 = fee + <what gets converted to token1>
+          // And the <converted part> is not in our final token0 balance,
+          // We have: amount0 = swapAmount0 + actualRemain0 + depositedAmount0
+          //                  = fee + <converted> + actualRemain0 + depositedAmount0
+          // Therefore: remain0 = actualRemain0 + <converted part>
+          // But we want: amount0 = fee + depositedAmount0 + remain0
+          // So: remain0 = amount0 - fee - depositedAmount0
+          const remain0 = amount0 - swapResult.fee - liquidityAmounts.amount0;
+
+          // For token1: amount1 = depositedAmount1 + slip1 + remain1
+          // amount1 + amountOut = depositedAmount1 + remain1 (physically)
+          // But amountOut = expectedOut - slippage
+          // So: amount1 + expectedOut - slippage = depositedAmount1 + remain1
+          // We want: amount1 = depositedAmount1 + slippage + remain1
+          // Therefore: remain1 = amount1 - depositedAmount1 - slippage
+          const remain1 =
+            amount1 - liquidityAmounts.amount1 - swapResult.slippage;
+
           bestResult = {
             liquidity,
-            remain0: actualRemain0,
-            remain1: actualRemain1,
+            remain0,
+            remain1,
             actualRemain0,
             actualRemain1,
             swapFee0: swapResult.fee, // Fee is paid in input token (token0)
             swapFee1: 0n,
             slip0: 0n,
             slip1: swapResult.slippage, // Slippage is lost in output token (token1)
-            depositedAmount0: liquidityAmounts.amount0, // Amount deposited into liquidity
-            depositedAmount1: liquidityAmounts.amount1, // Amount deposited into liquidity
+            depositedAmount0: liquidityAmounts.amount0,
+            depositedAmount1: liquidityAmounts.amount1,
           };
         }
       }
@@ -346,39 +380,55 @@ export class LiquidityCalculator {
             sqrtPriceUpper
           );
 
-          // Calculate remain amounts
-          // To satisfy: usedAmount0 = slip + liquidityAmount0 and usedAmount1 = fee + liquidityAmount1
-          // We need: amount0 = usedAmount0 + remain0, amount1 = usedAmount1 + remain1
-          // Therefore:
-          //   remain0 = amount0 - (slip + liquidityAmount0) = amount0 - swapResult.slippage - liquidityAmounts.amount0
-          //   remain1 = amount1 - (fee + liquidityAmount1) = amount1 - swapResult.fee - liquidityAmounts.amount1
+          // APPROACH A: Track ALL tokens separately
+          // Accounting invariant for token1→token0 swap:
+          //   amount0 = depositedAmount0 + slip0 + remain0
+          //   amount1 = depositedAmount1 + swapFee1 + remain1
           //
-          // For remain0, we need to subtract slippage to make usedAmount0 = slip + liquidityAmount0
-          const remain0 =
-            amount0 - swapResult.slippage - liquidityAmounts.amount0;
-          // For remain1, swapAmount1 includes the fee, so:
-          const remain1 = amount1 - swapAmount1 - liquidityAmounts.amount1;
-
-          // Calculate actual physical remain (what's truly left after all operations)
+          // Physical flow:
+          //   1. Start with: amount0, amount1
+          //   2. Swap: spend swapAmount1 (which includes fee), receive amountOut (reduced by slippage)
+          //      - Fee paid: swapResult.fee (from token1)
+          //      - Slippage lost: swapResult.slippage (from expected token0 output)
+          //   3. After swap: (amount0 + amountOut), (amount1 - swapAmount1)
+          //   4. Deposit into liquidity: liquidityAmounts.amount0, liquidityAmounts.amount1
+          //   5. Remain: what's physically left
+          //
+          // Calculate physical remain:
           const actualRemain0 =
             amount0 + swapResult.amountOut - liquidityAmounts.amount0;
           const actualRemain1 =
             amount1 - swapAmount1 - liquidityAmounts.amount1;
 
-          // Invariant: amount0 = depositedAmount0 + swapCost0 + remain0
-          // With this formula, remain = actualRemain (no negative values!)
+          // For token0: amount0 = depositedAmount0 + slip0 + remain0
+          // amount0 + amountOut = depositedAmount0 + remain0 (physically)
+          // But amountOut = expectedOut - slippage
+          // So: amount0 + expectedOut - slippage = depositedAmount0 + remain0
+          // We want: amount0 = depositedAmount0 + slippage + remain0
+          // Therefore: remain0 = amount0 - depositedAmount0 - slippage
+          const remain0 =
+            amount0 - liquidityAmounts.amount0 - swapResult.slippage;
+
+          // For token1: amount1 = depositedAmount1 + swapFee1 + remain1
+          // Since swapAmount1 = fee + <what gets converted to token0>
+          // We have: amount1 = swapAmount1 + actualRemain1 + depositedAmount1
+          //                  = fee + <converted> + actualRemain1 + depositedAmount1
+          // We want: amount1 = fee + depositedAmount1 + remain1
+          // So: remain1 = amount1 - fee - depositedAmount1
+          const remain1 = amount1 - swapResult.fee - liquidityAmounts.amount1;
+
           bestResult = {
             liquidity,
-            remain0: actualRemain0,
-            remain1: actualRemain1,
+            remain0,
+            remain1,
             actualRemain0,
             actualRemain1,
             swapFee0: 0n,
             swapFee1: swapResult.fee, // Fee is paid in input token (token1)
             slip0: swapResult.slippage, // Slippage is lost in output token (token0)
             slip1: 0n,
-            depositedAmount0: liquidityAmounts.amount0, // Amount deposited into liquidity
-            depositedAmount1: liquidityAmounts.amount1, // Amount deposited into liquidity
+            depositedAmount0: liquidityAmounts.amount0,
+            depositedAmount1: liquidityAmounts.amount1,
           };
         }
       }

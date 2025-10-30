@@ -792,12 +792,82 @@ export class VirtualPositionManager {
     fee1: bigint,
     totalPoolLiquidity: bigint
   ) {
-    for (const position of positions) {
-      if (totalPoolLiquidity > 0n) {
+    if (positions.length === 0) return;
+
+    let actualDistributedFee0 = 0n;
+    let actualDistributedFee1 = 0n;
+
+    // Distribute fees proportionally to each position
+    for (let i = 0; i < positions.length; i++) {
+      const position = positions[i];
+      if (position && totalPoolLiquidity > 0n) {
         const f0 = (fee0 * position.liquidity) / totalPoolLiquidity;
         const f1 = (fee1 * position.liquidity) / totalPoolLiquidity;
         position.updateFees(f0, f1);
+        actualDistributedFee0 += f0;
+        actualDistributedFee1 += f1;
       }
+    }
+
+    // Distribute remaining dust to the last position (handles rounding errors)
+    // This ensures ALL fees are distributed, not lost to rounding
+    const remainder0 = fee0 - actualDistributedFee0;
+    const remainder1 = fee1 - actualDistributedFee1;
+
+    if ((remainder0 > 0n || remainder1 > 0n) && positions.length > 0) {
+      const lastPosition = positions[positions.length - 1];
+      if (lastPosition) {
+        lastPosition.updateFees(remainder0, remainder1);
+        actualDistributedFee0 += remainder0;
+        actualDistributedFee1 += remainder1;
+
+        // Log dust distribution
+        if (remainder0 > 0n || remainder1 > 0n) {
+          console.log(
+            `  🧹 Dust distributed to last position: ` +
+              `remainder0=${remainder0.toString()}, remainder1=${remainder1.toString()}`
+          );
+        }
+      }
+    }
+
+    // Verify all fees were distributed (should always be true now)
+    if (actualDistributedFee0 !== fee0 || actualDistributedFee1 !== fee1) {
+      console.warn(
+        `  ⚠️ Fee distribution mismatch! ` +
+          `Expected: fee0=${fee0}, fee1=${fee1}, ` +
+          `Distributed: fee0=${actualDistributedFee0}, fee1=${actualDistributedFee1}`
+      );
+    }
+
+    // Log actual distributed fees
+    if (actualDistributedFee0 > 0n || actualDistributedFee1 > 0n) {
+      const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
+      const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+      const actualFee0Display =
+        Number(actualDistributedFee0) / Math.pow(10, decimals0);
+      const actualFee1Display =
+        Number(actualDistributedFee1) / Math.pow(10, decimals1);
+      const totalFee0Display = Number(fee0) / Math.pow(10, decimals0);
+      const totalFee1Display = Number(fee1) / Math.pow(10, decimals1);
+
+      console.log(
+        `  ✅ Actual fees distributed: ${actualFee0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } / ${actualFee1Display.toFixed(6)} ${
+          process.env.TOKEN_B_NAME || "B"
+        } ` +
+          `(${
+            totalFee0Display > 0
+              ? ((actualFee0Display / totalFee0Display) * 100).toFixed(2)
+              : "0.00"
+          }% / ` +
+          `${
+            totalFee1Display > 0
+              ? ((actualFee1Display / totalFee1Display) * 100).toFixed(2)
+              : "0.00"
+          }% of total)`
+      );
     }
   }
 

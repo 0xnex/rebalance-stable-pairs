@@ -732,16 +732,18 @@ describe("LiquidityCalculator", () => {
             amount1
           );
 
-          // Verify that all values are non-negative and make sense
+          // Verify that depositedAmount and actualRemain are always non-negative
           expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
           expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-          expect(result.remain0).toBeGreaterThanOrEqual(0n);
-          expect(result.remain1).toBeGreaterThanOrEqual(0n);
+          expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+          expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
+          
+          // Note: remain0 and remain1 can be negative in Approach A accounting
 
           // Liquidity should be non-negative
           expect(result.liquidity).toBeGreaterThanOrEqual(0n);
 
-          // Remain amounts are always positive (physical leftover)
+          // actualRemain amounts are always positive (physical leftover)
           // depositedAmount shows what went into liquidity
 
           // Only one swap direction should have fees
@@ -760,7 +762,7 @@ describe("LiquidityCalculator", () => {
             expect(result.slip0).toBe(0n);
           }
 
-          // Verify depositedAmount matches liquidity calculation
+          // Verify deposited amounts match liquidity calculation
           const liquidityAmounts =
             LiquidityCalculator.calculateAmountsForLiquidity(
               result.liquidity,
@@ -772,6 +774,17 @@ describe("LiquidityCalculator", () => {
           // depositedAmount should match what calculateAmountsForLiquidity returns
           expect(result.depositedAmount0).toBe(liquidityAmounts.amount0);
           expect(result.depositedAmount1).toBe(liquidityAmounts.amount1);
+          
+          // Verify Approach A accounting invariant:
+          //   amount0 = depositedAmount0 + swapFee0 + slip0 + remain0
+          //   amount1 = depositedAmount1 + swapFee1 + slip1 + remain1
+          const reconstructedAmount0 = 
+            result.depositedAmount0 + result.swapFee0 + result.slip0 + result.remain0;
+          const reconstructedAmount1 = 
+            result.depositedAmount1 + result.swapFee1 + result.slip1 + result.remain1;
+          
+          expect(reconstructedAmount0).toBe(amount0);
+          expect(reconstructedAmount1).toBe(amount1);
         });
       };
 
@@ -872,11 +885,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
 
         // Should swap token1 → token0
         expect(result.swapFee1).toBeGreaterThan(0n);
@@ -920,11 +933,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
 
         // Should swap token0 → token1
         expect(result.swapFee0).toBeGreaterThan(0n);
@@ -967,11 +980,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
 
         // May or may not swap depending on optimal ratio
         // But fees should be consistent
@@ -1099,11 +1112,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
 
         // Should swap token1 → token0 since only token0 is useful below range
         expect(result.swapFee1).toBeGreaterThan(0n);
@@ -1130,11 +1143,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
 
         // Should swap token0 → token1 since only token1 is useful above range
         expect(result.swapFee0).toBeGreaterThan(0n);
@@ -1162,11 +1175,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
         expect(result.liquidity).toBeGreaterThan(0n);
       });
 
@@ -1185,11 +1198,11 @@ describe("LiquidityCalculator", () => {
           amount1
         );
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
         expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
         expect(result.liquidity).toBeGreaterThan(0n);
       });
     });
@@ -1253,11 +1266,11 @@ describe("LiquidityCalculator", () => {
         );
         console.log(`Liquidity: ${result.liquidity}`);
 
-        // Verify results are valid
+        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
         expect(result.depositedAmount0).toBeGreaterThan(0n);
         expect(result.depositedAmount1).toBeGreaterThan(0n);
-        expect(result.remain0).toBeGreaterThanOrEqual(0n);
-        expect(result.remain1).toBeGreaterThan(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThan(0n);
 
         // Should swap USDC → suiUSDT
         expect(result.swapFee1).toBeGreaterThan(0n);

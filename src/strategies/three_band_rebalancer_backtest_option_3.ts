@@ -711,21 +711,23 @@ export function strategyFactory(
       // Calculate slippage costs in human-readable decimals
       const slippageToken0 = totals.slippageTokenA / Math.pow(10, decimals0);
       const slippageToken1 = totals.slippageTokenB / Math.pow(10, decimals1);
-      const totalSlippage = slippageToken0 + slippageToken1;
 
       ctx.logger?.log?.(
         `  💧 SLIPPAGE LOST: ${slippageToken0.toFixed(6)} ${
           process.env.TOKEN_A_NAME || "A"
-        } + ` +
-          `${slippageToken1.toFixed(6)} ${
-            process.env.TOKEN_B_NAME || "B"
-          } = $${totalSlippage.toFixed(2)}`
+        } + ${slippageToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
       );
 
-      // Total swap costs (fees + slippage)
-      const totalSwapCosts = swapCostToken0 + swapCostToken1 + totalSlippage;
+      // Total swap costs (in separate tokens - cannot add different tokens)
+      const totalSwapCostToken0 = swapCostToken0 + slippageToken0;
+      const totalSwapCostToken1 = swapCostToken1 + slippageToken1;
+
       ctx.logger?.log?.(
-        `  💰 TOTAL SWAP COSTS: $${totalSwapCosts.toFixed(2)} (fees + slippage)`
+        `  💰 TOTAL SWAP COSTS: ${totalSwapCostToken0.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ${totalSwapCostToken1.toFixed(6)} ${
+          process.env.TOKEN_B_NAME || "B"
+        } (fees + slippage)`
       );
 
       // Net fees (earned - paid - slippage)
