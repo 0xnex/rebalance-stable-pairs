@@ -656,7 +656,7 @@ export function strategyFactory(
 
       // Close all positions
       for (const segment of strategy.getSegments()) {
-        manager.closePosition(segment.id);
+        manager.closePosition(segment.id, ctx.timestamp);
       }
 
       // Log final state after closing positions

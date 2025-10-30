@@ -329,9 +329,12 @@ export class VirtualPositionManager {
     const totalSwapFees = swapFee0Display + swapFee1Display;
     const totalSlippage = slip0Display + slip1Display;
     const totalSwapCosts = totalSwapFees + totalSlippage;
-    const swapCostPercentage = totalInputValue > 0 ? (totalSwapCosts / totalInputValue) * 100 : 0;
-    const feePercentage = totalInputValue > 0 ? (totalSwapFees / totalInputValue) * 100 : 0;
-    const slippagePercentage = totalInputValue > 0 ? (totalSlippage / totalInputValue) * 100 : 0;
+    const swapCostPercentage =
+      totalInputValue > 0 ? (totalSwapCosts / totalInputValue) * 100 : 0;
+    const feePercentage =
+      totalInputValue > 0 ? (totalSwapFees / totalInputValue) * 100 : 0;
+    const slippagePercentage =
+      totalInputValue > 0 ? (totalSlippage / totalInputValue) * 100 : 0;
 
     console.log(
       `[maxLiquidity] Input: ${input0Display.toFixed(6)} ${
@@ -355,14 +358,22 @@ export class VirtualPositionManager {
         } (${feePercentage.toFixed(4)}%) | ` +
         `Slip: ${slip0Display.toFixed(6)} ${
           process.env.TOKEN_A_NAME || "A"
-        }, ${slip1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} (${slippagePercentage.toFixed(4)}%)`
+        }, ${slip1Display.toFixed(6)} ${
+          process.env.TOKEN_B_NAME || "B"
+        } (${slippagePercentage.toFixed(4)}%)`
     );
-    
+
     if (totalSwapCosts > 0) {
       console.log(
-        `[SwapCostAnalysis] Total swap costs: ${totalSwapCosts.toFixed(6)} (${swapCostPercentage.toFixed(4)}% of input) | ` +
-        `Fees: ${totalSwapFees.toFixed(6)} (${feePercentage.toFixed(4)}%) | ` +
-        `Slippage: ${totalSlippage.toFixed(6)} (${slippagePercentage.toFixed(4)}%)`
+        `[SwapCostAnalysis] Total swap costs: ${totalSwapCosts.toFixed(
+          6
+        )} (${swapCostPercentage.toFixed(4)}% of input) | ` +
+          `Fees: ${totalSwapFees.toFixed(6)} (${feePercentage.toFixed(
+            4
+          )}%) | ` +
+          `Slippage: ${totalSlippage.toFixed(6)} (${slippagePercentage.toFixed(
+            4
+          )}%)`
       );
     }
     if (result.swapFee0 > 0n || result.swapFee1 > 0n) {
@@ -396,9 +407,11 @@ export class VirtualPositionManager {
       const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
       const slip0Display = Number(result.slip0) / Math.pow(10, decimals0);
       const slip1Display = Number(result.slip1) / Math.pow(10, decimals1);
-      const totalSlip0Display = Number(this.slippage0) / Math.pow(10, decimals0);
-      const totalSlip1Display = Number(this.slippage1) / Math.pow(10, decimals1);
-      
+      const totalSlip0Display =
+        Number(this.slippage0) / Math.pow(10, decimals0);
+      const totalSlip1Display =
+        Number(this.slippage1) / Math.pow(10, decimals1);
+
       console.log(
         `[Slippage] 💧 This position: ${slip0Display.toFixed(6)} ${
           process.env.TOKEN_A_NAME || "A"
@@ -441,6 +454,16 @@ export class VirtualPositionManager {
     fee0: bigint;
     fee1: bigint;
   } {
+    const positionCount = this.positions.size;
+    const activePositions = Array.from(this.positions.values()).filter(
+      (p) => p.liquidity > 0n
+    ).length;
+
+    console.log(
+      `[CloseAllPositions] 🔒 Closing all positions: ` +
+        `total=${positionCount}, active=${activePositions}`
+    );
+
     let amount0 = 0n;
     let amount1 = 0n;
     let fee0 = 0n;
@@ -466,13 +489,36 @@ export class VirtualPositionManager {
     this.feeCollected0 += fee0;
     this.feeCollected1 += fee1;
 
+    // Log totals
+    const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
+    const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+    const amount0Display = Number(amount0) / Math.pow(10, decimals0);
+    const amount1Display = Number(amount1) / Math.pow(10, decimals1);
+    const fee0Display = Number(fee0) / Math.pow(10, decimals0);
+    const fee1Display = Number(fee1) / Math.pow(10, decimals1);
+    const totalValue =
+      amount0Display + amount1Display + fee0Display + fee1Display;
+
+    console.log(
+      `[CloseAllPositions]   Total returned: ${amount0Display.toFixed(6)} ${
+        process.env.TOKEN_A_NAME || "A"
+      } + ${amount1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+        `Fees: ${fee0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ${fee1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+        `Total: $${totalValue.toFixed(2)}`
+    );
+
     // Don't delete positions - keep them for historical tracking
     // Positions with liquidity=0 indicate they're closed
 
     return { amount0, amount1, fee0, fee1 };
   }
 
-  closePosition(id: string): {
+  closePosition(
+    id: string,
+    currentTime?: number
+  ): {
     amount0: bigint;
     amount1: bigint;
     fee0: bigint;
@@ -483,6 +529,51 @@ export class VirtualPositionManager {
       throw new Error("Position not found");
     }
     position.setClosed(true);
+
+    // Get position info before closing for logging
+    const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
+    const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+    const currentTick = this.pool.tickCurrent;
+    const isInRange = position.isInRange(currentTick);
+    const liquidityBefore = position.liquidity;
+
+    // Calculate position value before closing
+    const positionTotals = position.getTotals(this.pool.sqrtPriceX64);
+    const amount0Display =
+      Number(positionTotals.amount0) / Math.pow(10, decimals0);
+    const amount1Display =
+      Number(positionTotals.amount1) / Math.pow(10, decimals1);
+    const fee0Display = Number(positionTotals.fee0) / Math.pow(10, decimals0);
+    const fee1Display = Number(positionTotals.fee1) / Math.pow(10, decimals1);
+    const totalValue =
+      amount0Display + amount1Display + fee0Display + fee1Display;
+
+    // Calculate how long the position was open
+    // Use currentTime if provided (for backtest), otherwise use Date.now()
+    const closeTime = currentTime ?? Date.now();
+    const lifespan = closeTime - position.createdAt;
+    const lifespanHours = (lifespan / (1000 * 60 * 60)).toFixed(2);
+    const lifespanDays = (lifespan / (1000 * 60 * 60 * 24)).toFixed(2);
+
+    console.log(
+      `[ClosePosition] 🔒 Closing position ${id}: ` +
+        `range=[${position.tickLower}, ${position.tickUpper}], ` +
+        `currentTick=${currentTick}, ` +
+        `inRange=${isInRange ? "✓" : "✗"}, ` +
+        `liquidity=${liquidityBefore.toString()}`
+    );
+
+    console.log(
+      `[ClosePosition]   Returns: ${amount0Display.toFixed(6)} ${
+        process.env.TOKEN_A_NAME || "A"
+      } + ${amount1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+        `Fees: ${fee0Display.toFixed(6)} ${
+          process.env.TOKEN_A_NAME || "A"
+        } + ${fee1Display.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"} | ` +
+        `Total: $${totalValue.toFixed(2)} | ` +
+        `Lifespan: ${lifespanDays}d (${lifespanHours}h)`
+    );
+
     const result = position.close(this.pool.sqrtPriceX64);
     this.amount0 += result.amount0 + result.fee0;
     this.amount1 += result.amount1 + result.fee1;
@@ -646,18 +737,26 @@ export class VirtualPositionManager {
 
     // Calculate fee distribution metrics
     const totalFees = fee0 + fee1;
-    const feeRate = event.amountIn > 0n ? 
-      (Number(totalFees) / Number(event.amountIn)) * 100 : 0;
-    const ourEstimatedFees0 = ourShareOfPool > 0 ? 
-      (fee0 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n : 0n;
-    const ourEstimatedFees1 = ourShareOfPool > 0 ? 
-      (fee1 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n : 0n;
+    const feeRate =
+      event.amountIn > 0n
+        ? (Number(totalFees) / Number(event.amountIn)) * 100
+        : 0;
+    const ourEstimatedFees0 =
+      ourShareOfPool > 0
+        ? (fee0 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n
+        : 0n;
+    const ourEstimatedFees1 =
+      ourShareOfPool > 0
+        ? (fee1 * BigInt(Math.floor(ourShareOfPool * 100))) / 10000n
+        : 0n;
 
     console.log(
       `[VirtualPositionManager] Distributing fees from swap: ` +
         `direction=${event.zeroForOne ? "0→1" : "1→0"}, ` +
         `fee0=${fee0.toString()}, fee1=${fee1.toString()}, ` +
-        `totalFees=${totalFees.toString()} (${feeRate.toFixed(4)}% of amountIn), ` +
+        `totalFees=${totalFees.toString()} (${feeRate.toFixed(
+          4
+        )}% of amountIn), ` +
         `crossedPositions=${crossedPositions.length}`
     );
     console.log(
