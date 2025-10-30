@@ -5,6 +5,8 @@
  * from swap event data, which is essential for understanding pool depth and fee distribution.
  */
 
+import { getMaxSlippage } from "./slippage/slippage";
+
 /**
  * Constants for precision and calculations
  */
@@ -206,11 +208,15 @@ export class LiquidityCalculator {
         amount0 > optimalAmount0 ? amount0 - optimalAmount0 : 0n;
 
       if (swapAmount0 > 0n) {
+        // Get decimal for token0 (input token in this swap: token0 -> token1)
+        const decimal = parseInt(process.env.TOKEN_A_DECIMALS || "8");
         const swapResult = this.simulateSwap(
           swapAmount0,
           true,
           currentPrice,
-          feeRatePpm
+          feeRatePpm,
+          50, // default slippageBps
+          decimal
         );
 
         const newAmount0 = amount0 - swapAmount0;
@@ -299,11 +305,15 @@ export class LiquidityCalculator {
         amount1 > optimalAmount1 ? amount1 - optimalAmount1 : 0n;
 
       if (swapAmount1 > 0n) {
+        // Get decimal for token1 (input token in this swap: token1 -> token0)
+        const decimal = parseInt(process.env.TOKEN_B_DECIMALS || "8");
         const swapResult = this.simulateSwap(
           swapAmount1,
           false,
           currentPrice,
-          feeRatePpm
+          feeRatePpm,
+          50, // default slippageBps
+          decimal
         );
 
         const newAmount0 = amount0 + swapResult.amountOut;
@@ -527,7 +537,8 @@ export class LiquidityCalculator {
     zeroForOne: boolean,
     currentPrice: number,
     feeRatePpm: number,
-    slippageBps: number = 50 // 0.5% default slippage
+    slippageBps: number = 50, // 0.5% default slippage
+    decimal: number = 8
   ): { amountOut: bigint; fee: bigint; slippage: bigint } {
     if (amountIn <= 0n) {
       return { amountOut: 0n, fee: 0n, slippage: 0n };
@@ -552,7 +563,26 @@ export class LiquidityCalculator {
     }
 
     // Calculate slippage (reduce output)
-    const slippage = (amountOut * BigInt(slippageBps)) / 10000n;
+    let slippage: bigint;
+    try {
+      const tokenAName = process.env.TOKEN_A_NAME || "TokenA";
+      const tokenBName = process.env.TOKEN_B_NAME || "TokenB";
+      const swapAmount = amountIn / 10n ** BigInt(decimal);
+      const maxSlippage = getMaxSlippage(
+        tokenAName,
+        tokenBName,
+        Number(swapAmount)
+      );
+      if (maxSlippage === null) {
+        throw new Error("Swap amount exceeds max slippage threshold");
+      }
+      // Convert maxSlippage (percentage) to scaled integer for BigInt calculation
+      const slippageScaled = Math.floor(maxSlippage * 1e10); // Scale up by 10 billion
+      slippage = (amountOut * BigInt(slippageScaled)) / 1000000000000n; // Divide by 1e12 (1e10 * 100)
+    } catch (error: any) {
+      slippage = (amountOut * BigInt(slippageBps)) / 10000n;
+    }
+
     const amountOutBeforeSlippage = amountOut;
     amountOut = amountOut - slippage;
 
@@ -562,16 +592,18 @@ export class LiquidityCalculator {
 
     // Log detailed swap simulation for analysis
     const feeRate = (Number(fee) / Number(amountIn)) * 100;
-    const slippageRate = amountOutBeforeSlippage > 0n ? 
-      (Number(slippage) / Number(amountOutBeforeSlippage)) * 100 : 0;
-    
+    const slippageRate =
+      amountOutBeforeSlippage > 0n
+        ? (Number(slippage) / Number(amountOutBeforeSlippage)) * 100
+        : 0;
+
     console.log(
       `[SimulateSwap] ${zeroForOne ? "Token0→Token1" : "Token1→Token0"}: ` +
-      `amountIn=${amountIn.toString()}, ` +
-      `fee=${fee.toString()} (${feeRate.toFixed(4)}%), ` +
-      `amountOut=${amountOut.toString()}, ` +
-      `slippage=${slippage.toString()} (${slippageRate.toFixed(4)}%), ` +
-      `price=${currentPrice.toFixed(6)}`
+        `amountIn=${amountIn.toString()}, ` +
+        `fee=${fee.toString()} (${feeRate.toFixed(4)}%), ` +
+        `amountOut=${amountOut.toString()}, ` +
+        `slippage=${slippage.toString()} (${slippageRate.toFixed(4)}%), ` +
+        `price=${currentPrice.toFixed(6)}`
     );
 
     return { amountOut, fee, slippage };
