@@ -29,6 +29,7 @@ export interface ThreeBandRebalancerConfigOptionThree {
   autoCollectIntervalMs?: number;
   // Option 3 specific
   maxDailyRebalances?: number;
+  minRebalanceCooldownMs?: number;
 }
 
 type SegmentState = {
@@ -73,6 +74,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
   // Daily rebalance tracking for Option 3
   private dailyRebalanceCount = 0;
   private lastRebalanceDate: string | null = null;
+  private lastRebalanceTime: number = 0;
 
   // Remove surplus segments, keeping exactly 3 closest to current tick
   private trimToThreeSegments(now: number, currentTick: number) {
@@ -149,6 +151,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
       activeBandWeightPercent: config.activeBandWeightPercent ?? 60,
       // Option 3 specific
       maxDailyRebalances: config.maxDailyRebalances ?? 5,
+      minRebalanceCooldownMs: config.minRebalanceCooldownMs ?? 3_600_000, // 1 hour default
     };
   }
 
@@ -792,16 +795,18 @@ export class ThreeBandRebalancerStrategyOptionThree {
       if (weight === undefined) return baseAvailableB;
       return (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
     })();
-    
+
     console.log(
-      `[OpenSegment] BEFORE range[${tickLower},${tickUpper}] weight=${((weight ?? 1) * 100).toFixed(1)}%: ` +
-      `cashA=${totalsBefore.cashAmountA} cashB=${totalsBefore.cashAmountB} ` +
-      `totalA=${totalsBefore.amountA} totalB=${totalsBefore.amountB}`
+      `[OpenSegment] BEFORE range[${tickLower},${tickUpper}] weight=${(
+        (weight ?? 1) * 100
+      ).toFixed(1)}%: ` +
+        `cashA=${totalsBefore.cashAmountA} cashB=${totalsBefore.cashAmountB} ` +
+        `totalA=${totalsBefore.amountA} totalB=${totalsBefore.amountB}`
     );
     console.log(
       `[OpenSegment] Allocating: weightedA=${weightedA} weightedB=${weightedB}`
     );
-    
+
     const positionId = this.manager.newPositionId();
     this.manager.createPosition(
       positionId,
@@ -811,29 +816,37 @@ export class ThreeBandRebalancerStrategyOptionThree {
       weightedB,
       timestamp
     );
-    
+
     const totalsAfter = this.manager.getTotals();
     const position = this.manager.getPosition(positionId);
     const positionTotals = position?.getTotals(this.manager.pool.sqrtPriceX64);
-    
+
     console.log(
       `[OpenSegment] AFTER created positionId=${positionId}: ` +
-      `cashA=${totalsAfter.cashAmountA} cashB=${totalsAfter.cashAmountB} ` +
-      `totalA=${totalsAfter.amountA} totalB=${totalsAfter.amountB}`
+        `cashA=${totalsAfter.cashAmountA} cashB=${totalsAfter.cashAmountB} ` +
+        `totalA=${totalsAfter.amountA} totalB=${totalsAfter.amountB}`
     );
     console.log(
       `[OpenSegment] Position contains: ` +
-      `posA=${positionTotals?.amount0 ?? 0n} posB=${positionTotals?.amount1 ?? 0n} ` +
-      `liquidity=${position?.liquidity ?? 0n}`
+        `posA=${positionTotals?.amount0 ?? 0n} posB=${
+          positionTotals?.amount1 ?? 0n
+        } ` +
+        `liquidity=${position?.liquidity ?? 0n}`
     );
     console.log(
       `[OpenSegment] Fund change: ` +
-      `ΔcashA=${Number(totalsAfter.cashAmountA) - Number(totalsBefore.cashAmountA)} ` +
-      `ΔcashB=${Number(totalsAfter.cashAmountB) - Number(totalsBefore.cashAmountB)} ` +
-      `ΔtotalA=${Number(totalsAfter.amountA) - Number(totalsBefore.amountA)} ` +
-      `ΔtotalB=${Number(totalsAfter.amountB) - Number(totalsBefore.amountB)}`
+        `ΔcashA=${
+          Number(totalsAfter.cashAmountA) - Number(totalsBefore.cashAmountA)
+        } ` +
+        `ΔcashB=${
+          Number(totalsAfter.cashAmountB) - Number(totalsBefore.cashAmountB)
+        } ` +
+        `ΔtotalA=${
+          Number(totalsAfter.amountA) - Number(totalsBefore.amountA)
+        } ` +
+        `ΔtotalB=${Number(totalsAfter.amountB) - Number(totalsBefore.amountB)}`
     );
-    
+
     return {
       id: positionId,
       tickLower,
@@ -1573,6 +1586,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
    */
   private canRebalanceToday(now: number): { allowed: boolean; reason: string } {
     const maxRebalances = this.config.maxDailyRebalances ?? 5;
+    const minCooldownMs = this.config.minRebalanceCooldownMs ?? 1_800_000; // 30 minutes
     const currentDate = new Date(now).toDateString();
 
     // Reset counter if new day
@@ -1587,6 +1601,22 @@ export class ThreeBandRebalancerStrategyOptionThree {
         allowed: false,
         reason: `Daily rebalance limit reached (${this.dailyRebalanceCount}/${maxRebalances})`,
       };
+    }
+
+    // Check cooldown between rebalances
+    if (this.lastRebalanceTime > 0) {
+      const timeSinceLastRebalance = now - this.lastRebalanceTime;
+      if (timeSinceLastRebalance < minCooldownMs) {
+        const remainingMs = minCooldownMs - timeSinceLastRebalance;
+        return {
+          allowed: false,
+          reason: `Rebalance cooldown active: ${Math.ceil(
+            remainingMs / 1000
+          )}s remaining (${
+            this.dailyRebalanceCount
+          }/${maxRebalances} used today)`,
+        };
+      }
     }
 
     return {
@@ -1608,6 +1638,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     }
 
     this.dailyRebalanceCount++;
+    this.lastRebalanceTime = now;
   }
 }
 
