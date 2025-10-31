@@ -297,10 +297,8 @@ export class ThreeBandRebalancerStrategy {
     // Calculate weights for dynamic allocation
     const weights = this.calculateSegmentWeights(descriptors, currentTick);
 
-    // Capture initial capital before opening any positions
-    const initialTotals = this.manager.getTotals();
-    const initialCapitalA = initialTotals.cashAmountA ?? initialTotals.amountA;
-    const initialCapitalB = initialTotals.cashAmountB ?? initialTotals.amountB;
+    // Note: Do NOT use initial capital per position; allocate from remaining cash to avoid
+    // insufficient balance after prior opens consume fees/slippage.
 
     for (let i = 0; i < openOrder.length; i++) {
       const descriptor = openOrder[i];
@@ -317,9 +315,7 @@ export class ThreeBandRebalancerStrategy {
           descriptor.lower,
           descriptor.upper,
           now,
-          weight,
-          initialCapitalA,
-          initialCapitalB
+          weight
         );
         opened.push(segment);
       } catch (error) {
@@ -528,7 +524,7 @@ export class ThreeBandRebalancerStrategy {
       if (weight === undefined) return baseAvailableB;
       return (baseB * BigInt(Math.floor(weight * 10000))) / 10000n;
     })();
-    
+
     console.log(
       `[OpenSegment] BEFORE range[${tickLower},${tickUpper}] weight=${((weight ?? 1) * 100).toFixed(1)}%: ` +
       `cashA=${totalsBefore.cashAmountA} cashB=${totalsBefore.cashAmountB} ` +
@@ -537,7 +533,7 @@ export class ThreeBandRebalancerStrategy {
     console.log(
       `[OpenSegment] Allocating: weightedA=${weightedA} weightedB=${weightedB}`
     );
-    
+
     const positionId = this.manager.newPositionId();
     this.manager.createPosition(
       positionId,
@@ -547,11 +543,11 @@ export class ThreeBandRebalancerStrategy {
       weightedB,
       timestamp
     );
-    
+
     const totalsAfter = this.manager.getTotals();
     const position = this.manager.getPosition(positionId);
     const positionTotals = position?.getTotals(this.manager.pool.sqrtPriceX64);
-    
+
     console.log(
       `[OpenSegment] AFTER created positionId=${positionId}: ` +
       `cashA=${totalsAfter.cashAmountA} cashB=${totalsAfter.cashAmountB} ` +
@@ -569,7 +565,7 @@ export class ThreeBandRebalancerStrategy {
       `ΔtotalA=${Number(totalsAfter.amountA) - Number(totalsBefore.amountA)} ` +
       `ΔtotalB=${Number(totalsAfter.amountB) - Number(totalsBefore.amountB)}`
     );
-    
+
     return {
       id: positionId,
       tickLower,
