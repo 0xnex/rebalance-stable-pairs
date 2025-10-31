@@ -548,6 +548,18 @@ export class ThreeBandRebalancerStrategy {
     const position = this.manager.getPosition(positionId);
     const positionTotals = position?.getTotals(this.manager.pool.sqrtPriceX64);
 
+    // If liquidity is zero, treat as failed open to avoid keeping dead positions
+    if (!position || position.liquidity === 0n) {
+      try {
+        this.manager.closePosition(positionId, timestamp);
+      } catch {
+        // ignore cleanup error
+      }
+      throw new Error(
+        `Zero-liquidity open for [${tickLower}, ${tickUpper}] (weightedA=${weightedA} weightedB=${weightedB})`
+      );
+    }
+
     console.log(
       `[OpenSegment] AFTER created positionId=${positionId}: ` +
       `cashA=${totalsAfter.cashAmountA} cashB=${totalsAfter.cashAmountB} ` +
