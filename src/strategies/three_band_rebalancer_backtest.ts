@@ -144,7 +144,8 @@ export function strategyFactory(pool: Pool, manager: VirtualPositionManager): Ba
     const tick = pool.tickCurrent;
     const price = pool.price;
     const totals = manager.getTotals();
-    const positions = manager.getAllPositions();
+    // Use only active positions to avoid zero-liquidity warnings from closed/failed opens
+    const positions = manager.getAllPositions().filter((p) => p.liquidity > 0n);
 
     // Calculate total value and breakdown (keep raw values)
     const amountA = Number(totals.amountA);
@@ -557,16 +558,14 @@ export function strategyFactory(pool: Pool, manager: VirtualPositionManager): Ba
         )} costB=${totals.totalCostTokenB.toFixed(4)}`
       );
       ctx.logger?.log?.(
-        `  TOTAL VALUE: ${
-          Number(totals.cashAmountA) +
-          Number(totals.amountA) +
-          Number(totals.collectedFees0) +
-          Number(totals.feesOwed0)
-        } A + ${
-          Number(totals.cashAmountB) +
-          Number(totals.amountB) +
-          Number(totals.collectedFees1) +
-          Number(totals.feesOwed1)
+        `  TOTAL VALUE: ${Number(totals.cashAmountA) +
+        Number(totals.amountA) +
+        Number(totals.collectedFees0) +
+        Number(totals.feesOwed0)
+        } A + ${Number(totals.cashAmountB) +
+        Number(totals.amountB) +
+        Number(totals.collectedFees1) +
+        Number(totals.feesOwed1)
         } B`
       );
     },
