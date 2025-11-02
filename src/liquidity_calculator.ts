@@ -838,6 +838,8 @@ export class LiquidityCalculator {
   /**
    * Convert tick to sqrt price
    * Formula: sqrt(1.0001^tick) * 2^64
+   *
+   * This is the full Uniswap V3 tick math implementation
    */
   static tickToSqrtPriceX64(tick: number): bigint {
     if (
@@ -849,10 +851,11 @@ export class LiquidityCalculator {
 
     const absTick = tick < 0 ? -tick : tick;
 
-    // Use precomputed values for efficiency (simplified version)
-    // In production, this would use the full Uniswap V3 tick math
-    let ratio = 0x100000000000000000000000000000000n; // 2^128
+    // Start with 2^128
+    let ratio = 0x100000000000000000000000000000000n;
 
+    // Multiply by precomputed values for each bit position
+    // These values represent sqrt(1.0001^(2^i)) in Q128 format
     if (absTick & 0x1)
       ratio = (ratio * 0xfffcb933bd6fad37aa2d162d1a594001n) >> 128n;
     if (absTick & 0x2)
@@ -865,13 +868,40 @@ export class LiquidityCalculator {
       ratio = (ratio * 0xffcb9843d60f6159c9db58835c926644n) >> 128n;
     if (absTick & 0x20)
       ratio = (ratio * 0xff973b41fa98c081472e6896dfb254c0n) >> 128n;
+    if (absTick & 0x40)
+      ratio = (ratio * 0xff2ea16466c96a3843ec78b326b52861n) >> 128n;
+    if (absTick & 0x80)
+      ratio = (ratio * 0xfe5dee046a99a2a811c461f1969c3053n) >> 128n;
+    if (absTick & 0x100)
+      ratio = (ratio * 0xfcbe86c7900a88aedcffc83b479aa3a4n) >> 128n;
+    if (absTick & 0x200)
+      ratio = (ratio * 0xf987a7253ac413176f2b074cf7815e54n) >> 128n;
+    if (absTick & 0x400)
+      ratio = (ratio * 0xf3392b0822b70005940c7a398e4b70f3n) >> 128n;
+    if (absTick & 0x800)
+      ratio = (ratio * 0xe7159475a2c29b7443b29c7fa6e889d9n) >> 128n;
+    if (absTick & 0x1000)
+      ratio = (ratio * 0xd097f3bdfd2022b8845ad8f792aa5825n) >> 128n;
+    if (absTick & 0x2000)
+      ratio = (ratio * 0xa9f746462d870fdf8a65dc1f90e061e5n) >> 128n;
+    if (absTick & 0x4000)
+      ratio = (ratio * 0x70d869a156d2a1b890bb3df62baf32f7n) >> 128n;
+    if (absTick & 0x8000)
+      ratio = (ratio * 0x31be135f97d08fd981231505542fcfa6n) >> 128n;
+    if (absTick & 0x10000)
+      ratio = (ratio * 0x9aa508b5b7a84e1c677de54f3e99bc9n) >> 128n;
+    if (absTick & 0x20000)
+      ratio = (ratio * 0x5d6af8dedb81196699c329225ee604n) >> 128n;
+    if (absTick & 0x40000)
+      ratio = (ratio * 0x2216e584f5fa1ea926041bedfe98n) >> 128n;
+    if (absTick & 0x80000) ratio = (ratio * 0x48a170391f7dc42444e8fa2n) >> 128n;
 
-    // Continue with more bits as needed...
-
+    // For negative ticks, take the reciprocal
     if (tick > 0)
       ratio = (LiquidityConstants.Q128 * LiquidityConstants.Q128) / ratio;
 
     // Convert from Q128 to Q64
+    // ratio is now sqrtPrice in Q128, we need Q64
     return ratio >> 64n;
   }
 

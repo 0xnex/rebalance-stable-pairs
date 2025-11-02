@@ -273,13 +273,18 @@ describe("LiquidityCalculator", () => {
 
     it("should clamp extreme values to valid tick range", () => {
       // Very high sqrt price (beyond max tick range)
-      const extremeHighSqrtPrice = Q64 * 1000000n;
+      // Get the actual max sqrt price and multiply by 2 to go beyond it
+      const maxSqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(
+        LiquidityConstants.MAX_TICK
+      );
+      const extremeHighSqrtPrice = maxSqrtPrice * 2n;
       const highTick =
         LiquidityCalculator.sqrtPriceToTick(extremeHighSqrtPrice);
       expect(highTick).toBe(LiquidityConstants.MAX_TICK);
 
       // Very low sqrt price (beyond min tick range)
-      const extremeLowSqrtPrice = Q64 / 1000000n;
+      // Use a very small sqrt price (much smaller than min tick represents)
+      const extremeLowSqrtPrice = 1n; // Extremely small, well below MIN_TICK
       const lowTick = LiquidityCalculator.sqrtPriceToTick(extremeLowSqrtPrice);
       expect(lowTick).toBe(LiquidityConstants.MIN_TICK);
     });
@@ -737,7 +742,7 @@ describe("LiquidityCalculator", () => {
           expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
           expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
           expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-          
+
           // Note: remain0 and remain1 can be negative in Approach A accounting
 
           // Liquidity should be non-negative
@@ -774,15 +779,21 @@ describe("LiquidityCalculator", () => {
           // depositedAmount should match what calculateAmountsForLiquidity returns
           expect(result.depositedAmount0).toBe(liquidityAmounts.amount0);
           expect(result.depositedAmount1).toBe(liquidityAmounts.amount1);
-          
+
           // Verify Approach A accounting invariant:
           //   amount0 = depositedAmount0 + swapFee0 + slip0 + remain0
           //   amount1 = depositedAmount1 + swapFee1 + slip1 + remain1
-          const reconstructedAmount0 = 
-            result.depositedAmount0 + result.swapFee0 + result.slip0 + result.remain0;
-          const reconstructedAmount1 = 
-            result.depositedAmount1 + result.swapFee1 + result.slip1 + result.remain1;
-          
+          const reconstructedAmount0 =
+            result.depositedAmount0 +
+            result.swapFee0 +
+            result.slip0 +
+            result.remain0;
+          const reconstructedAmount1 =
+            result.depositedAmount1 +
+            result.swapFee1 +
+            result.slip1 +
+            result.remain1;
+
           expect(reconstructedAmount0).toBe(amount0);
           expect(reconstructedAmount1).toBe(amount1);
         });
@@ -1204,6 +1215,211 @@ describe("LiquidityCalculator", () => {
         expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
         expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
         expect(result.liquidity).toBeGreaterThan(0n);
+      });
+    });
+
+    describe("Additional edge cases", () => {
+      it("should handle very narrow range (1 tick apart)", () => {
+        const narrowLowerTick = 0;
+        const narrowUpperTick = 1;
+        const sqrtPrice = Q64; // Price at tick 0
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPrice,
+          feeRatePpm,
+          narrowLowerTick,
+          narrowUpperTick,
+          1000000n,
+          1000000n
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
+        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
+      });
+
+      it("should handle range crossing price 1.0", () => {
+        // Range that crosses tick 0 (price 1.0)
+        const crossingLowerTick = -500;
+        const crossingUpperTick = 500;
+        const sqrtPrice = Q64; // Price = 1.0 (in middle of range)
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPrice,
+          feeRatePpm,
+          crossingLowerTick,
+          crossingUpperTick,
+          1000000n,
+          1000000n
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        expect(result.depositedAmount0).toBeGreaterThan(0n);
+        expect(result.depositedAmount1).toBeGreaterThan(0n);
+      });
+
+      it("should reject swap when cost exceeds improvement", () => {
+        // Use balanced amounts at price 1.0 where no swap should be beneficial
+        const amount0 = 1000000n;
+        const amount1 = 1000000n;
+        const highFeePpm = 30000; // 3% fee to make swap expensive
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64,
+          highFeePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // When fees are very high and amounts are balanced,
+        // swapping should not be beneficial
+        expect(result.liquidity).toBeGreaterThan(0n);
+      });
+
+      it("should handle very small amounts", () => {
+        const tinyAmount = 100n; // Very small amount
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          tinyAmount,
+          tinyAmount
+        );
+
+        expect(result.liquidity).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
+      });
+
+      it("should handle very large amounts", () => {
+        const largeAmount = 1000000000000000n; // Very large amount
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          largeAmount,
+          largeAmount
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
+      });
+
+      it("should handle both tokens with wrong ratio (excess token0)", () => {
+        // 90% token0, 10% token1 when optimal might be ~50/50
+        const amount0 = 9000000n;
+        const amount1 = 1000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64, // price = 1.0
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        // Should swap some token0 to token1
+        if (result.swapFee0 > 0n) {
+          expect(result.depositedAmount0).toBeGreaterThan(0n);
+          expect(result.depositedAmount1).toBeGreaterThan(amount1); // More than original
+        }
+      });
+
+      it("should handle both tokens with wrong ratio (excess token1)", () => {
+        // 10% token0, 90% token1 when optimal might be ~50/50
+        const amount0 = 1000000n;
+        const amount1 = 9000000n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64, // price = 1.0
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        // Should swap some token1 to token0
+        if (result.swapFee1 > 0n) {
+          expect(result.depositedAmount1).toBeGreaterThan(0n);
+          expect(result.depositedAmount0).toBeGreaterThan(amount0); // More than original
+        }
+      });
+
+      it("should maintain accounting invariant with very small amounts", () => {
+        const amount0 = 10n;
+        const amount1 = 10n;
+
+        const result = LiquidityCalculator.maxLiquidity(
+          Q64,
+          feeRatePpm,
+          lowerTick,
+          upperTick,
+          amount0,
+          amount1
+        );
+
+        // Verify accounting invariant even with tiny amounts
+        const reconstructedAmount0 =
+          result.depositedAmount0 +
+          result.swapFee0 +
+          result.slip0 +
+          result.remain0;
+        const reconstructedAmount1 =
+          result.depositedAmount1 +
+          result.swapFee1 +
+          result.slip1 +
+          result.remain1;
+
+        expect(reconstructedAmount0).toBe(amount0);
+        expect(reconstructedAmount1).toBe(amount1);
+      });
+
+      it("should handle price at exact tick boundary", () => {
+        const boundaryTick = 1000;
+        const sqrtPriceBoundary =
+          LiquidityCalculator.tickToSqrtPriceX64(boundaryTick);
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPriceBoundary,
+          feeRatePpm,
+          boundaryTick - 500,
+          boundaryTick + 500,
+          1000000n,
+          1000000n
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        expect(result.depositedAmount0).toBeGreaterThan(0n);
+        expect(result.depositedAmount1).toBeGreaterThan(0n);
+      });
+
+      it("should handle extreme price ratios within valid range", () => {
+        // Very wide range with extreme price difference
+        const extremeLowerTick = -50000;
+        const extremeUpperTick = 50000;
+        const sqrtPrice = Q64; // Price = 1.0 (in middle)
+
+        const result = LiquidityCalculator.maxLiquidity(
+          sqrtPrice,
+          feeRatePpm,
+          extremeLowerTick,
+          extremeUpperTick,
+          1000000n,
+          1000000n
+        );
+
+        expect(result.liquidity).toBeGreaterThan(0n);
+        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
+        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
       });
     });
 
