@@ -727,7 +727,7 @@ export class VirtualPositionManager {
 
     // Use pool's actual liquidity (from real on-chain state)
     // This includes all LPs, not just our virtual positions
-    const totalPoolLiquidity = this.pool.liquidity;
+    const totalPoolLiquidity = activePoolLiquidity + ourCrossedLiquidity;
 
     // Calculate our share of the total pool
     const ourShareOfPool =
