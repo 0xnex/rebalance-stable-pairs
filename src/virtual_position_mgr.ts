@@ -709,16 +709,6 @@ export class VirtualPositionManager {
       return; // No positions to distribute fees to
     }
 
-    // Calculate the active liquidity from the swap event
-    const activePoolLiquidity =
-      LiquidityCalculator.calculateActiveLiquidityFromSwap(
-        sqrtPriceBefore,
-        sqrtPriceAfter,
-        event.amountIn - event.fee, // Assuming fee is deducted from amountIn
-        event.amountOut,
-        event.zeroForOne
-      );
-
     // Calculate total liquidity of our crossed positions
     const ourCrossedLiquidity = crossedPositions.reduce(
       (acc, position) => acc + position.liquidity,
@@ -727,7 +717,7 @@ export class VirtualPositionManager {
 
     // Use pool's actual liquidity (from real on-chain state)
     // This includes all LPs, not just our virtual positions
-    const totalPoolLiquidity = activePoolLiquidity + ourCrossedLiquidity;
+    const totalPoolLiquidity = this.pool.liquidity + ourCrossedLiquidity;
 
     // Calculate our share of the total pool
     const ourShareOfPool =
@@ -777,14 +767,6 @@ export class VirtualPositionManager {
         `Our share: ${ourShareOfPool.toFixed(6)}%, ` +
         `Our fees: ${ourFees0.toString()}/${ourFees1.toString()} ` +
         `(Estimated: ${ourEstimatedFees0.toString()}/${ourEstimatedFees1.toString()})`
-    );
-    console.log(
-      `  Calculated activePoolLiq: ${activePoolLiquidity.toString()} ` +
-        `(${
-          totalPoolLiquidity > 0n
-            ? Number((activePoolLiquidity * 10000n) / totalPoolLiquidity) / 100
-            : 0
-        }% of pool)`
     );
     console.log(
       `  Fee distribution: Total pool fee0=${fee0}, fee1=${fee1}, ` +
@@ -905,7 +887,7 @@ export class VirtualPositionManager {
       const overlapStart = Math.max(position.tickLower, minTick);
       const overlapEnd = Math.min(position.tickUpper, maxTick);
 
-      if (overlapStart <= overlapEnd) {
+      if (overlapStart <= overlapEnd && position.liquidity > 0n) {
         crossedPositions.push(position);
       }
     }
