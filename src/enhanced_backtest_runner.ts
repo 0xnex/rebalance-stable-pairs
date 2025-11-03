@@ -179,7 +179,7 @@ async function main() {
     ? parseInt(feeRatePpm)
     : process.env.POOL_FEE_RATE_PPM
     ? parseInt(process.env.POOL_FEE_RATE_PPM)
-    : 1000;
+    : 100;
   const poolTickSpacing = tickSpacing
     ? parseInt(tickSpacing)
     : process.env.POOL_TICK_SPACING
