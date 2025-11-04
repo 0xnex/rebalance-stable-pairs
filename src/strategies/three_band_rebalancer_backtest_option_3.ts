@@ -14,7 +14,6 @@ type EnvConfig = {
   initialAmountA: bigint;
   initialAmountB: bigint;
   segmentRangePercent: number;
-  segmentCount: number;
   checkIntervalMs: number;
   maxSwapSlippageBps: number;
   bootstrapMaxSwapSlippageBps: number;
@@ -38,9 +37,8 @@ type EnvConfig = {
   momentumWindowSize: number;
   activeBandWeightPercent: number;
   // Option 3 specific configs
-  enableHierarchicalRebalancing: boolean;
-  hierarchicalCooldownMs: number;
   maxDailyRebalances: number;
+  minRebalanceCooldownMs: number;
   position1AllocationPercent: number;
   position2AllocationPercent: number;
   position3AllocationPercent: number;
@@ -71,7 +69,6 @@ function readEnvConfig(): EnvConfig {
     initialAmountA: toBigInt(process.env.THREEBAND_INITIAL_A, 0n),
     initialAmountB: toBigInt(process.env.THREEBAND_INITIAL_B, 10_000_000_000n), // 10B default in raw units
     segmentRangePercent: toNumber(process.env.THREEBAND_RANGE_PERCENT, 0.001),
-    segmentCount: toNumber(process.env.THREEBAND_SEGMENT_COUNT, 3),
     checkIntervalMs: toNumber(process.env.THREEBAND_CHECK_INTERVAL_MS, 60_000),
     maxSwapSlippageBps: toNumber(process.env.THREEBAND_MAX_SLIPPAGE_BPS, 50),
     bootstrapMaxSwapSlippageBps: toNumber(
@@ -110,13 +107,11 @@ function readEnvConfig(): EnvConfig {
     activeBandWeightPercent: 33.33, // Not used when enableDynamicAllocation=false
 
     // Option 3 specific configurations
-    enableHierarchicalRebalancing:
-      toNumber(process.env.THREEBAND_HIERARCHICAL, 1) === 1,
-    hierarchicalCooldownMs: toNumber(
-      process.env.THREEBAND_HIERARCHICAL_COOLDOWN_MS,
-      60 * 60 * 1000
-    ), // 1 hour
     maxDailyRebalances: toNumber(process.env.THREEBAND_MAX_DAILY_REBALANCES, 5),
+    minRebalanceCooldownMs: toNumber(
+      process.env.THREEBAND_MIN_REBALANCE_COOLDOWN_MS,
+      30 * 60 * 1000
+    ), // 30 minutes default
     position1AllocationPercent: toNumber(
       process.env.THREEBAND_POS1_ALLOCATION,
       60
@@ -159,8 +154,8 @@ export function strategyFactory(
   let csvFilterInitialized = false;
 
   // Track rebalancing history for Option 3 constraints
-  let lastRebalanceTime = 0;
   let dailyRebalanceCount = 0;
+  let lastRebalanceTime = 0;
 
   // Track accumulated fees per position across rebalances
   const accumulatedFeesA: Record<number, bigint> = {};
@@ -170,7 +165,7 @@ export function strategyFactory(
   const previousFeesB: Record<number, bigint> = {};
 
   const config: Partial<ThreeBandRebalancerConfigOptionThree> = {
-    segmentCount: env.segmentCount,
+    segmentCount: 3, // Option 3 always uses 3 positions
     segmentRangePercent: env.segmentRangePercent,
     maxSwapSlippageBps: env.maxSwapSlippageBps,
     bootstrapMaxSwapSlippageBps: env.bootstrapMaxSwapSlippageBps,
@@ -195,6 +190,7 @@ export function strategyFactory(
     activeBandWeightPercent: env.activeBandWeightPercent,
     // Option 3 specific
     maxDailyRebalances: env.maxDailyRebalances,
+    minRebalanceCooldownMs: env.minRebalanceCooldownMs,
   };
 
   const strategy = new ThreeBandRebalancerStrategyOptionThree(
@@ -239,6 +235,7 @@ export function strategyFactory(
 
     if (action === "rebalance") {
       dailyRebalanceCount++;
+      lastRebalanceTime = ctx.timestamp;
     }
 
     // Get current state for detailed logging
@@ -581,21 +578,27 @@ export function strategyFactory(
           );
 
           // Show Option 3 specific constraints
-          if (message.includes("rotating") || message.includes("Waiting")) {
-            const now = ctx.timestamp;
-            const cooldownRemaining = Math.max(
-              0,
-              env.hierarchicalCooldownMs - (now - lastRebalanceTime)
-            );
+          if (message.includes("Rebalance") || message.includes("cooldown")) {
             const dailyRemaining = Math.max(
               0,
               env.maxDailyRebalances - dailyRebalanceCount
             );
 
+            // Calculate cooldown remaining time
+            const minCooldownMs = env.minRebalanceCooldownMs;
+            const timeSinceLastRebalance =
+              lastRebalanceTime > 0 ? ctx.timestamp - lastRebalanceTime : 0;
+            const cooldownRemaining =
+              lastRebalanceTime > 0
+                ? Math.max(0, minCooldownMs - timeSinceLastRebalance)
+                : 0;
+            const cooldownStatus =
+              cooldownRemaining > 0
+                ? `${Math.ceil(cooldownRemaining / 1000)}s remaining`
+                : "ready";
+
             ctx.logger?.log?.(
-              `[three-band-option3]   → Option 3 Constraints: Cooldown=${Math.ceil(
-                cooldownRemaining / 1000
-              )}s Daily=${dailyRemaining}/${env.maxDailyRebalances}`
+              `[three-band-option3]   → Option 3 Constraints: Daily=${dailyRemaining}/${env.maxDailyRebalances} | Cooldown=${cooldownStatus}`
             );
           }
         }
