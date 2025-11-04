@@ -54,6 +54,8 @@ async function main() {
       tokenADecimals,
       tokenBName,
       tokenBDecimals,
+      feeRatePpm,
+      tickSpacing,
     },
   } = parseArgs({
     options: {
@@ -73,6 +75,8 @@ async function main() {
       tokenADecimals: { type: "string" },
       tokenBName: { type: "string" },
       tokenBDecimals: { type: "string" },
+      feeRatePpm: { type: "string" },
+      tickSpacing: { type: "string" },
     },
   });
 
@@ -131,7 +135,8 @@ async function main() {
     `⚡ Enhanced Fees: ${config.enableEnhancedFees ? "Enabled" : "Disabled"}`
   );
   console.log(
-    `📋 Detailed Report: ${config.enableDetailedReport ? "Enabled" : "Disabled"
+    `📋 Detailed Report: ${
+      config.enableDetailedReport ? "Enabled" : "Disabled"
     }`
   );
 
@@ -147,11 +152,39 @@ async function main() {
 
   // Set token metadata as environment variables
   const tokenMetadata = {
-    tokenAName: tokenAName || "TokenA",
-    tokenADecimals: tokenADecimals ? parseInt(tokenADecimals) : 9,
-    tokenBName: tokenBName || "TokenB",
-    tokenBDecimals: tokenBDecimals ? parseInt(tokenBDecimals) : 9,
+    tokenAName: tokenAName || process.env.TOKEN_A_NAME || "TokenA",
+    tokenADecimals: tokenADecimals
+      ? parseInt(tokenADecimals)
+      : process.env.TOKEN_A_DECIMALS
+      ? parseInt(process.env.TOKEN_A_DECIMALS)
+      : 9,
+    tokenBName: tokenBName || process.env.TOKEN_B_NAME || "TokenB",
+    tokenBDecimals: tokenBDecimals
+      ? parseInt(tokenBDecimals)
+      : process.env.TOKEN_B_DECIMALS
+      ? parseInt(process.env.TOKEN_B_DECIMALS)
+      : 9,
   };
+
+  // Read initial amounts from environment variables (with proper decimals)
+  const initialAmountA = process.env.THREEBAND_INITIAL_A
+    ? BigInt(process.env.THREEBAND_INITIAL_A)
+    : 0n;
+  const initialAmountB = process.env.THREEBAND_INITIAL_B
+    ? BigInt(process.env.THREEBAND_INITIAL_B)
+    : BigInt(config.initialInvestment); // Fallback to CLI investment
+
+  // Parse fee rate and tick spacing from CLI or environment
+  const poolFeeRatePpm = feeRatePpm
+    ? parseInt(feeRatePpm)
+    : process.env.POOL_FEE_RATE_PPM
+    ? parseInt(process.env.POOL_FEE_RATE_PPM)
+    : 100;
+  const poolTickSpacing = tickSpacing
+    ? parseInt(tickSpacing)
+    : process.env.POOL_TICK_SPACING
+    ? parseInt(process.env.POOL_TICK_SPACING)
+    : 2;
 
   process.env.TOKEN_A_NAME = tokenMetadata.tokenAName;
   process.env.TOKEN_A_DECIMALS = tokenMetadata.tokenADecimals.toString();
@@ -160,6 +193,12 @@ async function main() {
   process.env.TRADING_PAIR = config.tradingPair;
   process.env.INITIAL_INVESTMENT = config.initialInvestment.toString();
 
+  // Convert to human-readable for display
+  const displayAmountA =
+    Number(initialAmountA) / Math.pow(10, tokenMetadata.tokenADecimals);
+  const displayAmountB =
+    Number(initialAmountB) / Math.pow(10, tokenMetadata.tokenBDecimals);
+
   console.log(`\n💱 Token Configuration:`);
   console.log(
     `   Token A: ${tokenMetadata.tokenAName} (${tokenMetadata.tokenADecimals} decimals)`
@@ -167,7 +206,23 @@ async function main() {
   console.log(
     `   Token B: ${tokenMetadata.tokenBName} (${tokenMetadata.tokenBDecimals} decimals)`
   );
-  console.log(`   Quote Currency: ${tokenMetadata.tokenBName}\n`);
+  console.log(`   Quote Currency: ${tokenMetadata.tokenBName}`);
+  console.log(`\n💰 Initial Investment:`);
+  console.log(
+    `   Token A: ${displayAmountA.toLocaleString()} ${
+      tokenMetadata.tokenAName
+    } (raw: ${initialAmountA})`
+  );
+  console.log(
+    `   Token B: ${displayAmountB.toLocaleString()} ${
+      tokenMetadata.tokenBName
+    } (raw: ${initialAmountB})\n`
+  );
+  console.log(`\n🏊 Pool Configuration:`);
+  console.log(
+    `   Fee Rate: ${poolFeeRatePpm / 10000}% (${poolFeeRatePpm} ppm)`
+  );
+  console.log(`   Tick Spacing: ${poolTickSpacing}\n`);
 
   // Run backtest
   const engine = new BacktestEngine({
@@ -178,6 +233,12 @@ async function main() {
     dataDir: config.dataDir,
     strategyFactory: factory,
     logger: console,
+    decimals0: tokenMetadata.tokenADecimals,
+    decimals1: tokenMetadata.tokenBDecimals,
+    feeRatePpm: poolFeeRatePpm,
+    tickSpacing: poolTickSpacing,
+    invest0: initialAmountA,
+    invest1: initialAmountB,
   });
 
   const report = await engine.run();
@@ -395,7 +456,6 @@ async function outputStandardResults(
     console.log(`📄 Report saved to: ${config.outputFile}`);
   } else {
     console.log("\n📊 BACKTEST RESULTS");
-    console.log(JSON.stringify(jsonOutput, null, 2));
   }
 }
 
@@ -420,10 +480,16 @@ Optional Options:
   --dataDir <path>        Data directory path
   --investment <amount>   Initial investment amount (default: 100000)
   --pair <pair>           Trading pair name (default: SUI/USDC)
-  --format <format>       Output format: json|table|both (default: both)
+  --format <format>       Output format: json|table|both|csv (default: csv)
   --output <file>         Output file path
   --enhancedFees          Enable enhanced fee calculation (default: true)
   --detailedReport        Enable detailed reporting (default: true)
+  --tokenAName <name>     Token A name (default: from env or "TokenA")
+  --tokenADecimals <num>  Token A decimals (default: from env or 9)
+  --tokenBName <name>     Token B name (default: from env or "TokenB")
+  --tokenBDecimals <num>  Token B decimals (default: from env or 9)
+  --feeRatePpm <num>      Pool fee rate in parts per million (default: from env or 1000 = 0.1%)
+  --tickSpacing <num>     Pool tick spacing (default: from env or 2)
 
 Examples:
   # Basic backtest with enhanced features

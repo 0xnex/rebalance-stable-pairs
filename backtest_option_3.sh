@@ -16,10 +16,16 @@ export THREEBAND_FAST_INTERVAL_MS=10000
 export THREEBAND_MIN_DWELL_MS=120000    # 2 minutes
 export THREEBAND_MIN_OUT_MS=120000      # 2 minutes
 
-export THREEBAND_HIERARCHICAL=1
-export THREEBAND_SEGMENT_COUNT=3
-export THREEBAND_HIERARCHICAL_COOLDOWN_MS=3600000  # 1 hour
+# Pool configuration
+# Common fee tiers for stable pairs:
+# - 100 ppm (0.01%) with tickSpacing=1 - very tight stable pairs
+# - 500 ppm (0.05%) with tickSpacing=10 
+# - 1000 ppm (0.1%) with tickSpacing=2
+export POOL_FEE_RATE_PPM=100           # 0.01% fee
+export POOL_TICK_SPACING=2             # Tick spacing for 0.01% pools
+
 export THREEBAND_MAX_DAILY_REBALANCES=5
+export THREEBAND_MIN_REBALANCE_COOLDOWN_MS=3600000  # 1 hour minimum between rebalances
 export THREEBAND_POS1_ALLOCATION=60  # 60%
 export THREEBAND_POS2_ALLOCATION=20  # 20%
 export THREEBAND_POS3_ALLOCATION=20  # 20%
@@ -29,8 +35,9 @@ export THREEBAND_POS3_TICK_WIDTH=4   # 4 ticks
 
 bun --expose-gc run src/enhanced_backtest_runner.ts \
     --poolId 0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \
+    --dataDir ../mmt_txs/0x737ec6a4d3ed0c7e6cc18d8ba04e7ffd4806b726c97efd89867597368c4d06a9 \
     --start "2025-08-20T00:00:00Z" \
-    --end "2025-09-12T00:00:00Z" \
+    --end "2025-09-01T00:00:00Z" \
     --step 1000 \
     --format csv \
     --strategy ./src/strategies/three_band_rebalancer_backtest_option_3.ts \
