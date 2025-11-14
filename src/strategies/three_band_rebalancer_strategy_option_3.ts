@@ -83,6 +83,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
   private dailyRebalanceCount = 0;
   private lastRebalanceDate: string | null = null;
   private lastRebalanceTime: number = 0;
+  private firstOutOfRangeTime: number | null = null; // Track when first out of range detected
 
   // Remove surplus segments, keeping exactly 3 closest to current tick
   private trimToThreeSegments(now: number, currentTick: number) {
@@ -285,7 +286,30 @@ export class ThreeBandRebalancerStrategyOptionThree {
           if (!inMainSegment) {
             // Current tick NOT in main segment -> rebalance this segment
 
-            // Check daily rebalance limit first
+            // Check minOutOfRangeMs first (initial guard)
+            if (this.firstOutOfRangeTime === null) {
+              this.firstOutOfRangeTime = now;
+              return {
+                action: "wait",
+                message: `Out of range detected for main segment at tick ${currentTick}, waiting ${Math.ceil(
+                  this.config.minOutOfRangeMs / 1000
+                )}s before rebalancing`,
+              };
+            }
+
+            const outOfRangeDuration = now - this.firstOutOfRangeTime;
+            if (outOfRangeDuration < this.config.minOutOfRangeMs) {
+              const remainingMs =
+                this.config.minOutOfRangeMs - outOfRangeDuration;
+              return {
+                action: "wait",
+                message: `Out of range guard: ${Math.ceil(
+                  remainingMs / 1000
+                )}s remaining before main segment rebalance allowed`,
+              };
+            }
+
+            // Check daily rebalance limit
             const rebalanceCheck = this.canRebalanceToday(now);
             if (!rebalanceCheck.allowed) {
               return {
@@ -333,8 +357,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
               this.captureFeeBaseline();
 
-              // Track this rebalance
+              // Track this rebalance and reset out of range timer
               this.trackRebalance(now);
+              this.firstOutOfRangeTime = null;
 
               return {
                 action: "rebalance",
@@ -355,7 +380,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
         }
       }
 
-      // If in main segment or no rebalance needed
+      // If in main segment or no rebalance needed, reset out of range timer
+      this.firstOutOfRangeTime = null;
       if (fastDue) this.lastFastCheck = now;
       if (slowDue) this.lastSlowCheck = now;
       const mainAllocationPct = Math.round(this.getPositionAllocation(0) * 100);
@@ -368,7 +394,29 @@ export class ThreeBandRebalancerStrategyOptionThree {
     // Case 2: currentTick < tickLower OR currentTick > tickUpper
     // Rebalance all 3 segments
     if (priceAbove || priceBelow) {
-      // Check daily rebalance limit first
+      // Check minOutOfRangeMs first (initial guard)
+      if (this.firstOutOfRangeTime === null) {
+        this.firstOutOfRangeTime = now;
+        return {
+          action: "wait",
+          message: `Out of range detected at tick ${currentTick}, waiting ${Math.ceil(
+            this.config.minOutOfRangeMs / 1000
+          )}s before rebalancing all segments`,
+        };
+      }
+
+      const outOfRangeDuration = now - this.firstOutOfRangeTime;
+      if (outOfRangeDuration < this.config.minOutOfRangeMs) {
+        const remainingMs = this.config.minOutOfRangeMs - outOfRangeDuration;
+        return {
+          action: "wait",
+          message: `Out of range guard: ${Math.ceil(
+            remainingMs / 1000
+          )}s remaining before rebalance allowed`,
+        };
+      }
+
+      // Check daily rebalance limit
       const rebalanceCheck = this.canRebalanceToday(now);
       if (!rebalanceCheck.allowed) {
         return {
@@ -469,8 +517,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
           this.captureFeeBaseline();
 
-          // Track this rebalance
+          // Track this rebalance and reset out of range timer
           this.trackRebalance(now);
+          this.firstOutOfRangeTime = null;
 
           if (fastDue) this.lastFastCheck = now;
           if (slowDue) this.lastSlowCheck = now;
