@@ -39,12 +39,12 @@ type EnvConfig = {
   // Option 3 specific configs
   maxDailyRebalances: number;
   minRebalanceCooldownMs: number;
-  position1AllocationPercent: number;
-  position2AllocationPercent: number;
-  position3AllocationPercent: number;
-  position1TickWidth: number;
-  position2TickWidth: number;
-  position3TickWidth: number;
+  pos1AllocationPercent: number;
+  pos2AllocationPercent: number;
+  pos3AllocationPercent: number;
+  pos1TickWidth: number;
+  pos2TickWidth: number;
+  pos3TickWidth: number;
   tokenADecimals: number;
   tokenBDecimals: number;
 };
@@ -112,21 +112,12 @@ function readEnvConfig(): EnvConfig {
       process.env.THREEBAND_MIN_REBALANCE_COOLDOWN_MS,
       30 * 60 * 1000
     ), // 30 minutes default
-    position1AllocationPercent: toNumber(
-      process.env.THREEBAND_POS1_ALLOCATION,
-      60
-    ), // 60%
-    position2AllocationPercent: toNumber(
-      process.env.THREEBAND_POS2_ALLOCATION,
-      20
-    ), // 20%
-    position3AllocationPercent: toNumber(
-      process.env.THREEBAND_POS3_ALLOCATION,
-      20
-    ), // 20%
-    position1TickWidth: toNumber(process.env.THREEBAND_POS1_TICK_WIDTH, 2), // 2 ticks
-    position2TickWidth: toNumber(process.env.THREEBAND_POS2_TICK_WIDTH, 4), // 4 ticks
-    position3TickWidth: toNumber(process.env.THREEBAND_POS3_TICK_WIDTH, 4), // 4 ticks,
+    pos1AllocationPercent: toNumber(process.env.THREEBAND_POS1_ALLOCATION, 60), // 60%
+    pos2AllocationPercent: toNumber(process.env.THREEBAND_POS2_ALLOCATION, 20), // 20%
+    pos3AllocationPercent: toNumber(process.env.THREEBAND_POS3_ALLOCATION, 20), // 20%
+    pos1TickWidth: toNumber(process.env.THREEBAND_POS1_TICK_WIDTH, 2), // 2 ticks
+    pos2TickWidth: toNumber(process.env.THREEBAND_POS2_TICK_WIDTH, 4), // 4 ticks
+    pos3TickWidth: toNumber(process.env.THREEBAND_POS3_TICK_WIDTH, 4), // 4 ticks,
     tokenADecimals: toNumber(process.env.TOKEN_A_DECIMALS, 9),
     tokenBDecimals: toNumber(process.env.TOKEN_B_DECIMALS, 9),
   };
@@ -191,6 +182,13 @@ export function strategyFactory(
     // Option 3 specific
     maxDailyRebalances: env.maxDailyRebalances,
     minRebalanceCooldownMs: env.minRebalanceCooldownMs,
+    // Position allocation and width configuration
+    pos1AllocationPercent: env.pos1AllocationPercent,
+    pos2AllocationPercent: env.pos2AllocationPercent,
+    pos3AllocationPercent: env.pos3AllocationPercent,
+    pos1TickWidth: env.pos1TickWidth,
+    pos2TickWidth: env.pos2TickWidth,
+    pos3TickWidth: env.pos3TickWidth,
   };
 
   const strategy = new ThreeBandRebalancerStrategyOptionThree(
@@ -242,27 +240,24 @@ export function strategyFactory(
     const tick = pool.tickCurrent;
     const price = pool.price;
     const totals = manager.getTotals();
-    // Ensure Position 1 in CSV refers to the band covering current price
-    // Sort positions so index 0 is the in-range band (or the closest to current tick)
-    let positions = manager.getAllPositions().filter((p) => p.liquidity > 0n);
-    try {
-      const currentTick = pool.tickCurrent;
-      positions = positions.slice().sort((a, b) => {
-        const aIn =
-          currentTick >= a.tickLower && currentTick < a.tickUpper ? 1 : 0;
-        const bIn =
-          currentTick >= b.tickLower && currentTick < b.tickUpper ? 1 : 0;
-        if (aIn !== bIn) return bIn - aIn; // in-range first
-        const aMid = Math.floor((a.tickLower + a.tickUpper) / 2);
-        const bMid = Math.floor((b.tickLower + b.tickUpper) / 2);
-        const aDist = Math.abs(currentTick - aMid);
-        const bDist = Math.abs(currentTick - bMid);
-        if (aDist !== bDist) return aDist - bDist; // closer first
-        return a.tickLower - b.tickLower; // stable sort
-      });
-    } catch {
-      // ignore sorting errors, keep original order
+    // Get all positions and sort them by strategy segment order: main -> upper -> lower
+    let allPositions = manager.getAllPositions().filter((p) => !p.isClosed);
+    const segments = strategy.getSegments();
+
+    // Create a map of position id to segment type for sorting
+    const segmentTypeMap: Record<string, number> = {};
+    const typeOrder = { main: 0, upper: 1, lower: 2 };
+    for (const seg of segments) {
+      segmentTypeMap[seg.id] =
+        typeOrder[seg.type as keyof typeof typeOrder] ?? 0;
     }
+
+    // Sort positions by segment type order (main -> upper -> lower)
+    let positions = allPositions.sort((a, b) => {
+      const typeA = segmentTypeMap[a.id] ?? 3;
+      const typeB = segmentTypeMap[b.id] ?? 3;
+      return typeA - typeB;
+    });
 
     // Calculate total value and breakdown (keep raw values)
     const amountA = Number(totals.amountA);
@@ -300,10 +295,10 @@ export function strategyFactory(
               : "ABOVE";
           const allocation =
             i === 0
-              ? env.position1AllocationPercent
+              ? env.pos1AllocationPercent
               : i === 1
-              ? env.position2AllocationPercent
-              : env.position3AllocationPercent;
+              ? env.pos2AllocationPercent
+              : env.pos3AllocationPercent;
           ctx.logger?.log?.(
             `[three-band-option3]   Position ${i + 1} (${allocation}%): [${
               pos.tickLower
@@ -336,10 +331,10 @@ export function strategyFactory(
         const posFeesB = pos.tokensOwed1.toString();
         const allocation =
           i === 0
-            ? env.position1AllocationPercent
+            ? env.pos1AllocationPercent
             : i === 1
-            ? env.position2AllocationPercent
-            : env.position3AllocationPercent;
+            ? env.pos2AllocationPercent
+            : env.pos3AllocationPercent;
 
         // Check if position has liquidity
         if (pos.liquidity === 0n) {
