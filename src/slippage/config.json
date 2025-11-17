@@ -116,5 +116,343 @@
         }
       ]
     }
+  ],
+  "suiUSDT-USDC": [
+    {
+      "tokenA": "suiUSDT",
+      "tokenB": "USDC",
+      "configs": [
+        {
+          "amountThreshold": 1,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 10,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 100,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 1000,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 10000,
+          "maxSlippage": 0.0000140
+        },
+        {
+          "amountThreshold": 100000,
+          "maxSlippage": 0.0001550
+        },
+        {
+          "amountThreshold": 500000,
+          "maxSlippage": 0.0007820
+        },
+        {
+          "amountThreshold": 1000000,
+          "maxSlippage": 0.0015650
+        },
+        {
+          "amountThreshold": 2000000,
+          "maxSlippage": 0.0031310
+        },
+        {
+          "amountThreshold": 3000000,
+          "maxSlippage": 0.0046970
+        },
+        {
+          "amountThreshold": 5000000,
+          "maxSlippage": 0.0080730
+        }
+      ]
+    },
+    {
+      "tokenA": "USDC",
+      "tokenB": "suiUSDT",
+      "configs": [
+        {
+          "amountThreshold": 1,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 10,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 100,
+          "maxSlippage": 0
+        },
+        {
+          "amountThreshold": 1000,
+          "maxSlippage": 0.000001
+        },
+        {
+          "amountThreshold": 10000,
+          "maxSlippage": 0.000006
+        },
+        {
+          "amountThreshold": 100000,
+          "maxSlippage": 0.000071
+        },
+        {
+          "amountThreshold": 500000,
+          "maxSlippage": 0.000268
+        },
+        {
+          "amountThreshold": 1000000,
+          "maxSlippage": 0.000474
+        },
+        {
+          "amountThreshold": 2000000,
+          "maxSlippage": 0.00081
+        },
+        {
+          "amountThreshold": 3000000,
+          "maxSlippage": 0.001142
+        },
+        {
+          "amountThreshold": 5000000,
+          "maxSlippage": 0.00187
+        }
+      ]
+    }
+  ],
+  "MMT-USDC": [
+    {
+      "tokenA": "MMT",
+      "tokenB": "USDC",
+      "configs": [
+        {
+          "amountThreshold": 1,
+          "maxSlippage": 0.00009
+        },
+        {
+          "amountThreshold": 10,
+          "maxSlippage": 0.000905
+        },
+        {
+          "amountThreshold": 100,
+          "maxSlippage": 0.009058
+        },
+        {
+          "amountThreshold": 1000,
+          "maxSlippage": 0.090525
+        },
+        {
+          "amountThreshold": 5000,
+          "maxSlippage": 0.451399
+        },
+        {
+          "amountThreshold": 10000,
+          "maxSlippage": 0.898926
+        },
+        {
+          "amountThreshold": 50000,
+          "maxSlippage": 4.378476
+        },
+        {
+          "amountThreshold": 100000,
+          "maxSlippage": 8.825367
+        },
+        {
+          "amountThreshold": 500000,
+          "maxSlippage": 37.845387
+        },
+        {
+          "amountThreshold": 1000000,
+          "maxSlippage": 58.199537
+        }
+      ]
+    },
+    {
+      "tokenA": "USDC",
+      "tokenB": "MMT",
+      "configs": [
+        {
+          "amountThreshold": 0.01,
+          "maxSlippage": 0.002725
+        },
+        {
+          "amountThreshold": 0.1,
+          "maxSlippage": 0.027257
+        },
+        {
+          "amountThreshold": 0.5,
+          "maxSlippage": 0.136324
+        },
+        {
+          "amountThreshold": 1,
+          "maxSlippage": 0.272439
+        },
+        {
+          "amountThreshold": 5,
+          "maxSlippage": 1.354173
+        },
+        {
+          "amountThreshold": 10,
+          "maxSlippage": 2.693881
+        },
+        {
+          "amountThreshold": 50,
+          "maxSlippage": 15.359067
+        },
+        {
+          "amountThreshold": 100,
+          "maxSlippage": 31.918934
+        },
+        {
+          "amountThreshold": 200,
+          "maxSlippage": 68.244285
+        },
+        {
+          "amountThreshold": 300,
+          "maxSlippage": 103.519348
+        },
+        {
+          "amountThreshold": 500,
+          "maxSlippage": 185.99185
+        },
+        {
+          "amountThreshold": 1000,
+          "maxSlippage": 530.681762
+        }
+      ]
+    }
+  ],
+  "SUI-MMT": [
+    {
+      "tokenA": "SUI",
+      "tokenB": "MMT",
+      "configs": [
+        {
+          "amountThreshold": 1,
+          "maxSlippage": 0.0186240
+        },
+        {
+          "amountThreshold": 10,
+          "maxSlippage": 0.0007400
+        },
+        {
+          "amountThreshold": 100,
+          "maxSlippage": 0.0074050
+        },
+        {
+          "amountThreshold": 1000,
+          "maxSlippage": 0.0713220
+        },
+        {
+          "amountThreshold": 5000,
+          "maxSlippage": 0.3739450
+        },
+        {
+          "amountThreshold": 10000,
+          "maxSlippage": 0.7520430
+        },
+        {
+          "amountThreshold": 30000,
+          "maxSlippage": 2.3477140
+        },
+        {
+          "amountThreshold": 50000,
+          "maxSlippage": 4.0371770
+        },
+        {
+          "amountThreshold": 70000,
+          "maxSlippage": 6.6693420
+        },
+        {
+          "amountThreshold": 100000,
+          "maxSlippage": 14.3232350
+        }
+      ]
+    },
+    {
+      "tokenA": "MMT",
+      "tokenB": "SUI",
+      "configs": [
+        {
+          "amountThreshold": 0.01,
+          "maxSlippage": 0.000284
+        },
+        {
+          "amountThreshold": 0.1,
+          "maxSlippage": 0.000037
+        },
+        {
+          "amountThreshold": 0.5,
+          "maxSlippage": 0.000186
+        },
+        {
+          "amountThreshold": 1,
+          "maxSlippage": 0.000373
+        },
+        {
+          "amountThreshold": 5,
+          "maxSlippage": 0.001867
+        },
+        {
+          "amountThreshold": 10,
+          "maxSlippage": 0.003734
+        },
+        {
+          "amountThreshold": 50,
+          "maxSlippage": 0.018669
+        },
+        {
+          "amountThreshold": 100,
+          "maxSlippage": 0.037333
+        },
+        {
+          "amountThreshold": 200,
+          "maxSlippage": 0.074646
+        },
+        {
+          "amountThreshold": 300,
+          "maxSlippage": 0.111938
+        },
+        {
+          "amountThreshold": 500,
+          "maxSlippage": 0.187281
+        },
+        {
+          "amountThreshold": 1000,
+          "maxSlippage": 0.374946
+        },
+        {
+          "amountThreshold": 2000,
+          "maxSlippage": 0.732805
+        },
+        {
+          "amountThreshold": 3000,
+          "maxSlippage": 1.046873
+        },
+        {
+          "amountThreshold": 5000,
+          "maxSlippage": 1.676538
+        },
+        {
+          "amountThreshold": 7000,
+          "maxSlippage": 2.291514
+        },
+        {
+          "amountThreshold": 10000,
+          "maxSlippage": 3.156451
+        },
+        {
+          "amountThreshold": 20000,
+          "maxSlippage": 6.676908
+        },
+        {
+          "amountThreshold": 30000,
+          "maxSlippage": 11.24111
+        },
+        {
+          "amountThreshold": 50000,
+          "maxSlippage": 21.698145
+        }
+      ]
+    }
   ]
 }
