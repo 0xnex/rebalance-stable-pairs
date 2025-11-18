@@ -69,7 +69,7 @@ export function getMaxSlippage(
     // Case 1: swapAmount <= first threshold
     // Range: [0, first.maxSlippage]
     if (i === 0 && swapAmount <= current.amountThreshold) {
-      return randomInRange(0, current.maxSlippage);
+      return current.maxSlippage;
     }
 
     // Case 2: swapAmount is between current and next threshold
@@ -79,7 +79,7 @@ export function getMaxSlippage(
       next &&
       swapAmount <= next.amountThreshold
     ) {
-      return randomInRange(current.maxSlippage, next.maxSlippage);
+      return next.maxSlippage;
     }
   }
 
