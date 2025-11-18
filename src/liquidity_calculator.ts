@@ -113,7 +113,7 @@ export type MaxLiquidityResult = {
  */
 export class LiquidityCalculator {
   /**
-   * Convert sqrtPriceX64 to human-readable price
+   * Convert sqrtPriceX64 to raw price
    * @param sqrtPriceX64 - Sqrt price in Q64.64 format
    * @returns Price as a number (token1/token0)
    */

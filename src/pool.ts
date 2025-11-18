@@ -29,11 +29,12 @@ class Pool {
     this.feeRatePpm = feeRatePpm;
   }
 
+  get priceRaw(): number {
+    return LiquidityCalculator.sqrtPriceX64ToPrice(this.sqrtPriceX64);
+  }
+
   get price(): number {
-    // Convert Q64.64 sqrtPrice to actual price
-    // sqrtPriceX64 is sqrt(price) * 2^64
-    const sqrtPrice = Number(this.sqrtPriceX64) / Number(Q64);
-    return sqrtPrice * sqrtPrice;
+    return this.priceRaw * Math.pow(10, this.decimals0 - this.decimals1);
   }
 
   update(event: SwapEvent) {
@@ -46,45 +47,6 @@ class Pool {
         event.amountOut,
         event.zeroForOne
       );
-
-    const priceBefore = LiquidityCalculator.sqrtPriceX64ToPrice(
-      event.sqrtPriceBeforeX64
-    );
-    const priceAfter = LiquidityCalculator.sqrtPriceX64ToPrice(
-      event.sqrtPriceAfterX64
-    );
-
-    // Calculate fee rate and slippage metrics
-    const feeRate = event.amountIn > 0n ? 
-      (Number(event.fee) / Number(event.amountIn)) * 100 : 0;
-    const priceImpact = priceBefore > 0 ? 
-      Math.abs((priceAfter - priceBefore) / priceBefore) * 100 : 0;
-    
-    // Calculate expected output without slippage for comparison
-    const expectedOutput = event.zeroForOne ? 
-      BigInt(Math.floor(Number(event.amountIn - event.fee) * priceBefore)) :
-      BigInt(Math.floor(Number(event.amountIn - event.fee) / priceBefore));
-    const actualSlippage = expectedOutput > event.amountOut ? 
-      expectedOutput - event.amountOut : 0n;
-    const slippageRate = expectedOutput > 0n ? 
-      (Number(actualSlippage) / Number(expectedOutput)) * 100 : 0;
-
-    console.log(
-      `[Pool] Swap event: ` +
-        `direction=${event.zeroForOne ? "0→1" : "1→0"}, ` +
-        `tick: ${this.tickCurrent}→${event.tick}, ` +
-        `price: ${priceBefore.toFixed(6)}→${priceAfter.toFixed(6)}, ` +
-        `liquidity: ${this.liquidity.toString()}→${activeLiquidity.toString()}`
-    );
-    
-    console.log(
-      `[Pool-SwapDetails] ` +
-        `amountIn=${event.amountIn.toString()}, ` +
-        `amountOut=${event.amountOut.toString()}, ` +
-        `fee=${event.fee.toString()} (${feeRate.toFixed(4)}%), ` +
-        `priceImpact=${priceImpact.toFixed(4)}%, ` +
-        `slippage=${actualSlippage.toString()} (${slippageRate.toFixed(4)}%)`
-    );
 
     this.liquidity = activeLiquidity;
     this.tickCurrent = event.tick;
