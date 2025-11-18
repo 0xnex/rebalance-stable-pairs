@@ -1,10 +1,6 @@
 import { Pool } from "./pool";
 import { importEvents } from "./event_importer";
 import { VirtualPositionManager } from "./virtual_position_mgr";
-import { VaultSnapshotTracker } from "./vault_snapshot_tracker";
-import { PositionSnapshotTracker } from "./position_snapshot_tracker";
-import { PerformanceTracker } from "./performance_tracker";
-import type { BacktestReport, PositionInfo } from "./backtest_report";
 import { LiquidityConstants } from "./liquidity_calculator";
 
 // only process swap event
@@ -67,12 +63,9 @@ export class BacktestEngine {
   private readonly stepMs: number;
   private readonly logger?: Partial<Console>;
   private readonly metricsIntervalMs: number;
-  vaultTracker?: VaultSnapshotTracker;
-  positionTracker?: PositionSnapshotTracker;
   manager: VirtualPositionManager;
   pool: Pool;
   strategy: BacktestStrategy;
-  performance: PerformanceTracker;
 
   constructor(private readonly config: BacktestConfig) {
     if (config.endTime <= config.startTime) {
@@ -115,13 +108,6 @@ export class BacktestEngine {
     );
 
     this.strategy = this.config.strategyFactory(this.pool, this.manager);
-    this.performance = new PerformanceTracker(
-      this.pool,
-      this.manager,
-      this.metricsIntervalMs,
-      this.config.decimals0,
-      this.config.decimals1
-    );
   }
 
   private async initialize(startTime: number): Promise<void> {
@@ -132,21 +118,6 @@ export class BacktestEngine {
       timestamp: startTime,
       stepIndex: 0,
     });
-    this.performance.record(startTime, true);
-    this.vaultTracker = new VaultSnapshotTracker(
-      this.manager,
-      this.pool,
-      "./snapshots"
-    );
-    this.positionTracker = new PositionSnapshotTracker(
-      this.manager,
-      this.pool,
-      "./snapshots"
-    );
-    this.vaultTracker.enableCsvStreaming(this.config.poolId);
-    this.positionTracker.enableCsvStreaming(this.config.poolId);
-    this.vaultTracker.initialize(startTime);
-    this.positionTracker.initialize(startTime);
   }
 
   private async processStep(
@@ -176,7 +147,6 @@ export class BacktestEngine {
 
       // Notify strategy of swap event
       await this.strategy.onSwapEvent?.(ctx, ev);
-      this.performance.record(timestamp);
 
       eventsProcessed.count++;
       i++;
@@ -187,18 +157,9 @@ export class BacktestEngine {
 
     // Execute strategy tick (time-based logic)
     await this.strategy.onTick(ctx);
-    this.performance.record(timestamp);
-
-    // Update snapshot trackers
-    this.vaultTracker?.update(timestamp);
-    this.positionTracker?.update(timestamp);
   }
 
-  private async finalize(
-    endTime: number,
-    stepIndex: number,
-    eventsProcessed: number
-  ): Promise<BacktestReport> {
+  private async finalize(endTime: number, stepIndex: number): Promise<void> {
     const ctx = {
       timestamp: endTime,
       stepIndex,
@@ -206,37 +167,10 @@ export class BacktestEngine {
       manager: this.manager,
       logger: this.logger,
     };
-    this.performance.record(endTime, true);
-    if (this.strategy.onFinish) await this.strategy.onFinish(ctx);
-    const reportTimestamp = Date.now();
-    this.vaultTracker?.saveSnapshots(
-      `vault_${this.config.poolId}_${reportTimestamp}.json`
-    );
-    this.positionTracker?.saveSnapshots(
-      `position_${this.config.poolId}_${reportTimestamp}.json`
-    );
-    this.logger?.log?.(`📊 Snapshot reports saved to ./snapshots/`);
-    const openPositions = this.collectPositionInfo();
-    return {
-      poolId: this.config.poolId,
-      startTime: this.config.startTime,
-      endTime: this.config.endTime,
-      stepMs: this.stepMs,
-      eventsProcessed,
-      ticks: stepIndex,
-      strategyId: this.strategy.id,
-      totals: this.manager.getTotals(),
-      performance: this.performance.summary(),
-      finalState: {
-        currentPrice: this.pool.price,
-        currentTick: this.pool.tickCurrent,
-        liquidity: this.pool.liquidity.toString(),
-        openPositions,
-      },
-    };
+    this.logger?.log?.(`Snapshot reports saved to ./snapshots/`);
   }
 
-  async run(): Promise<BacktestReport | undefined> {
+  async run(): Promise<void> {
     const { poolId, startTime, endTime, dataDir } = this.config;
 
     this.logger?.log?.(
@@ -310,49 +244,6 @@ export class BacktestEngine {
     }
 
     // Finalize and generate report
-    return await this.finalize(endTime, stepIndex, eventsProcessed.count);
-  }
-
-  private collectPositionInfo(): PositionInfo[] {
-    const positions = this.manager.getAllPositions();
-    const Q64 = LiquidityConstants.Q64;
-
-    return positions.map((pos) => {
-      // Convert ticks to prices
-      const { lower: sqrtLower, upper: sqrtUpper } = pos.sqrtPricesX64();
-
-      // Convert sqrt prices (Q64) to actual prices
-      const Q64_SQUARED = Q64 * Q64; // Q128
-      const priceLower = Number(sqrtLower * sqrtLower) / Number(Q64_SQUARED);
-      const priceUpper = Number(sqrtUpper * sqrtUpper) / Number(Q64_SQUARED);
-
-      // Calculate mid-price as arithmetic mean of actual prices
-      const midPrice = (priceLower + priceUpper) / 2;
-      const widthPercent = ((priceUpper - priceLower) / midPrice) * 100;
-
-      // Check if position is active (current tick is in range)
-      const isActive = !pos.isClosed;
-
-      // Calculate distance from current price
-      const distanceFromCurrentPercent =
-        ((midPrice - this.pool.price) / this.pool.price) * 100;
-
-      const totals = pos.getTotals(this.pool.sqrtPriceX64);
-
-      return {
-        id: pos.id,
-        tickLower: pos.tickLower,
-        tickUpper: pos.tickUpper,
-        priceLower,
-        priceUpper,
-        midPrice,
-        widthPercent,
-        isActive,
-        liquidity: pos.liquidity.toString(),
-        amountA: totals.amount0.toString(),
-        amountB: totals.amount1.toString(),
-        distanceFromCurrentPercent,
-      };
-    });
+    return await this.finalize(endTime, stepIndex);
   }
 }
