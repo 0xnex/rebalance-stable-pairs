@@ -114,30 +114,12 @@ function readEnvConfig(): EnvConfig {
       process.env.THREEBAND_MIN_REBALANCE_COOLDOWN_MS,
       10 * 60 * 1000
     ), // V1.2: 10 minutes default
-    pos1AllocationPercent: toNumber(
-      process.env.THREEBAND_POS1_ALLOCATION,
-      33.33
-    ), // V1.2: 33.33%
-    pos2AllocationPercent: toNumber(
-      process.env.THREEBAND_POS2_ALLOCATION,
-      33.33
-    ), // V1.2: 33.33%
-    pos3AllocationPercent: toNumber(
-      process.env.THREEBAND_POS3_ALLOCATION,
-      33.34
-    ), // V1.2: 33.34%
-    baseRangeMultiplier: toNumber(
-      process.env.THREEBAND_BASE_RANGE_MULTIPLIER,
-      1.0
-    ), // V1.2: base × 1.0
-    mediumRangeMultiplier: toNumber(
-      process.env.THREEBAND_MEDIUM_RANGE_MULTIPLIER,
-      1.5
-    ), // V1.2: base × 1.5
-    wideRangeMultiplier: toNumber(
-      process.env.THREEBAND_WIDE_RANGE_MULTIPLIER,
-      2.0
-    ), // V1.2: base × 2.0
+    pos1AllocationPercent: toNumber(process.env.THREEBAND_POS1_ALLOCATION, 33.33), // V1.2: 33.33%
+    pos2AllocationPercent: toNumber(process.env.THREEBAND_POS2_ALLOCATION, 33.33), // V1.2: 33.33%
+    pos3AllocationPercent: toNumber(process.env.THREEBAND_POS3_ALLOCATION, 33.34), // V1.2: 33.34%
+    baseRangeMultiplier: toNumber(process.env.THREEBAND_BASE_RANGE_MULTIPLIER, 1.0), // V1.2: base × 1.0
+    mediumRangeMultiplier: toNumber(process.env.THREEBAND_MEDIUM_RANGE_MULTIPLIER, 1.5), // V1.2: base × 1.5
+    wideRangeMultiplier: toNumber(process.env.THREEBAND_WIDE_RANGE_MULTIPLIER, 2.0), // V1.2: base × 2.0
     trendScore: toNumber(process.env.THREEBAND_TREND_SCORE, 50), // V1.2: Trend score (0-100)
     safetyScore: toNumber(process.env.THREEBAND_SAFETY_SCORE, 50), // V1.2: Safety score (0-100)
     tokenADecimals: toNumber(process.env.TOKEN_A_DECIMALS, 9),
@@ -365,9 +347,7 @@ export function strategyFactory(
         // Check if position has liquidity
         if (pos.liquidity === 0n) {
           ctx.logger?.log?.(
-            `[three-band-v1.2-optionA-warn] Position ${i + 1} [${
-              pos.tickLower
-            },${
+            `[three-band-v1.2-optionA-warn] Position ${i + 1} [${pos.tickLower},${
               pos.tickUpper
             }] has ZERO liquidity - failed to open or was fully closed`
           );
@@ -572,9 +552,7 @@ export function strategyFactory(
       if (isFilter) {
         csvFilterInitialized = true;
       }
-      ctx.logger?.log?.(
-        `[three-band-v1.2-optionA] CSV output file: ${csvPath}`
-      );
+      ctx.logger?.log?.(`[three-band-v1.2-optionA] CSV output file: ${csvPath}`);
     }
 
     // Append data row

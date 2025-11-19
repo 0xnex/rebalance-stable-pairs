@@ -1,8 +1,8 @@
 /**
  * Three-Band Rebalancer Strategy - Version 1.2 (Option A)
- *
+ * 
  * Implementation of V1.2 Strategy with Option A: Contiguous Bands (Equal Distribution)
- *
+ * 
  * Key Features:
  * - 3 positions per pair with equal capital allocation (33.33% each)
  * - Contiguous bands positioned consecutively (no overlap)
@@ -13,12 +13,12 @@
  * - Smart rebalancing based on Trend Score (≥60 or <60)
  * - Maximum 1 rebalance per day with 10-minute cooldown
  * - Entry conditions: Safety Score ≥ 50, Trend Score ≥ 50
- *
+ * 
  * Rebalancing Logic:
  * - Only rebalance farthest out-of-range position
  * - High Trend Score (≥60): Rebalance if Fee Earned - Price Loss - Swap Fee > 0
  * - Low Trend Score (<60): Rebalance if Fee Earned - Swap Fee > 0
- *
+ * 
  * For more details, see V_1.2.txt specification document.
  */
 
@@ -256,9 +256,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     if (safetyScore < 50) {
       return {
         allowed: false,
-        reason: `Safety Score ${safetyScore.toFixed(
-          1
-        )} < 50 (minimum threshold)`,
+        reason: `Safety Score ${safetyScore.toFixed(1)} < 50 (minimum threshold)`,
       };
     }
 
@@ -271,9 +269,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     return {
       allowed: true,
-      reason: `Safety Score ${safetyScore.toFixed(
-        1
-      )} ≥ 50, Trend Score ${trendScore.toFixed(1)} ≥ 50`,
+      reason: `Safety Score ${safetyScore.toFixed(1)} ≥ 50, Trend Score ${trendScore.toFixed(1)} ≥ 50`,
     };
   }
 
@@ -528,24 +524,13 @@ export class ThreeBandRebalancerStrategyOptionThree {
       }
 
       // Find the farthest position from current price
-      const farthestPosition = outOfRangePositions.reduce(
-        (farthest, current) => {
-          const currentDist = this.calculateDistanceFromPrice(
-            current,
-            currentTick
-          );
-          const farthestDist = this.calculateDistanceFromPrice(
-            farthest,
-            currentTick
-          );
-          return currentDist > farthestDist ? current : farthest;
-        }
-      );
+      const farthestPosition = outOfRangePositions.reduce((farthest, current) => {
+        const currentDist = this.calculateDistanceFromPrice(current, currentTick);
+        const farthestDist = this.calculateDistanceFromPrice(farthest, currentTick);
+        return currentDist > farthestDist ? current : farthest;
+      });
 
-      const farthestDist = this.calculateDistanceFromPrice(
-        farthestPosition,
-        currentTick
-      );
+      const farthestDist = this.calculateDistanceFromPrice(farthestPosition, currentTick);
 
       // Check daily rebalance limit
       const rebalanceCheck = this.canRebalanceToday(now);
@@ -562,9 +547,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
           this.config.minSegmentDwellMs - (now - farthestPosition.lastMoved);
         return {
           action: "wait",
-          message: `Farthest position (${
-            farthestPosition.type
-          }) dwell guard active, ${Math.ceil(
+          message: `Farthest position (${farthestPosition.type}) dwell guard active, ${Math.ceil(
             Math.max(0, remaining) / 1000
           )}s remaining`,
         };
@@ -587,21 +570,16 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
           // Determine new range for the rebalanced position
           // Use the same type and allocation as before
-          const positionIndex = this.segments.findIndex(
-            (s) => s.id === farthestPosition.id
-          );
+          const positionIndex = this.segments.findIndex((s) => s.id === farthestPosition.id);
           const positionType = farthestPosition.type;
-          const allocation =
-            farthestPosition.capitalAllocation ??
-            this.getPositionAllocation(positionIndex);
+          const allocation = farthestPosition.capitalAllocation ?? this.getPositionAllocation(positionIndex);
 
           // Calculate new range centered on current tick with appropriate width
-          const widthMultiplier =
-            positionType === "main"
-              ? this.config.baseRangeMultiplier ?? 1.0
-              : positionType === "upper"
-              ? this.config.mediumRangeMultiplier ?? 1.5
-              : this.config.wideRangeMultiplier ?? 2.0;
+          const widthMultiplier = positionType === "main" ? 
+            (this.config.baseRangeMultiplier ?? 1.0) :
+            positionType === "upper" ?
+            (this.config.mediumRangeMultiplier ?? 1.5) :
+            (this.config.wideRangeMultiplier ?? 2.0);
 
           const newWidth = Math.floor(this.segmentWidth * widthMultiplier);
           const newLower = currentTick - Math.floor(newWidth / 2);
@@ -698,8 +676,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
       const priceLoss = this.calculatePriceLoss(segment);
       const swapFee = this.estimateSwapFee(segment);
       const distance = this.calculateDistanceFromPrice(segment, currentTick);
-      const isInRange =
-        currentTick >= segment.tickLower && currentTick <= segment.tickUpper;
+      const isInRange = currentTick >= segment.tickLower && currentTick <= segment.tickUpper;
 
       const profitCheck = this.shouldRebalancePosition(segment);
 
@@ -799,9 +776,9 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     // Map segment types for Option A: 0="main" (narrow), 1="upper" (medium), 2="lower" (wide)
     const segmentTypes: Array<"main" | "upper" | "lower"> = [
-      "main", // Position 1: Narrow range (closest to price)
-      "upper", // Position 2: Medium range (next tier)
-      "lower", // Position 3: Wide range (widest tier)
+      "main",   // Position 1: Narrow range (closest to price)
+      "upper",  // Position 2: Medium range (next tier)
+      "lower",  // Position 3: Wide range (widest tier)
     ];
 
     for (let i = 0; i < descriptors.length; i++) {
@@ -978,9 +955,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
 
     // Track initial values for V1.2 price loss calculation
     const currentPrice = this.pool.price;
-    const initialPositionTotals = position?.getTotals(
-      this.manager.pool.sqrtPriceX64
-    );
+    const initialPositionTotals = position?.getTotals(this.manager.pool.sqrtPriceX64);
 
     return {
       id: positionId,
@@ -1211,11 +1186,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
    * Price Loss = V_initial - V_current
    */
   private calculatePriceLoss(segment: SegmentState): bigint {
-    if (
-      !segment.initialValueA ||
-      !segment.initialValueB ||
-      !segment.initialPrice
-    ) {
+    if (!segment.initialValueA || !segment.initialValueB || !segment.initialPrice) {
       return 0n;
     }
 
@@ -1234,8 +1205,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
       const currentValue = currentTotals.amount0 + currentTotals.amount1;
 
       // Price loss is positive when value decreased
-      const loss =
-        initialValue > currentValue ? initialValue - currentValue : 0n;
+      const loss = initialValue > currentValue ? initialValue - currentValue : 0n;
       return loss;
     } catch (err) {
       return 0n;
@@ -1260,12 +1230,8 @@ export class ThreeBandRebalancerStrategyOptionThree {
       const swapFee = (totalValue * slippageBps) / 10_000n;
 
       // Add action costs
-      const actionCostA = BigInt(
-        Math.floor(this.config.actionCostTokenA * 1_000_000)
-      );
-      const actionCostB = BigInt(
-        Math.floor(this.config.actionCostTokenB * 1_000_000)
-      );
+      const actionCostA = BigInt(Math.floor(this.config.actionCostTokenA * 1_000_000));
+      const actionCostB = BigInt(Math.floor(this.config.actionCostTokenB * 1_000_000));
 
       return swapFee + actionCostA + actionCostB;
     } catch (err) {
@@ -1276,10 +1242,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
   /**
    * Calculate distance from current price (in ticks)
    */
-  private calculateDistanceFromPrice(
-    segment: SegmentState,
-    currentTick: number
-  ): number {
+  private calculateDistanceFromPrice(segment: SegmentState, currentTick: number): number {
     const segmentMid = Math.floor((segment.tickLower + segment.tickUpper) / 2);
     return Math.abs(currentTick - segmentMid);
   }
@@ -1288,10 +1251,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
    * Check if position should be rebalanced based on V1.2 logic
    * Returns { shouldRebalance: boolean, reason: string }
    */
-  private shouldRebalancePosition(segment: SegmentState): {
-    shouldRebalance: boolean;
-    reason: string;
-  } {
+  private shouldRebalancePosition(segment: SegmentState): { shouldRebalance: boolean; reason: string } {
     const trendScore = this.marketIndicators.trendScore;
     const feeEarned = this.calculateFeeEarned(segment);
     const priceLoss = this.calculatePriceLoss(segment);
@@ -1354,16 +1314,14 @@ export class ThreeBandRebalancerStrategyOptionThree {
    */
   private getPositionTickWidth(positionIndex: number): number {
     if (this.segmentWidth === null) return 2;
-
+    
     const baseRange = this.segmentWidth;
-
+    
     switch (positionIndex) {
       case 0:
         return Math.floor(baseRange * (this.config.baseRangeMultiplier ?? 1.0));
       case 1:
-        return Math.floor(
-          baseRange * (this.config.mediumRangeMultiplier ?? 1.5)
-        );
+        return Math.floor(baseRange * (this.config.mediumRangeMultiplier ?? 1.5));
       case 2:
         return Math.floor(baseRange * (this.config.wideRangeMultiplier ?? 2.0));
       default:
