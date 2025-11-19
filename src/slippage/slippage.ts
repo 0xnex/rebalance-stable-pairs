@@ -60,9 +60,6 @@ export function getMaxSlippage(
 
   // Find the appropriate threshold range
   for (const current of sortedConfigs) {
-    console.log(
-      `[getMaxSlippage] current: ${current.maxSlippage}, amount: ${swapAmount}, threshold: ${current.amountThreshold}`
-    );
     if (current && swapAmount <= current.amountThreshold) {
       return current.maxSlippage;
     }

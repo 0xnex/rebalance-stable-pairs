@@ -173,13 +173,13 @@ export class LiquidityCalculator {
     if (bestLiquidity > 0n) {
       const used0 = this.amount0ForLiquidity(
         bestLiquidity,
-        sqrtPriceLower,
+        sqrtPriceX64,
         sqrtPriceUpper
       );
       const used1 = this.amount1ForLiquidity(
         bestLiquidity,
         sqrtPriceLower,
-        sqrtPriceUpper
+        sqrtPriceX64
       );
       bestRemain0 = working0 - used0;
       bestRemain1 = working1 - used1;
@@ -241,13 +241,13 @@ export class LiquidityCalculator {
 
           const used0 = this.amount0ForLiquidity(
             bestLiquidity,
-            sqrtPriceLower,
+            sqrtPriceX64,
             sqrtPriceUpper
           );
           const used1 = this.amount1ForLiquidity(
             bestLiquidity,
             sqrtPriceLower,
-            sqrtPriceUpper
+            sqrtPriceX64
           );
           bestRemain0 = working0 - used0;
           bestRemain1 = working1 - used1;
@@ -289,13 +289,13 @@ export class LiquidityCalculator {
 
           const used0 = this.amount0ForLiquidity(
             bestLiquidity,
-            sqrtPriceLower,
+            sqrtPriceX64,
             sqrtPriceUpper
           );
           const used1 = this.amount1ForLiquidity(
             bestLiquidity,
             sqrtPriceLower,
-            sqrtPriceUpper
+            sqrtPriceX64
           );
           bestRemain0 = working0 - used0;
           bestRemain1 = working1 - used1;
@@ -531,10 +531,11 @@ export class LiquidityCalculator {
     }
 
     // Apply slippage to get final amount out
-    const amountOut =
-      (amountOutBeforeSlippage * BigInt(this.PPM - slippagePct * this.PPM)) /
-      BigInt(this.PPM);
-    const slippage = amountOutBeforeSlippage - amountOut;
+
+    const slippage = BigInt(
+      Math.floor((Number(amountOutBeforeSlippage) * slippagePct) / 100)
+    );
+    const amountOut = amountOutBeforeSlippage - BigInt(slippage);
 
     return {
       amountOut,

@@ -702,8 +702,8 @@ export function strategyFactory(
       );
 
       // Calculate swap costs in human-readable decimals
-      const swapCostToken0 = totals.totalCostTokenA / Math.pow(10, decimals0);
-      const swapCostToken1 = totals.totalCostTokenB / Math.pow(10, decimals1);
+      const swapCostToken0 = totals.swapCostTokenA / Math.pow(10, decimals0);
+      const swapCostToken1 = totals.swapCostTokenB / Math.pow(10, decimals1);
 
       ctx.logger?.log?.(
         `  💸 SWAP FEES PAID: ${swapCostToken0.toFixed(6)} ${
@@ -722,14 +722,13 @@ export function strategyFactory(
         } + ${slippageToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
       );
 
-      // Total swap costs (in separate tokens - cannot add different tokens)
-      const totalSwapCostToken0 = swapCostToken0 + slippageToken0;
-      const totalSwapCostToken1 = swapCostToken1 + slippageToken1;
+      const totalCostTokenA = swapCostToken0 + slippageToken0;
+      const totalCostTokenB = swapCostToken1 + slippageToken1;
 
       ctx.logger?.log?.(
-        `  💰 TOTAL SWAP COSTS: ${totalSwapCostToken0.toFixed(6)} ${
+        `  💰 TOTAL SWAP COSTS: ${totalCostTokenA.toFixed(6)} ${
           process.env.TOKEN_A_NAME || "A"
-        } + ${totalSwapCostToken1.toFixed(6)} ${
+        } + ${totalCostTokenB.toFixed(6)} ${
           process.env.TOKEN_B_NAME || "B"
         } (fees + slippage)`
       );
@@ -742,12 +741,6 @@ export function strategyFactory(
           process.env.TOKEN_A_NAME || "A"
         } + ` + `${netFeeToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
       );
-
-      ctx.logger?.log?.(
-        `  Costs: costA=${totals.totalCostTokenA.toFixed(
-          4
-        )} costB=${totals.totalCostTokenB.toFixed(4)}`
-      );
       ctx.logger?.log?.(
         `  TOTAL VALUE: ${
           Number(totals.amountA) +
@@ -757,10 +750,7 @@ export function strategyFactory(
           Number(totals.amountB) +
           Number(totals.collectedFees1) +
           Number(totals.feesOwed1)
-        } B`
-      );
-      ctx.logger?.log?.(
-        `  NOTE: After closing, amountA/B = cashA/B (all assets are now in cash)`
+        } B Price: ${ctx.pool.price.toFixed(6)}`
       );
       ctx.logger?.log?.(
         `[three-band-option3] Option 3 Summary: Total rebalances today=${dailyRebalanceCount}/${env.maxDailyRebalances}`

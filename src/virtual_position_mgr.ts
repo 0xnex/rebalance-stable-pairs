@@ -367,8 +367,8 @@ export class VirtualPositionManager {
     cashAmountB: bigint;
     collectedFees0: bigint;
     collectedFees1: bigint;
-    totalCostTokenA: number;
-    totalCostTokenB: number;
+    swapCostTokenA: number;
+    swapCostTokenB: number;
     slippageTokenA: number;
     slippageTokenB: number;
   } {
@@ -399,8 +399,8 @@ export class VirtualPositionManager {
       cashAmountB: this.amount1,
       collectedFees0: this.feeCollected0,
       collectedFees1: this.feeCollected1,
-      totalCostTokenA: Number(this.swapCost0),
-      totalCostTokenB: Number(this.swapCost1),
+      swapCostTokenA: Number(this.swapCost0),
+      swapCostTokenB: Number(this.swapCost1),
       slippageTokenA: Number(this.slippage0),
       slippageTokenB: Number(this.slippage1),
     };
