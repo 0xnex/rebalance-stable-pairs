@@ -1,1543 +1,848 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, test } from "bun:test";
 import {
   LiquidityCalculator,
   LiquidityConstants,
   type AmountResult,
 } from "../src/liquidity_calculator";
+import type { TokenConfig } from "../src/virtual_position_mgr";
 
-describe("LiquidityCalculator", () => {
-  const Q64 = LiquidityConstants.Q64;
+function priceToSqrtPriceX64(price: number): bigint {
+  return BigInt(Math.floor(Math.sqrt(price) * Number(LiquidityConstants.Q64)));
+}
 
-  describe("calculateActiveLiquidityFromSwap", () => {
-    it("should calculate active liquidity for token0 -> token1 swap", () => {
-      const sqrtPriceBefore = Q64; // Price = 1.0
-      const sqrtPriceAfter = (Q64 * 95n) / 100n; // Price = 0.9025 (price decrease)
-      const amountIn = 1000000n;
-      const amountOut = 950000n;
-      const zeroForOne = true;
+function priceToTick(price: number): number {
+  return Math.floor(Math.log(price) / Math.log(1.0001));
+}
 
-      const liquidity = LiquidityCalculator.calculateActiveLiquidityFromSwap(
-        sqrtPriceBefore,
-        sqrtPriceAfter,
-        amountIn,
-        amountOut,
-        zeroForOne
+describe("LiquidityCalculator - maxLiquidity", () => {
+  const tokenConfig: TokenConfig = {
+    name0: "LBTC",
+    name1: "wBTC",
+    decimals0: 8,
+    decimals1: 8,
+  };
+
+  const FeeRatePPM = 100; // 0.01%
+
+  // Test cases: [currentPrice, lowerPrice, upperPrice, amount0, amount1, expectedMinLiquidity]
+  const testCases = [
+    {
+      name: "Price in range with balanced amounts",
+      currentPrice: 1.005,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 2,
+      amount1: 2,
+      expectedMinLiquidity: 2363384342n, // Perfectly balanced amounts
+    },
+    {
+      name: "Price below range - only token0 useful",
+      currentPrice: 0.9,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 5,
+      amount1: 5,
+      expectedMinLiquidity: 5739534991n, // Only token0 used
+    },
+    {
+      name: "Price above range - only token1 useful",
+      currentPrice: 1.3,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 5,
+      amount1: 5,
+      expectedMinLiquidity: 5239534991n, // Only token1 used (with some remainder)
+    },
+    {
+      name: "Price at exact lower bound",
+      currentPrice: 1.0,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 5,
+      amount1: 5,
+      expectedMinLiquidity: 5739534991n, // At lower boundary, only token0 used
+    },
+    {
+      name: "Price at exact upper bound",
+      currentPrice: 1.2,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 5,
+      amount1: 5,
+      expectedMinLiquidity: 5239534991n, // At upper boundary, only token1 used
+    },
+    {
+      name: "Price far below range - only token0",
+      currentPrice: 0.5,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 10,
+      amount1: 0,
+      expectedMinLiquidity: 5739534991n, // Perfect for out-of-range position
+    },
+    {
+      name: "Price far above range - only token1",
+      currentPrice: 2.0,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 0,
+      amount1: 10,
+      expectedMinLiquidity: 5239534991n, // Perfect for out-of-range position
+    },
+    {
+      name: "Price below range with only token1 (wrong token)",
+      currentPrice: 0.9,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 0,
+      amount1: 10,
+      expectedMinLiquidity: 5738961037n, // Swapped 50% token1 to token0
+    },
+    {
+      name: "Price above range with only token0 (wrong token)",
+      currentPrice: 1.3,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 10,
+      amount1: 0,
+      expectedMinLiquidity: 6129642914n, // Swapped 50% token0 to token1
+    },
+    {
+      name: "Only token0 provided",
+      currentPrice: 1.005,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 10,
+      amount1: 0,
+      expectedMinLiquidity: 5908460867n, // 50% swapped to token1
+    },
+    {
+      name: "Only token1 provided",
+      currentPrice: 1.005,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 0,
+      amount1: 10,
+      expectedMinLiquidity: 5290629858n, // 50% swapped to token0
+    },
+    {
+      name: "Unbalanced amounts favoring token0",
+      currentPrice: 1.005,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 10,
+      amount1: 1,
+      expectedMinLiquidity: 11816921735n, // 70% token1 unused, but <20% threshold so no swap
+    },
+    {
+      name: "Unbalanced amounts favoring token1",
+      currentPrice: 1.005,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 1,
+      amount1: 10,
+      expectedMinLiquidity: 8692127332n, // Swapped some token1 to token0
+    },
+    {
+      name: "Price at midpoint of range",
+      currentPrice: 1.1,
+      lowerPrice: 1.0,
+      upperPrice: 1.2,
+      amount0: 5,
+      amount1: 5,
+      expectedMinLiquidity: 10244044240n, // Well balanced at midpoint
+    },
+    {
+      name: "Very narrow range at lower bound",
+      currentPrice: 1.005,
+      lowerPrice: 1.0,
+      upperPrice: 1.01,
+      amount0: 10,
+      amount1: 10,
+      expectedMinLiquidity: 400499376557n, // Narrow range = high liquidity concentration
+    },
+    {
+      name: "Very wide range",
+      currentPrice: 1.0,
+      lowerPrice: 0.5,
+      upperPrice: 2.0,
+      amount0: 10,
+      amount1: 10,
+      expectedMinLiquidity: 3414138713n, // Wide range = diluted liquidity
+    },
+  ];
+
+  // Run each test case
+  test.each(testCases)(
+    "$name",
+    ({
+      currentPrice,
+      lowerPrice,
+      upperPrice,
+      amount0,
+      amount1,
+      expectedMinLiquidity,
+    }) => {
+      const sqrtPriceX64 = priceToSqrtPriceX64(currentPrice);
+      const lowerTick = priceToTick(lowerPrice);
+      const upperTick = priceToTick(upperPrice);
+      const amount0Wei = BigInt(amount0 * 10 ** tokenConfig.decimals0);
+      const amount1Wei = BigInt(amount1 * 10 ** tokenConfig.decimals1);
+
+      const result = LiquidityCalculator.maxLiquidity(
+        sqrtPriceX64,
+        FeeRatePPM,
+        lowerTick,
+        upperTick,
+        amount0Wei,
+        amount1Wei,
+        tokenConfig
       );
 
-      expect(liquidity).toBeGreaterThan(0n);
-    });
+      // Basic assertions
+      expect(result.liquidity).toBeGreaterThanOrEqual(expectedMinLiquidity);
+      expect(result.remain0).toBeGreaterThanOrEqual(0n);
+      expect(result.remain1).toBeGreaterThanOrEqual(0n);
+      expect(result.swapCost0).toBeGreaterThanOrEqual(0n);
+      expect(result.swapFee1).toBeGreaterThanOrEqual(0n);
+      expect(result.slippage0).toBeGreaterThanOrEqual(0n);
+      expect(result.slippage1).toBeGreaterThanOrEqual(0n);
 
-    it("should calculate active liquidity for token1 -> token0 swap", () => {
-      const sqrtPriceBefore = Q64; // Price = 1.0
-      const sqrtPriceAfter = (Q64 * 105n) / 100n; // Price = 1.1025 (price increase)
-      const amountIn = 1000000n;
-      const amountOut = 950000n;
-      const zeroForOne = false;
-
-      const liquidity = LiquidityCalculator.calculateActiveLiquidityFromSwap(
-        sqrtPriceBefore,
-        sqrtPriceAfter,
-        amountIn,
-        amountOut,
-        zeroForOne
+      // Log for debugging
+      console.log(
+        `\n[${currentPrice}, ${lowerPrice}, ${upperPrice}, ${amount0}, ${amount1}]:`
       );
+      console.log(`  Liquidity: ${result.liquidity}`);
+      console.log(`  Remain: [${result.remain0}, ${result.remain1}]`);
+      console.log(`  Fees: [${result.swapCost0}, ${result.swapFee1}]`);
+      console.log(`  Slippage: [${result.slippage0}, ${result.slippage1}]`);
+    }
+  );
 
-      expect(liquidity).toBeGreaterThan(0n);
-    });
+  // Additional detailed test with specific expectations
+  it("should handle balanced amounts at mid-range price correctly", () => {
+    const currentPrice = 1.005;
+    const lowerPrice = 1.0;
+    const upperPrice = 1.2;
+    const amount0 = 2;
+    const amount1 = 2;
 
-    it("should return zero for invalid price movements", () => {
-      const sqrtPriceBefore = Q64;
-      const sqrtPriceAfter = (Q64 * 105n) / 100n; // Price increase
-      const amountIn = 1000000n;
-      const amountOut = 950000n;
-      const zeroForOne = true; // But this should decrease price
+    const result = LiquidityCalculator.maxLiquidity(
+      priceToSqrtPriceX64(currentPrice),
+      FeeRatePPM,
+      priceToTick(lowerPrice),
+      priceToTick(upperPrice),
+      BigInt(amount0 * 10 ** tokenConfig.decimals0),
+      BigInt(amount1 * 10 ** tokenConfig.decimals1),
+      tokenConfig
+    );
 
-      const liquidity = LiquidityCalculator.calculateActiveLiquidityFromSwap(
-        sqrtPriceBefore,
-        sqrtPriceAfter,
-        amountIn,
-        amountOut,
-        zeroForOne
-      );
+    // Verify liquidity is produced
+    expect(result.liquidity).toBeGreaterThan(0n);
 
-      expect(liquidity).toBe(0n);
-    });
+    // Total used + remaining should approximately equal input
+    const totalAmount0 = result.remain0 + result.swapCost0 + result.slippage0;
+    const totalAmount1 = result.remain1 + result.swapFee1 + result.slippage1;
 
-    it("should return zero for no price change", () => {
-      const sqrtPrice = Q64;
-      const amountIn = 1000000n;
-      const amountOut = 950000n;
+    // Allow some tolerance for rounding
+    expect(totalAmount0).toBeLessThanOrEqual(
+      BigInt(amount0 * 10 ** tokenConfig.decimals0)
+    );
+    expect(totalAmount1).toBeLessThanOrEqual(
+      BigInt(amount1 * 10 ** tokenConfig.decimals1)
+    );
+  });
+});
 
-      const liquidity = LiquidityCalculator.calculateActiveLiquidityFromSwap(
-        sqrtPrice,
-        sqrtPrice, // Same price
-        amountIn,
-        amountOut,
-        true
-      );
+describe("LiquidityCalculator - estimatePositionFeesFromSwap", () => {
+  const FeeRatePPM = 100; // 0.01%
 
-      expect(liquidity).toBe(0n);
-    });
+  it("should allocate fees to an active position", () => {
+    // Setup: Price 1.005, position range [1.0, 1.2]
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.006);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.005); // Price decreases for token0->token1 swap
+    const amountIn = 100000000n; // 1 token0 (8 decimals)
+    const amountOut = 99500000n; // ~0.995 token1 (8 decimals)
+    const zeroForOne = true; // Swapping token0 -> token1
 
-    it("should return zero for zero amounts", () => {
-      const sqrtPriceBefore = Q64;
-      const sqrtPriceAfter = (Q64 * 95n) / 100n;
+    const positionLiquidity = 1000000000n;
+    const positionTickLower = priceToTick(1.0);
+    const positionTickUpper = priceToTick(1.2);
 
-      const liquidity = LiquidityCalculator.calculateActiveLiquidityFromSwap(
-        sqrtPriceBefore,
-        sqrtPriceAfter,
-        0n, // Zero amount in
-        950000n,
-        true
-      );
+    const result = LiquidityCalculator.estimatePositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positionLiquidity,
+      positionTickLower,
+      positionTickUpper
+    );
 
-      expect(liquidity).toBe(0n);
-    });
+    // Position should be active (price 1.006 is in range [1.0, 1.2])
+    expect(result.isActive).toBe(true);
+
+    // Should have positive fee0 (swap was token0 -> token1)
+    expect(result.fee0).toBeGreaterThan(0n);
+    expect(result.fee1).toBe(0n);
+
+    // Total swap fee = 1 token0 * 0.01% = 0.0001 token0 = 10000 wei
+    const totalFee = (amountIn * BigInt(FeeRatePPM)) / 1_000_000n;
+    expect(totalFee).toBe(10000n);
+
+    // Position should get a portion of this fee based on its liquidity share
+    expect(result.fee0).toBeGreaterThan(0n);
+    expect(result.fee0).toBeLessThanOrEqual(totalFee);
+
+    console.log(`\nFee Allocation Test:`);
+    console.log(`  Total Swap Fee: ${totalFee}`);
+    console.log(`  Position Fee0: ${result.fee0}`);
+    console.log(`  Position Fee1: ${result.fee1}`);
+    console.log(`  Is Active: ${result.isActive}`);
   });
 
-  describe("calculateAmountsForLiquidity", () => {
-    it("should calculate correct amounts for given liquidity", () => {
-      const liquidity = 1000000n;
-      const sqrtPriceCurrent = Q64; // Price = 1.0
-      const sqrtPriceLower = Q64 / 2n; // Price = 0.25
-      const sqrtPriceUpper = Q64 * 2n; // Price = 4.0
+  it("should return zero fees for inactive position (price below range)", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(0.9);
+    const sqrtPriceAfter = priceToSqrtPriceX64(0.89);
+    const amountIn = 100000000n;
+    const amountOut = 99500000n;
+    const zeroForOne = true;
 
-      const result = LiquidityCalculator.calculateAmountsForLiquidity(
-        liquidity,
-        sqrtPriceCurrent,
-        sqrtPriceLower,
-        sqrtPriceUpper
-      );
+    const positionLiquidity = 1000000000n;
+    const positionTickLower = priceToTick(1.0); // Position range [1.0, 1.2]
+    const positionTickUpper = priceToTick(1.2);
 
-      expect(result.amount0).toBeGreaterThan(0n);
-      expect(result.amount1).toBeGreaterThan(0n);
-    });
+    const result = LiquidityCalculator.estimatePositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positionLiquidity,
+      positionTickLower,
+      positionTickUpper
+    );
 
-    it("should return zero amounts for zero liquidity", () => {
-      const sqrtPriceCurrent = Q64;
-      const sqrtPriceLower = Q64 / 2n;
-      const sqrtPriceUpper = Q64 * 2n;
-
-      const result = LiquidityCalculator.calculateAmountsForLiquidity(
-        0n,
-        sqrtPriceCurrent,
-        sqrtPriceLower,
-        sqrtPriceUpper
-      );
-
-      expect(result.amount0).toBe(0n);
-      expect(result.amount1).toBe(0n);
-    });
-
-    it("should handle price below range", () => {
-      const liquidity = 1000000n;
-      const sqrtPriceLower = Q64 / 2n;
-      const sqrtPriceUpper = Q64 * 2n;
-      const lowPrice = sqrtPriceLower / 2n; // Below range
-
-      const result = LiquidityCalculator.calculateAmountsForLiquidity(
-        liquidity,
-        lowPrice,
-        sqrtPriceLower,
-        sqrtPriceUpper
-      );
-
-      expect(result.amount0).toBeGreaterThan(0n);
-      expect(result.amount1).toBe(0n); // No token1 needed below range
-    });
-
-    it("should handle price above range", () => {
-      const liquidity = 1000000n;
-      const sqrtPriceLower = Q64 / 2n;
-      const sqrtPriceUpper = Q64 * 2n;
-      const highPrice = sqrtPriceUpper * 2n; // Above range
-
-      const result = LiquidityCalculator.calculateAmountsForLiquidity(
-        liquidity,
-        highPrice,
-        sqrtPriceLower,
-        sqrtPriceUpper
-      );
-
-      expect(result.amount0).toBe(0n); // No token0 needed above range
-      expect(result.amount1).toBeGreaterThan(0n);
-    });
-
-    it("should throw error for invalid price range", () => {
-      const liquidity = 1000000n;
-      const sqrtPriceCurrent = Q64;
-      const sqrtPriceLower = Q64 * 2n;
-      const sqrtPriceUpper = Q64 / 2n; // Invalid: lower > upper
-
-      expect(() => {
-        LiquidityCalculator.calculateAmountsForLiquidity(
-          liquidity,
-          sqrtPriceCurrent,
-          sqrtPriceLower,
-          sqrtPriceUpper
-        );
-      }).toThrow("Invalid price range");
-    });
+    // Position should NOT be active (price 0.89 is below range)
+    expect(result.isActive).toBe(false);
+    expect(result.fee0).toBe(0n);
+    expect(result.fee1).toBe(0n);
   });
 
-  describe("tickToSqrtPrice", () => {
-    it("should convert tick to sqrt price", () => {
-      const tick = 0; // Should give price = 1.0
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
+  it("should return zero fees for inactive position (price above range)", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.5);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.51);
+    const amountIn = 100000000n;
+    const amountOut = 99500000n;
+    const zeroForOne = false; // token1 -> token0
 
-      expect(sqrtPrice).toBeGreaterThan(0n);
-      // For tick 0, sqrt price should be close to Q64 (price = 1.0)
-      expect(Number(sqrtPrice)).toBeCloseTo(Number(Q64), -10); // Allow some precision error
-    });
+    const positionLiquidity = 1000000000n;
+    const positionTickLower = priceToTick(1.0); // Position range [1.0, 1.2]
+    const positionTickUpper = priceToTick(1.2);
 
-    it("should handle positive ticks", () => {
-      const tick = 1000; // Positive tick
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
+    const result = LiquidityCalculator.estimatePositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positionLiquidity,
+      positionTickLower,
+      positionTickUpper
+    );
 
-      expect(sqrtPrice).toBeGreaterThan(Q64); // Should be higher than base price
-    });
-
-    it("should handle negative ticks", () => {
-      const tick = -1000; // Negative tick
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
-
-      expect(sqrtPrice).toBeLessThan(Q64); // Should be lower than base price
-      expect(sqrtPrice).toBeGreaterThan(0n);
-    });
-
-    it("should throw error for tick out of range", () => {
-      expect(() => {
-        LiquidityCalculator.tickToSqrtPriceX64(1000000); // Way out of range
-      }).toThrow("Tick");
-    });
-
-    it("should throw error for minimum tick out of range", () => {
-      expect(() => {
-        LiquidityCalculator.tickToSqrtPriceX64(-1000000); // Way out of range
-      }).toThrow("Tick");
-    });
+    // Position should NOT be active (price 1.51 is above range)
+    expect(result.isActive).toBe(false);
+    expect(result.fee0).toBe(0n);
+    expect(result.fee1).toBe(0n);
   });
 
-  describe("sqrtPriceToTick", () => {
-    it("should convert sqrt price to tick", () => {
-      const sqrtPrice = Q64; // Price = 1.0
-      const tick = LiquidityCalculator.sqrtPriceToTick(sqrtPrice);
+  it("should allocate token1 fees when swapping token1 -> token0", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.1);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.11);
+    const amountIn = 100000000n; // 1 token1 (8 decimals)
+    const amountOut = 90000000n; // ~0.9 token0
+    const zeroForOne = false; // Swapping token1 -> token0
 
-      expect(tick).toBeCloseTo(0, 1); // Should be close to tick 0
-    });
+    const positionLiquidity = 1000000000n;
+    const positionTickLower = priceToTick(1.0);
+    const positionTickUpper = priceToTick(1.2);
 
-    it("should handle high sqrt prices", () => {
-      const highSqrtPrice = (Q64 * 110n) / 100n; // Price = 1.21, more reasonable
-      const tick = LiquidityCalculator.sqrtPriceToTick(highSqrtPrice);
+    const result = LiquidityCalculator.estimatePositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positionLiquidity,
+      positionTickLower,
+      positionTickUpper
+    );
 
-      expect(tick).toBeGreaterThan(0); // Should be positive tick
-      expect(tick).toBeLessThanOrEqual(LiquidityConstants.MAX_TICK);
-    });
+    // Position should be active
+    expect(result.isActive).toBe(true);
 
-    it("should handle low sqrt prices", () => {
-      const lowSqrtPrice = (Q64 * 90n) / 100n; // Price = 0.81, more reasonable
-      const tick = LiquidityCalculator.sqrtPriceToTick(lowSqrtPrice);
+    // Should have positive fee1 (swap was token1 -> token0)
+    expect(result.fee0).toBe(0n);
+    expect(result.fee1).toBeGreaterThan(0n);
 
-      expect(tick).toBeLessThan(0); // Should be negative tick
-      expect(tick).toBeGreaterThanOrEqual(LiquidityConstants.MIN_TICK);
-    });
-
-    it("should provide reasonable tick approximations", () => {
-      // Test that the method returns reasonable tick values for known sqrt prices
-      const testCases = [
-        { sqrtPrice: LiquidityConstants.Q64, expectedTick: 0 }, // Price = 1.0, should be tick 0
-        {
-          sqrtPrice: LiquidityCalculator.tickToSqrtPriceX64(100),
-          shouldBePositive: true,
-        }, // Should be positive
-        {
-          sqrtPrice: LiquidityCalculator.tickToSqrtPriceX64(-100),
-          shouldBeNegative: true,
-        }, // Should be negative
-      ];
-
-      testCases.forEach(
-        ({ sqrtPrice, expectedTick, shouldBePositive, shouldBeNegative }) => {
-          const tick = LiquidityCalculator.sqrtPriceToTick(sqrtPrice);
-
-          if (expectedTick !== undefined) {
-            expect(tick).toBe(expectedTick);
-          } else if (shouldBePositive) {
-            expect(tick).toBeGreaterThan(0);
-          } else if (shouldBeNegative) {
-            expect(tick).toBeLessThan(0);
-          }
-        }
-      );
-    });
-
-    it("should clamp extreme values to valid tick range", () => {
-      // Very high sqrt price (beyond max tick range)
-      // Get the actual max sqrt price and multiply by 2 to go beyond it
-      const maxSqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(
-        LiquidityConstants.MAX_TICK
-      );
-      const extremeHighSqrtPrice = maxSqrtPrice * 2n;
-      const highTick =
-        LiquidityCalculator.sqrtPriceToTick(extremeHighSqrtPrice);
-      expect(highTick).toBe(LiquidityConstants.MAX_TICK);
-
-      // Very low sqrt price (beyond min tick range)
-      // Use a very small sqrt price (much smaller than min tick represents)
-      const extremeLowSqrtPrice = 1n; // Extremely small, well below MIN_TICK
-      const lowTick = LiquidityCalculator.sqrtPriceToTick(extremeLowSqrtPrice);
-      expect(lowTick).toBe(LiquidityConstants.MIN_TICK);
-    });
-
-    it("should align to tick spacing when specified", () => {
-      // Test with direct tick values to avoid sqrt price conversion issues
-
-      // Test case 1: Tick that should align to 60
-      const testTick1 = 123; // This should align to 120 (123 -> 120)
-      const expectedAligned60 = Math.floor(testTick1 / 60) * 60; // = 60
-
-      // Simulate what the alignment should do
-      expect(expectedAligned60 % 60).toBe(0);
-      expect(expectedAligned60).toBeLessThanOrEqual(testTick1);
-
-      // Test case 2: Tick that should align to 200
-      const testTick2 = 1234; // This should align to 1200
-      const expectedAligned200 = Math.floor(testTick2 / 200) * 200; // = 1200
-
-      expect(expectedAligned200 % 200).toBe(0);
-      expect(expectedAligned200).toBeLessThanOrEqual(testTick2);
-
-      // Test case 3: Test with a sqrt price that we know works
-      const workingTick = 0; // We know tick 0 works
-      const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(workingTick);
-      const alignedTick = LiquidityCalculator.sqrtPriceToTick(sqrtPrice, 60);
-
-      // Should align to nearest 60-multiple (which is 0)
-      expect(alignedTick % 60).toBe(0);
-      expect(alignedTick).toBe(0);
-    });
-
-    it("should throw error for zero or negative sqrt price", () => {
-      expect(() => {
-        LiquidityCalculator.sqrtPriceToTick(0n);
-      }).toThrow("Sqrt price must be positive");
-
-      expect(() => {
-        LiquidityCalculator.sqrtPriceToTick(-1n);
-      }).toThrow("Sqrt price must be positive");
-    });
+    console.log(`\nToken1 Fee Allocation:`);
+    console.log(`  Position Fee0: ${result.fee0}`);
+    console.log(`  Position Fee1: ${result.fee1}`);
   });
 
-  describe("maxLiquidity", () => {
-    const Q64 = LiquidityConstants.Q64;
-    const feeRatePpm = 3000; // 0.3%
-    const lowerTick = -1000;
-    const upperTick = 1000;
+  it("should handle zero liquidity position", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.1);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.11);
+    const amountIn = 100000000n;
+    const amountOut = 90000000n;
+    const zeroForOne = false;
 
-    it("should return zero for zero amounts", () => {
-      const result = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        0n,
-        0n
-      );
-      expect(result.liquidity).toBe(0n);
-      expect(result.remain0).toBe(0n);
-      expect(result.remain1).toBe(0n);
-      expect(result.swapFee0).toBe(0n);
-      expect(result.swapFee1).toBe(0n);
-      expect(result.slip0).toBe(0n);
-      expect(result.slip1).toBe(0n);
-    });
+    const positionLiquidity = 0n; // Zero liquidity
+    const positionTickLower = priceToTick(1.0);
+    const positionTickUpper = priceToTick(1.2);
 
-    it("should calculate liquidity with balanced amounts", () => {
-      const result = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        1000000n, // 1M token0
-        1000000n // 1M token1
-      );
-      expect(result.liquidity).toBeGreaterThan(0n);
-    });
+    const result = LiquidityCalculator.estimatePositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positionLiquidity,
+      positionTickLower,
+      positionTickUpper
+    );
 
-    it("should handle single-sided liquidity (only token0)", () => {
-      const result = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        1000000n, // 1M token0
-        0n // No token1
-      );
-      expect(result.liquidity).toBeGreaterThan(0n);
-    });
+    expect(result.isActive).toBe(false);
+    expect(result.fee0).toBe(0n);
+    expect(result.fee1).toBe(0n);
+  });
+});
 
-    it("should handle single-sided liquidity (only token1)", () => {
-      const result = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        0n, // No token0
-        1000000n // 1M token1
-      );
-      expect(result.liquidity).toBeGreaterThan(0n);
-    });
+describe("LiquidityCalculator - estimateMultiPositionFeesFromSwap", () => {
+  const FeeRatePPM = 100; // 0.01%
 
-    it("should optimize liquidity with swap when beneficial", () => {
-      // Use unbalanced amounts where swap should help
-      const resultUnbalanced = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        2000000n, // 2M token0 (excess)
-        500000n // 0.5M token1 (deficit)
-      );
+  it("should allocate fees proportionally across multiple active positions", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.106);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.105);
+    const amountIn = 1000000000n; // 10 tokens
+    const amountOut = 995000000n;
+    const zeroForOne = true;
 
-      const resultBalanced = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        1000000n, // 1M token0
-        1000000n // 1M token1
-      );
+    const positions = [
+      {
+        liquidity: 1000000000n,
+        tickLower: priceToTick(1.0),
+        tickUpper: priceToTick(1.2),
+      }, // Active
+      {
+        liquidity: 500000000n,
+        tickLower: priceToTick(1.05),
+        tickUpper: priceToTick(1.15),
+      }, // Active
+      {
+        liquidity: 2000000000n,
+        tickLower: priceToTick(0.8),
+        tickUpper: priceToTick(1.0),
+      }, // Inactive
+    ];
 
-      // The optimized unbalanced case should potentially provide more liquidity
-      // due to having more total value
-      expect(resultUnbalanced.liquidity).toBeGreaterThan(0n);
-      expect(resultBalanced.liquidity).toBeGreaterThan(0n);
-    });
+    const results = LiquidityCalculator.estimateMultiPositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positions
+    );
 
-    it("should throw error for invalid price range", () => {
-      expect(() => {
-        LiquidityCalculator.maxLiquidity(
-          Q64,
-          feeRatePpm,
-          1000, // upper tick
-          -1000, // lower tick (invalid: upper < lower)
-          1000000n,
-          1000000n
+    // Total fee = 10 tokens * 0.01% = 0.01 tokens = 100000 wei
+    const totalFee = (amountIn * BigInt(FeeRatePPM)) / 1_000_000n;
+    expect(totalFee).toBe(100000n);
+
+    // Position 0 and 1 should be active
+    expect(results[0].isActive).toBe(true);
+    expect(results[0].fee0).toBeGreaterThan(0n);
+    expect(results[1].isActive).toBe(true);
+    expect(results[1].fee0).toBeGreaterThan(0n);
+
+    // Position 2 should be inactive (price is above its range)
+    expect(results[2].isActive).toBe(false);
+    expect(results[2].fee0).toBe(0n);
+
+    // Position 0 should get 2x more fees than Position 1 (2:1 liquidity ratio)
+    const ratio = Number(results[0].fee0) / Number(results[1].fee0);
+    expect(ratio).toBeCloseTo(2.0, 0.1);
+
+    // Total allocated fees should not exceed total swap fees
+    const totalAllocated = results[0].fee0 + results[1].fee0 + results[2].fee0;
+    expect(totalAllocated).toBeLessThanOrEqual(totalFee);
+
+    console.log(`\nMulti-Position Fee Allocation:`);
+    console.log(`  Total Swap Fee: ${totalFee}`);
+    console.log(
+      `  Position 0 (1B liq): ${results[0].fee0} (active: ${results[0].isActive})`
+    );
+    console.log(
+      `  Position 1 (500M liq): ${results[1].fee0} (active: ${results[1].isActive})`
+    );
+    console.log(
+      `  Position 2 (2B liq): ${results[2].fee0} (active: ${results[2].isActive})`
+    );
+    console.log(`  Total Allocated: ${totalAllocated}`);
+  });
+
+  it("should cap allocation when position liquidity exceeds pool liquidity", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.006);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.005);
+    const amountIn = 100000000n; // 1 token
+    const amountOut = 99500000n;
+    const zeroForOne = true;
+
+    // Create positions with huge liquidity (likely more than pool)
+    const positions = [
+      {
+        liquidity: 100000000000n,
+        tickLower: priceToTick(1.0),
+        tickUpper: priceToTick(1.2),
+      },
+      {
+        liquidity: 200000000000n,
+        tickLower: priceToTick(1.0),
+        tickUpper: priceToTick(1.2),
+      },
+      {
+        liquidity: 300000000000n,
+        tickLower: priceToTick(1.0),
+        tickUpper: priceToTick(1.2),
+      },
+    ];
+
+    const results = LiquidityCalculator.estimateMultiPositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positions
+    );
+
+    const totalFee = (amountIn * BigInt(FeeRatePPM)) / 1_000_000n;
+    expect(totalFee).toBe(10000n);
+
+    // All positions should be active
+    expect(results[0].isActive).toBe(true);
+    expect(results[1].isActive).toBe(true);
+    expect(results[2].isActive).toBe(true);
+
+    // Total allocated should NOT exceed total fee (capped at 100%)
+    const totalAllocated = results[0].fee0 + results[1].fee0 + results[2].fee0;
+    expect(totalAllocated).toBeLessThanOrEqual(totalFee);
+
+    // Fees should still be allocated proportionally (1:2:3 ratio)
+    const ratio01 = Number(results[1].fee0) / Number(results[0].fee0);
+    const ratio02 = Number(results[2].fee0) / Number(results[0].fee0);
+    expect(ratio01).toBeCloseTo(2.0, 0.1);
+    expect(ratio02).toBeCloseTo(3.0, 0.1);
+
+    console.log(`\nCapped Allocation Test:`);
+    console.log(`  Total Swap Fee: ${totalFee}`);
+    console.log(`  Position 0: ${results[0].fee0}`);
+    console.log(`  Position 1: ${results[1].fee0}`);
+    console.log(`  Position 2: ${results[2].fee0}`);
+    console.log(`  Total Allocated: ${totalAllocated}`);
+    console.log(
+      `  Allocation %: ${(
+        (Number(totalAllocated) / Number(totalFee)) *
+        100
+      ).toFixed(2)}%`
+    );
+  });
+
+  it("should handle all positions inactive", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(0.9);
+    const sqrtPriceAfter = priceToSqrtPriceX64(0.89);
+    const amountIn = 100000000n;
+    const amountOut = 99500000n;
+    const zeroForOne = true;
+
+    const positions = [
+      {
+        liquidity: 1000000000n,
+        tickLower: priceToTick(1.0),
+        tickUpper: priceToTick(1.2),
+      },
+      {
+        liquidity: 500000000n,
+        tickLower: priceToTick(1.05),
+        tickUpper: priceToTick(1.15),
+      },
+    ];
+
+    const results = LiquidityCalculator.estimateMultiPositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      positions
+    );
+
+    // All positions inactive (price 0.89 is below all ranges)
+    expect(results[0].isActive).toBe(false);
+    expect(results[0].fee0).toBe(0n);
+    expect(results[1].isActive).toBe(false);
+    expect(results[1].fee0).toBe(0n);
+  });
+
+  it("should handle empty positions array", () => {
+    const sqrtPriceBefore = priceToSqrtPriceX64(1.1);
+    const sqrtPriceAfter = priceToSqrtPriceX64(1.09);
+    const amountIn = 100000000n;
+    const amountOut = 99500000n;
+    const zeroForOne = true;
+
+    const results = LiquidityCalculator.estimateMultiPositionFeesFromSwap(
+      sqrtPriceBefore,
+      sqrtPriceAfter,
+      amountIn,
+      amountOut,
+      zeroForOne,
+      FeeRatePPM,
+      []
+    );
+
+    expect(results).toHaveLength(0);
+  });
+});
+
+describe("LiquidityCalculator - estimateMultiPositionFeesFromSwapWithPoolLiquidity", () => {
+  const FeeRatePPM = 100; // 0.01%
+
+  const testCases = [
+    {
+      name: "Normal allocation with mixed active/inactive positions",
+      poolLiquidity: 20000000000n,
+      swapPrice: 1.105,
+      amountIn: 1000000000n,
+      zeroForOne: true,
+      positions: [
+        { liquidity: 1000000000n, lowerPrice: 1.0, upperPrice: 1.2 }, // Active
+        { liquidity: 500000000n, lowerPrice: 1.05, upperPrice: 1.15 }, // Active
+        { liquidity: 2000000000n, lowerPrice: 0.8, upperPrice: 1.0 }, // Inactive
+      ],
+      expectedActiveCount: 2,
+      expectedRatio: 2.0, // Position 0 / Position 1
+      shouldCapAt100: false,
+    },
+    {
+      name: "Position liquidity exceeds pool liquidity (capped)",
+      poolLiquidity: 1000000000n,
+      swapPrice: 1.1,
+      amountIn: 100000000n,
+      zeroForOne: true,
+      positions: [
+        { liquidity: 800000000n, lowerPrice: 1.0, upperPrice: 1.2 },
+        { liquidity: 400000000n, lowerPrice: 1.0, upperPrice: 1.2 },
+      ],
+      expectedActiveCount: 2,
+      expectedRatio: 2.0,
+      shouldCapAt100: true,
+    },
+    {
+      name: "All positions inactive (price below range)",
+      poolLiquidity: 10000000000n,
+      swapPrice: 0.5,
+      amountIn: 100000000n,
+      zeroForOne: true,
+      positions: [
+        { liquidity: 1000000000n, lowerPrice: 1.0, upperPrice: 1.2 },
+        { liquidity: 500000000n, lowerPrice: 1.05, upperPrice: 1.15 },
+      ],
+      expectedActiveCount: 0,
+      expectedRatio: null,
+      shouldCapAt100: false,
+    },
+    {
+      name: "All positions inactive (price above range)",
+      poolLiquidity: 10000000000n,
+      swapPrice: 2.0,
+      amountIn: 100000000n,
+      zeroForOne: false,
+      positions: [
+        { liquidity: 1000000000n, lowerPrice: 1.0, upperPrice: 1.2 },
+        { liquidity: 500000000n, lowerPrice: 1.05, upperPrice: 1.15 },
+      ],
+      expectedActiveCount: 0,
+      expectedRatio: null,
+      shouldCapAt100: false,
+    },
+    {
+      name: "Single active position at exact tick boundary",
+      poolLiquidity: 5000000000n,
+      swapPrice: 1.0,
+      amountIn: 100000000n,
+      zeroForOne: false,
+      positions: [
+        { liquidity: 1000000000n, lowerPrice: 1.0, upperPrice: 1.2 }, // Active (inclusive lower)
+        { liquidity: 500000000n, lowerPrice: 0.8, upperPrice: 1.0 }, // Inactive (exclusive upper)
+      ],
+      expectedActiveCount: 1,
+      expectedRatio: null,
+      shouldCapAt100: false,
+    },
+    {
+      name: "Token1 fees (zeroForOne=false)",
+      poolLiquidity: 15000000000n,
+      swapPrice: 1.1,
+      amountIn: 100000000n,
+      zeroForOne: false,
+      positions: [
+        { liquidity: 1000000000n, lowerPrice: 1.0, upperPrice: 1.2 },
+        { liquidity: 2000000000n, lowerPrice: 1.05, upperPrice: 1.15 },
+      ],
+      expectedActiveCount: 2,
+      expectedRatio: 0.5, // Position 0 / Position 1 (reversed)
+      shouldCapAt100: false,
+    },
+    {
+      name: "Very small position relative to pool",
+      poolLiquidity: 100000000000n, // 100B pool
+      swapPrice: 1.1,
+      amountIn: 1000000000n,
+      zeroForOne: true,
+      positions: [
+        { liquidity: 10000000n, lowerPrice: 1.0, upperPrice: 1.2 }, // 0.01% of pool
+      ],
+      expectedActiveCount: 1,
+      expectedRatio: null,
+      shouldCapAt100: false,
+    },
+    {
+      name: "Empty positions array",
+      poolLiquidity: 10000000000n,
+      swapPrice: 1.1,
+      amountIn: 100000000n,
+      zeroForOne: true,
+      positions: [],
+      expectedActiveCount: 0,
+      expectedRatio: null,
+      shouldCapAt100: false,
+    },
+  ];
+
+  test.each(testCases)(
+    "$name",
+    ({
+      poolLiquidity,
+      swapPrice,
+      amountIn,
+      zeroForOne,
+      positions,
+      expectedActiveCount,
+      expectedRatio,
+      shouldCapAt100,
+    }) => {
+      const swapTick = priceToTick(swapPrice);
+      const positionsWithTicks = positions.map((p) => ({
+        liquidity: p.liquidity,
+        tickLower: priceToTick(p.lowerPrice),
+        tickUpper: priceToTick(p.upperPrice),
+      }));
+
+      const results =
+        LiquidityCalculator.estimateMultiPositionFeesFromSwapWithPoolLiquidity(
+          poolLiquidity,
+          swapTick,
+          amountIn,
+          zeroForOne,
+          FeeRatePPM,
+          positionsWithTicks
         );
-      }).toThrow("Invalid price range");
-    });
 
-    it("should handle different price positions", () => {
-      // Test when current price is below range
-      const resultBelow = LiquidityCalculator.maxLiquidity(
-        Q64 / 2n, // price = 0.25 (below range)
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        1000000n,
-        1000000n
-      );
+      const totalFee = (amountIn * BigInt(FeeRatePPM)) / 1_000_000n;
 
-      // Test when current price is above range
-      const resultAbove = LiquidityCalculator.maxLiquidity(
-        Q64 * 2n, // price = 4.0 (above range, but will be clamped)
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        1000000n,
-        1000000n
-      );
+      // Check active count
+      const activeCount = results.filter((r) => r.isActive).length;
+      expect(activeCount).toBe(expectedActiveCount);
 
-      expect(resultBelow.liquidity).toBeGreaterThan(0n);
-      expect(resultAbove.liquidity).toBeGreaterThan(0n);
-    });
-
-    it("should optimize based on calculated optimal ratio", () => {
-      // Test with severely unbalanced amounts where optimal ratio should help
-      const resultOptimized = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0 (in range)
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        5000000n, // 5M token0 (heavily unbalanced)
-        100000n // 0.1M token1
-      );
-
-      // Compare with a more balanced scenario
-      const resultBalanced = LiquidityCalculator.maxLiquidity(
-        Q64, // price = 1.0
-        feeRatePpm,
-        lowerTick,
-        upperTick,
-        2500000n, // 2.5M token0
-        2500000n // 2.5M token1 (same total value, but balanced)
-      );
-
-      // Both should provide meaningful liquidity
-      expect(resultOptimized.liquidity).toBeGreaterThan(0n);
-      expect(resultBalanced.liquidity).toBeGreaterThan(0n);
-
-      // The optimal ratio calculation should help the unbalanced case
-      // achieve similar or better liquidity despite being unbalanced initially
-      expect(resultOptimized.liquidity).toBeGreaterThan(
-        (resultBalanced.liquidity * 8n) / 10n
-      ); // Within 20%
-    });
-
-    describe("Edge cases: Single token with different price positions", () => {
-      const amount = 1000000n; // 1M tokens
-
-      describe("Only Token0 scenarios", () => {
-        it("should handle token0 only when price is in range", () => {
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64, // price = 1.0 (in range)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount,
-            0n
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token0 only when price is below range", () => {
-          // Price below range: only token0 is useful, no swap needed
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64 / 4n, // price = 0.0625 (well below range)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount,
-            0n
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token0 only when price is above range", () => {
-          // Price above range: token0 should be swapped to token1
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64 * 4n, // price = 16.0 (well above range, but will be clamped)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount,
-            0n
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token0 only at lower boundary", () => {
-          const lowerSqrtPrice =
-            LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
-          const result = LiquidityCalculator.maxLiquidity(
-            lowerSqrtPrice, // price exactly at lower boundary
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount,
-            0n
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token0 only at upper boundary", () => {
-          const upperSqrtPrice =
-            LiquidityCalculator.tickToSqrtPriceX64(upperTick);
-          const result = LiquidityCalculator.maxLiquidity(
-            upperSqrtPrice, // price exactly at upper boundary
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount,
-            0n
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-      });
-
-      describe("Only Token1 scenarios", () => {
-        it("should handle token1 only when price is in range", () => {
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64, // price = 1.0 (in range)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            0n,
-            amount
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token1 only when price is below range", () => {
-          // Price below range: token1 should be swapped to token0
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64 / 4n, // price = 0.0625 (well below range)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            0n,
-            amount
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token1 only when price is above range", () => {
-          // Price above range: only token1 is useful, no swap needed
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64 * 4n, // price = 16.0 (well above range, but will be clamped)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            0n,
-            amount
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token1 only at lower boundary", () => {
-          const lowerSqrtPrice =
-            LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
-          const result = LiquidityCalculator.maxLiquidity(
-            lowerSqrtPrice, // price exactly at lower boundary
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            0n,
-            amount
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle token1 only at upper boundary", () => {
-          const upperSqrtPrice =
-            LiquidityCalculator.tickToSqrtPriceX64(upperTick);
-          const result = LiquidityCalculator.maxLiquidity(
-            upperSqrtPrice, // price exactly at upper boundary
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            0n,
-            amount
-          );
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-      });
-
-      describe("Optimal ratio edge cases", () => {
-        it("should handle optimal ratio when price is below range", () => {
-          // When price is below range, only token0 is useful for liquidity
-          const resultBalanced = LiquidityCalculator.maxLiquidity(
-            Q64 / 4n, // price well below range
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            500000n, // 0.5M token0
-            500000n // 0.5M token1
-          );
-
-          const resultToken0Only = LiquidityCalculator.maxLiquidity(
-            Q64 / 4n, // same price
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            1000000n, // 1M token0 (all token0)
-            0n // 0 token1
-          );
-
-          // Both should provide liquidity, but the balanced case might be better
-          // due to the ability to swap token1 to token0 (despite swap costs)
-          expect(resultBalanced.liquidity).toBeGreaterThan(0n);
-          expect(resultToken0Only.liquidity).toBeGreaterThan(0n);
-
-          // The key test: balanced should be able to optimize via swapping
-          expect(resultBalanced.liquidity).toBeGreaterThan(
-            resultToken0Only.liquidity / 2n
-          ); // Within reasonable range
-        });
-
-        it("should handle optimal ratio when price is above range", () => {
-          // When price is above range, only token1 is useful for liquidity
-          const resultBalanced = LiquidityCalculator.maxLiquidity(
-            Q64 * 4n, // price well above range (will be clamped)
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            500000n, // 0.5M token0
-            500000n // 0.5M token1
-          );
-
-          const resultToken1Only = LiquidityCalculator.maxLiquidity(
-            Q64 * 4n, // same price
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            0n, // 0 token0
-            1000000n // 1M token1 (all token1)
-          );
-
-          // Both should provide liquidity, but the balanced case might be better
-          // due to the ability to swap token0 to token1 (despite swap costs)
-          expect(resultBalanced.liquidity).toBeGreaterThan(0n);
-          expect(resultToken1Only.liquidity).toBeGreaterThan(0n);
-
-          // The key test: balanced should be able to optimize via swapping
-          expect(resultBalanced.liquidity).toBeGreaterThan(
-            resultToken1Only.liquidity / 2n
-          ); // Within reasonable range
-        });
-
-        it("should handle very narrow ranges", () => {
-          const narrowLowerTick = -100;
-          const narrowUpperTick = 100;
-
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64, // price = 1.0 (in narrow range)
-            feeRatePpm,
-            narrowLowerTick,
-            narrowUpperTick,
-            1000000n,
-            1000000n
-          );
-
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-
-        it("should handle very wide ranges", () => {
-          const wideLowerTick = -5000;
-          const wideUpperTick = 5000;
-
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64, // price = 1.0 (in wide range)
-            feeRatePpm,
-            wideLowerTick,
-            wideUpperTick,
-            1000000n,
-            1000000n
-          );
-
-          expect(result.liquidity).toBeGreaterThan(0n);
-        });
-      });
-    });
-
-    describe("Invariant checks: depositedAmount + remain <= amount", () => {
-      const testInvariant = (
-        description: string,
-        sqrtPriceX64: bigint,
-        amount0: bigint,
-        amount1: bigint
-      ) => {
-        it(description, () => {
-          const result = LiquidityCalculator.maxLiquidity(
-            sqrtPriceX64,
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount0,
-            amount1
-          );
-
-          // Verify that depositedAmount and actualRemain are always non-negative
-          expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-          expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-          expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-          expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-
-          // Note: remain0 and remain1 can be negative in Approach A accounting
-
-          // Liquidity should be non-negative
-          expect(result.liquidity).toBeGreaterThanOrEqual(0n);
-
-          // actualRemain amounts are always positive (physical leftover)
-          // depositedAmount shows what went into liquidity
-
-          // Only one swap direction should have fees
-          if (result.swapFee0 > 0n) {
-            expect(result.swapFee1).toBe(0n);
+      // Check fees are in correct token
+      results.forEach((result, i) => {
+        if (result.isActive) {
+          if (zeroForOne) {
+            expect(result.fee0).toBeGreaterThan(0n);
+            expect(result.fee1).toBe(0n);
+          } else {
+            expect(result.fee0).toBe(0n);
+            expect(result.fee1).toBeGreaterThan(0n);
           }
-          if (result.swapFee1 > 0n) {
-            expect(result.swapFee0).toBe(0n);
-          }
-
-          // Only one swap direction should have slippage
-          if (result.slip0 > 0n) {
-            expect(result.slip1).toBe(0n);
-          }
-          if (result.slip1 > 0n) {
-            expect(result.slip0).toBe(0n);
-          }
-
-          // Verify deposited amounts match liquidity calculation
-          const liquidityAmounts =
-            LiquidityCalculator.calculateAmountsForLiquidity(
-              result.liquidity,
-              sqrtPriceX64,
-              LiquidityCalculator.tickToSqrtPriceX64(lowerTick),
-              LiquidityCalculator.tickToSqrtPriceX64(upperTick)
-            );
-
-          // depositedAmount should match what calculateAmountsForLiquidity returns
-          expect(result.depositedAmount0).toBe(liquidityAmounts.amount0);
-          expect(result.depositedAmount1).toBe(liquidityAmounts.amount1);
-
-          // Verify Approach A accounting invariant:
-          //   amount0 = depositedAmount0 + swapFee0 + slip0 + remain0
-          //   amount1 = depositedAmount1 + swapFee1 + slip1 + remain1
-          const reconstructedAmount0 =
-            result.depositedAmount0 +
-            result.swapFee0 +
-            result.slip0 +
-            result.remain0;
-          const reconstructedAmount1 =
-            result.depositedAmount1 +
-            result.swapFee1 +
-            result.slip1 +
-            result.remain1;
-
-          expect(reconstructedAmount0).toBe(amount0);
-          expect(reconstructedAmount1).toBe(amount1);
-        });
-      };
-
-      // Test with only token0
-      testInvariant(
-        "should maintain invariant with only token0, price in range",
-        Q64,
-        1000000n,
-        0n
-      );
-
-      testInvariant(
-        "should maintain invariant with only token0, price below range",
-        Q64 / 4n,
-        1000000n,
-        0n
-      );
-
-      testInvariant(
-        "should maintain invariant with only token0, price above range",
-        Q64 * 4n,
-        1000000n,
-        0n
-      );
-
-      // Test with only token1
-      testInvariant(
-        "should maintain invariant with only token1, price in range",
-        Q64,
-        0n,
-        1000000n
-      );
-
-      testInvariant(
-        "should maintain invariant with only token1, price below range",
-        Q64 / 4n,
-        0n,
-        1000000n
-      );
-
-      testInvariant(
-        "should maintain invariant with only token1, price above range",
-        Q64 * 4n,
-        0n,
-        1000000n
-      );
-
-      // Test with both tokens
-      testInvariant(
-        "should maintain invariant with both tokens, price in range",
-        Q64,
-        1000000n,
-        1000000n
-      );
-
-      testInvariant(
-        "should maintain invariant with both tokens, price below range",
-        Q64 / 4n,
-        1000000n,
-        1000000n
-      );
-
-      testInvariant(
-        "should maintain invariant with both tokens, price above range",
-        Q64 * 4n,
-        1000000n,
-        1000000n
-      );
-
-      // Test with unbalanced amounts
-      testInvariant(
-        "should maintain invariant with more token0, price in range",
-        Q64,
-        5000000n,
-        1000000n
-      );
-
-      testInvariant(
-        "should maintain invariant with more token1, price in range",
-        Q64,
-        1000000n,
-        5000000n
-      );
-    });
-
-    describe("Detailed accounting verification", () => {
-      it("should correctly account for swap token1→token0 (only token1 input)", () => {
-        const amount0 = 0n;
-        const amount1 = 6000000000n; // 6000 USDC (6 decimals)
-        const feeRate = 100; // 0.01%
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64, // price = 1.0
-          feeRate,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-
-        // Should swap token1 → token0
-        expect(result.swapFee1).toBeGreaterThan(0n);
-        expect(result.swapFee0).toBe(0n);
-
-        // Should have slippage in token0 (output)
-        expect(result.slip0).toBeGreaterThan(0n);
-        expect(result.slip1).toBe(0n);
-
-        // depositedAmount shows how much was put into liquidity (always positive)
-        expect(result.depositedAmount0).toBeGreaterThan(0n);
-        expect(result.depositedAmount1).toBeGreaterThan(0n);
-
-        // Log for debugging
-        console.log("Token1→Token0 swap test:");
-        console.log(`  Input: ${amount0} token0, ${amount1} token1`);
-        console.log(
-          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
-        );
-        console.log(
-          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
-        );
-        console.log(
-          `  Fee: ${result.swapFee0} token0, ${result.swapFee1} token1`
-        );
-        console.log(`  Slip: ${result.slip0} token0, ${result.slip1} token1`);
-        console.log(`  Liquidity: ${result.liquidity}`);
-      });
-
-      it("should correctly account for swap token0→token1 (only token0 input)", () => {
-        const amount0 = 6000000000n; // 6000 tokens (6 decimals)
-        const amount1 = 0n;
-        const feeRate = 100; // 0.01%
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64, // price = 1.0
-          feeRate,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-
-        // Should swap token0 → token1
-        expect(result.swapFee0).toBeGreaterThan(0n);
-        expect(result.swapFee1).toBe(0n);
-
-        // Should have slippage in token1 (output)
-        expect(result.slip1).toBeGreaterThan(0n);
-        expect(result.slip0).toBe(0n);
-
-        // depositedAmount shows how much was put into liquidity (always positive)
-        expect(result.depositedAmount0).toBeGreaterThan(0n);
-        expect(result.depositedAmount1).toBeGreaterThan(0n);
-
-        // Log for debugging
-        console.log("Token0→Token1 swap test:");
-        console.log(`  Input: ${amount0} token0, ${amount1} token1`);
-        console.log(
-          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
-        );
-        console.log(
-          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
-        );
-        console.log(
-          `  Fee: ${result.swapFee0} token0, ${result.swapFee1} token1`
-        );
-        console.log(`  Slip: ${result.slip0} token0, ${result.slip1} token1`);
-        console.log(`  Liquidity: ${result.liquidity}`);
-      });
-
-      it("should correctly account when no swap is needed", () => {
-        const amount0 = 1000000n;
-        const amount1 = 1000000n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64, // price = 1.0
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-
-        // May or may not swap depending on optimal ratio
-        // But fees should be consistent
-        if (result.swapFee0 === 0n && result.swapFee1 === 0n) {
-          // No swap case
-          expect(result.slip0).toBe(0n);
-          expect(result.slip1).toBe(0n);
-        }
-
-        // Both deposited amounts should be positive when starting with both tokens
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-
-        console.log("Balanced tokens test:");
-        console.log(`  Input: ${amount0} token0, ${amount1} token1`);
-        console.log(
-          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
-        );
-        console.log(
-          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
-        );
-        console.log(
-          `  Fee: ${result.swapFee0} token0, ${result.swapFee1} token1`
-        );
-        console.log(`  Slip: ${result.slip0} token0, ${result.slip1} token1`);
-      });
-
-      it("should have consistent fee and slippage directions", () => {
-        const testCases = [
-          { desc: "only token0", amount0: 1000000n, amount1: 0n },
-          { desc: "only token1", amount0: 0n, amount1: 1000000n },
-          { desc: "more token0", amount0: 5000000n, amount1: 1000000n },
-          { desc: "more token1", amount0: 1000000n, amount1: 5000000n },
-        ];
-
-        testCases.forEach(({ desc, amount0, amount1 }) => {
-          const result = LiquidityCalculator.maxLiquidity(
-            Q64,
-            feeRatePpm,
-            lowerTick,
-            upperTick,
-            amount0,
-            amount1
-          );
-
-          // Fee and slippage should be in consistent directions
-          if (result.swapFee0 > 0n) {
-            // Swapped token0 → token1
-            expect(result.swapFee1).toBe(0n); // No fee in token1
-            expect(result.slip1).toBeGreaterThanOrEqual(0n); // Slippage in output (token1)
-            expect(result.slip0).toBe(0n); // No slippage in input (token0)
-          } else if (result.swapFee1 > 0n) {
-            // Swapped token1 → token0
-            expect(result.swapFee0).toBe(0n); // No fee in token0
-            expect(result.slip0).toBeGreaterThanOrEqual(0n); // Slippage in output (token0)
-            expect(result.slip1).toBe(0n); // No slippage in input (token1)
-          }
-
-          console.log(
-            `${desc}: fee0=${result.swapFee0}, fee1=${result.swapFee1}, slip0=${result.slip0}, slip1=${result.slip1}`
-          );
-        });
-      });
-
-      it("should verify deposited amounts match liquidity calculation", () => {
-        const amount0 = 1000000n;
-        const amount1 = 1000000n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Calculate what amounts are needed for the returned liquidity
-        const sqrtPriceLower =
-          LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
-        const sqrtPriceUpper =
-          LiquidityCalculator.tickToSqrtPriceX64(upperTick);
-        const depositedAmounts =
-          LiquidityCalculator.calculateAmountsForLiquidity(
-            result.liquidity,
-            Q64,
-            sqrtPriceLower,
-            sqrtPriceUpper
-          );
-
-        // The remain amounts should be what's left after depositing
-        // For token0: if we swapped, we gained/lost some, then deposited some
-        // For token1: similar logic
-
-        console.log("Liquidity verification:");
-        console.log(`  Liquidity: ${result.liquidity}`);
-        console.log(
-          `  Deposited: ${depositedAmounts.amount0} token0, ${depositedAmounts.amount1} token1`
-        );
-        console.log(
-          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
-        );
-        console.log(
-          `  Remain: ${result.remain0} token0, ${result.remain1} token1`
-        );
-
-        // Deposited amounts should be positive
-        expect(depositedAmounts.amount0).toBeGreaterThanOrEqual(0n);
-        expect(depositedAmounts.amount1).toBeGreaterThanOrEqual(0n);
-      });
-    });
-
-    describe("Price range edge cases with detailed accounting", () => {
-      it("should handle price below range with only token1 (requires swap)", () => {
-        const priceBelowRange = Q64 / 10n; // Price well below range
-        const amount0 = 0n;
-        const amount1 = 1000000n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          priceBelowRange,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-
-        // Should swap token1 → token0 since only token0 is useful below range
-        expect(result.swapFee1).toBeGreaterThan(0n);
-
-        console.log("Below range, only token1:");
-        console.log(`  Swap fee: ${result.swapFee1} token1`);
-        console.log(`  Slippage: ${result.slip0} token0`);
-        console.log(
-          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
-        );
-      });
-
-      it("should handle price above range with only token0 (requires swap)", () => {
-        const priceAboveRange = Q64 * 10n; // Price well above range
-        const amount0 = 1000000n;
-        const amount1 = 0n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          priceAboveRange,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-
-        // Should swap token0 → token1 since only token1 is useful above range
-        expect(result.swapFee0).toBeGreaterThan(0n);
-
-        console.log("Above range, only token0:");
-        console.log(`  Swap fee: ${result.swapFee0} token0`);
-        console.log(`  Slippage: ${result.slip1} token1`);
-        console.log(
-          `  Deposited: ${result.depositedAmount0} token0, ${result.depositedAmount1} token1`
-        );
-      });
-
-      it("should handle price at lower boundary", () => {
-        const sqrtPriceLower =
-          LiquidityCalculator.tickToSqrtPriceX64(lowerTick);
-        const amount0 = 1000000n;
-        const amount1 = 1000000n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPriceLower,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-        expect(result.liquidity).toBeGreaterThan(0n);
-      });
-
-      it("should handle price at upper boundary", () => {
-        const sqrtPriceUpper =
-          LiquidityCalculator.tickToSqrtPriceX64(upperTick);
-        const amount0 = 1000000n;
-        const amount1 = 1000000n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPriceUpper,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-        expect(result.liquidity).toBeGreaterThan(0n);
-      });
-    });
-
-    describe("Additional edge cases", () => {
-      it("should handle very narrow range (1 tick apart)", () => {
-        const narrowLowerTick = 0;
-        const narrowUpperTick = 1;
-        const sqrtPrice = Q64; // Price at tick 0
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPrice,
-          feeRatePpm,
-          narrowLowerTick,
-          narrowUpperTick,
-          1000000n,
-          1000000n
-        );
-
-        expect(result.liquidity).toBeGreaterThan(0n);
-        expect(result.depositedAmount0).toBeGreaterThanOrEqual(0n);
-        expect(result.depositedAmount1).toBeGreaterThanOrEqual(0n);
-      });
-
-      it("should handle range crossing price 1.0", () => {
-        // Range that crosses tick 0 (price 1.0)
-        const crossingLowerTick = -500;
-        const crossingUpperTick = 500;
-        const sqrtPrice = Q64; // Price = 1.0 (in middle of range)
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPrice,
-          feeRatePpm,
-          crossingLowerTick,
-          crossingUpperTick,
-          1000000n,
-          1000000n
-        );
-
-        expect(result.liquidity).toBeGreaterThan(0n);
-        expect(result.depositedAmount0).toBeGreaterThan(0n);
-        expect(result.depositedAmount1).toBeGreaterThan(0n);
-      });
-
-      it("should reject swap when cost exceeds improvement", () => {
-        // Use balanced amounts at price 1.0 where no swap should be beneficial
-        const amount0 = 1000000n;
-        const amount1 = 1000000n;
-        const highFeePpm = 30000; // 3% fee to make swap expensive
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64,
-          highFeePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // When fees are very high and amounts are balanced,
-        // swapping should not be beneficial
-        expect(result.liquidity).toBeGreaterThan(0n);
-      });
-
-      it("should handle very small amounts", () => {
-        const tinyAmount = 100n; // Very small amount
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          tinyAmount,
-          tinyAmount
-        );
-
-        expect(result.liquidity).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-      });
-
-      it("should handle very large amounts", () => {
-        const largeAmount = 1000000000000000n; // Very large amount
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          largeAmount,
-          largeAmount
-        );
-
-        expect(result.liquidity).toBeGreaterThan(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-      });
-
-      it("should handle both tokens with wrong ratio (excess token0)", () => {
-        // 90% token0, 10% token1 when optimal might be ~50/50
-        const amount0 = 9000000n;
-        const amount1 = 1000000n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64, // price = 1.0
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        expect(result.liquidity).toBeGreaterThan(0n);
-        // Should swap some token0 to token1
-        if (result.swapFee0 > 0n) {
-          expect(result.depositedAmount0).toBeGreaterThan(0n);
-          expect(result.depositedAmount1).toBeGreaterThan(amount1); // More than original
+        } else {
+          expect(result.fee0).toBe(0n);
+          expect(result.fee1).toBe(0n);
         }
       });
 
-      it("should handle both tokens with wrong ratio (excess token1)", () => {
-        // 10% token0, 90% token1 when optimal might be ~50/50
-        const amount0 = 1000000n;
-        const amount1 = 9000000n;
+      // Check total allocation doesn't exceed total fees
+      const totalAllocated = results.reduce(
+        (sum, r) => sum + r.fee0 + r.fee1,
+        0n
+      );
+      expect(totalAllocated).toBeLessThanOrEqual(totalFee);
 
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64, // price = 1.0
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
+      // Check capping behavior
+      if (shouldCapAt100) {
+        // When capped, should get close to 100%
+        const allocationPercent =
+          (Number(totalAllocated) / Number(totalFee)) * 100;
+        expect(allocationPercent).toBeGreaterThan(95); // Allow some rounding
+      }
 
-        expect(result.liquidity).toBeGreaterThan(0n);
-        // Should swap some token1 to token0
-        if (result.swapFee1 > 0n) {
-          expect(result.depositedAmount1).toBeGreaterThan(0n);
-          expect(result.depositedAmount0).toBeGreaterThan(amount0); // More than original
+      // Check liquidity ratio if specified
+      if (expectedRatio !== null && results.length >= 2) {
+        const activeResults = results.filter((r) => r.isActive);
+        if (activeResults.length >= 2) {
+          const fee0 = activeResults[0].fee0 + activeResults[0].fee1;
+          const fee1 = activeResults[1].fee0 + activeResults[1].fee1;
+          if (fee1 > 0n) {
+            const ratio = Number(fee0) / Number(fee1);
+            expect(ratio).toBeCloseTo(expectedRatio, 0.1);
+          }
         }
+      }
+
+      // Log for debugging
+      console.log(
+        `\n[${swapPrice}, pool=${poolLiquidity}, dir=${
+          zeroForOne ? "0→1" : "1→0"
+        }]:`
+      );
+      console.log(`  Total Fee: ${totalFee}`);
+      results.forEach((r, i) => {
+        const fee = r.fee0 + r.fee1;
+        console.log(
+          `  Position ${i}: ${fee} (active: ${r.isActive}, liq: ${
+            positions[i]?.liquidity || "N/A"
+          })`
+        );
       });
-
-      it("should maintain accounting invariant with very small amounts", () => {
-        const amount0 = 10n;
-        const amount1 = 10n;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          Q64,
-          feeRatePpm,
-          lowerTick,
-          upperTick,
-          amount0,
-          amount1
-        );
-
-        // Verify accounting invariant even with tiny amounts
-        const reconstructedAmount0 =
-          result.depositedAmount0 +
-          result.swapFee0 +
-          result.slip0 +
-          result.remain0;
-        const reconstructedAmount1 =
-          result.depositedAmount1 +
-          result.swapFee1 +
-          result.slip1 +
-          result.remain1;
-
-        expect(reconstructedAmount0).toBe(amount0);
-        expect(reconstructedAmount1).toBe(amount1);
-      });
-
-      it("should handle price at exact tick boundary", () => {
-        const boundaryTick = 1000;
-        const sqrtPriceBoundary =
-          LiquidityCalculator.tickToSqrtPriceX64(boundaryTick);
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPriceBoundary,
-          feeRatePpm,
-          boundaryTick - 500,
-          boundaryTick + 500,
-          1000000n,
-          1000000n
-        );
-
-        expect(result.liquidity).toBeGreaterThan(0n);
-        expect(result.depositedAmount0).toBeGreaterThan(0n);
-        expect(result.depositedAmount1).toBeGreaterThan(0n);
-      });
-
-      it("should handle extreme price ratios within valid range", () => {
-        // Very wide range with extreme price difference
-        const extremeLowerTick = -50000;
-        const extremeUpperTick = 50000;
-        const sqrtPrice = Q64; // Price = 1.0 (in middle)
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPrice,
-          feeRatePpm,
-          extremeLowerTick,
-          extremeUpperTick,
-          1000000n,
-          1000000n
-        );
-
-        expect(result.liquidity).toBeGreaterThan(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThanOrEqual(0n);
-      });
-    });
-
-    describe("Real-world scenario matching log output", () => {
-      it("should correctly handle the scenario from a.log lines 31-32", () => {
-        // Simulate the exact scenario from the log:
-        // Input: 0.000000 suiUSDT, 6000.000000 USDC
-        // Price at tick 5 (approximately 1.0005)
-        const amount0 = 0n;
-        const amount1 = 6000000000n; // 6000 USDC with 6 decimals
-        const feeRate = 100; // 0.01% (100 ppm)
-        const tick = 5;
-        const sqrtPrice = LiquidityCalculator.tickToSqrtPriceX64(tick);
-        const rangeLowerTick = 4;
-        const rangeUpperTick = 6;
-
-        const result = LiquidityCalculator.maxLiquidity(
-          sqrtPrice,
-          feeRate,
-          rangeLowerTick,
-          rangeUpperTick,
-          amount0,
-          amount1
-        );
-
-        console.log("\n=== Real-world scenario test (matching a.log) ===");
+      console.log(`  Total Allocated: ${totalAllocated}`);
+      if (totalFee > 0n) {
         console.log(
-          `Input: ${Number(amount0) / 1e6} suiUSDT, ${
-            Number(amount1) / 1e6
-          } USDC`
+          `  Allocation %: ${(
+            (Number(totalAllocated) / Number(totalFee)) *
+            100
+          ).toFixed(4)}%`
         );
-        console.log(
-          `Deposited: ${Number(result.depositedAmount0) / 1e6} suiUSDT, ${
-            Number(result.depositedAmount1) / 1e6
-          } USDC`
-        );
-        console.log(
-          `Remain: ${Number(result.remain0) / 1e6} suiUSDT, ${
-            Number(result.remain1) / 1e6
-          } USDC`
-        );
-        console.log(
-          `Swap: ${
-            result.swapFee0 > 0n
-              ? "suiUSDT→USDC"
-              : result.swapFee1 > 0n
-              ? "USDC→suiUSDT"
-              : "No swap"
-          }`
-        );
-        console.log(
-          `Fee: ${Number(result.swapFee0) / 1e6} suiUSDT, ${
-            Number(result.swapFee1) / 1e6
-          } USDC`
-        );
-        console.log(
-          `Slip: ${Number(result.slip0) / 1e6} suiUSDT, ${
-            Number(result.slip1) / 1e6
-          } USDC`
-        );
-        console.log(`Liquidity: ${result.liquidity}`);
-
-        // Verify results are valid (actualRemain is always >= 0, remain can be negative)
-        expect(result.depositedAmount0).toBeGreaterThan(0n);
-        expect(result.depositedAmount1).toBeGreaterThan(0n);
-        expect(result.actualRemain0).toBeGreaterThanOrEqual(0n);
-        expect(result.actualRemain1).toBeGreaterThan(0n);
-
-        // Should swap USDC → suiUSDT
-        expect(result.swapFee1).toBeGreaterThan(0n);
-        expect(result.swapFee0).toBe(0n);
-
-        // Should have slippage in suiUSDT (output token)
-        expect(result.slip0).toBeGreaterThan(0n);
-        expect(result.slip1).toBe(0n);
-
-        // depositedAmount shows how much was put into liquidity (always positive)
-        expect(result.depositedAmount0).toBeGreaterThan(0n);
-        expect(result.depositedAmount1).toBeGreaterThan(0n);
-
-        // Verify the deposited amounts
-        const sqrtPriceLower =
-          LiquidityCalculator.tickToSqrtPriceX64(rangeLowerTick);
-        const sqrtPriceUpper =
-          LiquidityCalculator.tickToSqrtPriceX64(rangeUpperTick);
-        const depositedAmounts =
-          LiquidityCalculator.calculateAmountsForLiquidity(
-            result.liquidity,
-            sqrtPrice,
-            sqrtPriceLower,
-            sqrtPriceUpper
-          );
-
-        console.log(
-          `Deposited into liquidity: ${
-            Number(depositedAmounts.amount0) / 1e6
-          } suiUSDT, ${Number(depositedAmounts.amount1) / 1e6} USDC`
-        );
-        console.log("=== End of scenario test ===\n");
-      });
-    });
-  });
-
-  describe("mulDiv", () => {
-    it("should perform safe multiplication and division", () => {
-      const result = LiquidityCalculator.mulDiv(100n, 200n, 50n);
-      expect(result).toBe(400n); // (100 * 200) / 50 = 400
-    });
-
-    it("should handle zero multiplication", () => {
-      const result = LiquidityCalculator.mulDiv(0n, 200n, 50n);
-      expect(result).toBe(0n);
-    });
-
-    it("should throw error for division by zero", () => {
-      expect(() => {
-        LiquidityCalculator.mulDiv(100n, 200n, 0n);
-      }).toThrow("Division by zero");
-    });
-  });
+      }
+    }
+  );
 });

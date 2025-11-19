@@ -102,7 +102,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
     const toRemove = this.segments.filter((s) => !keep.includes(s.id));
     for (const seg of toRemove) {
       try {
-        this.manager.closePosition(seg.id);
+        this.manager.closePosition(seg.id, now);
         changed = true;
       } catch {
         // ignore failures
@@ -338,7 +338,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
             const newMainUpper = newMainLower + mainWidth;
 
             try {
-              this.manager.closePosition(mainSegment.id);
+              this.manager.closePosition(mainSegment.id, now);
               const replacement = this.openSegment(
                 newMainLower,
                 newMainUpper,
@@ -730,7 +730,7 @@ export class ThreeBandRebalancerStrategyOptionThree {
   private clearSegments() {
     for (const segment of this.segments) {
       try {
-        this.manager.closePosition(segment.id);
+        this.manager.closePosition(segment.id, this.now());
       } catch (err) {
         // ignore cleanup failures
       }

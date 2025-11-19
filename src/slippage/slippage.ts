@@ -53,33 +53,18 @@ export function getMaxSlippage(
   }
 
   const { configs } = directionConfig;
-
   // Sort configs by amountThreshold ascending
   const sortedConfigs = [...configs].sort(
     (a, b) => a.amountThreshold - b.amountThreshold
   );
 
   // Find the appropriate threshold range
-  for (let i = 0; i < sortedConfigs.length; i++) {
-    const current = sortedConfigs[i];
-    const next = sortedConfigs[i + 1];
-
-    if (!current) continue;
-
-    // Case 1: swapAmount <= first threshold
-    // Range: [0, first.maxSlippage]
-    if (i === 0 && swapAmount <= current.amountThreshold) {
+  for (const current of sortedConfigs) {
+    console.log(
+      `[getMaxSlippage] current: ${current.maxSlippage}, amount: ${swapAmount}, threshold: ${current.amountThreshold}`
+    );
+    if (current && swapAmount <= current.amountThreshold) {
       return current.maxSlippage;
-    }
-
-    // Case 2: swapAmount is between current and next threshold
-    // Range: [current.maxSlippage, next.maxSlippage]
-    if (
-      swapAmount > current.amountThreshold &&
-      next &&
-      swapAmount <= next.amountThreshold
-    ) {
-      return next.maxSlippage;
     }
   }
 

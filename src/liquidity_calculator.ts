@@ -25,87 +25,14 @@ export interface AmountResult {
   amount1: bigint;
 }
 
-/**
- * Result from maxLiquidity calculation
- *
- * Given input amounts (amount0, amount1), this function:
- * 1. Optionally swaps to achieve optimal ratio for maximum liquidity
- * 2. Deposits both tokens into a liquidity position
- * 3. Returns leftover amounts
- *
- * Fields explained:
- *
- * @property liquidity - The amount of liquidity created in the position
- *
- * @property depositedAmount0 - Amount of token0 deposited into the liquidity position (always >= 0)
- * @property depositedAmount1 - Amount of token1 deposited into the liquidity position (always >= 0)
- *
- * @property remain0 - Amount of token0 left over after accounting for costs (can be negative if costs exceed input)
- * @property remain1 - Amount of token1 left over after accounting for costs (can be negative if costs exceed input)
- * @property actualRemain0 - Physical amount of token0 left over (always >= 0)
- * @property actualRemain1 - Physical amount of token1 left over (always >= 0)
- *
- * @property swapFee0 - Swap fee paid in token0 (> 0 if swapped token0→token1, otherwise 0)
- * @property swapFee1 - Swap fee paid in token1 (> 0 if swapped token1→token0, otherwise 0)
- *
- * @property slip0 - Slippage lost in token0 (> 0 if swapped token1→token0, otherwise 0)
- * @property slip1 - Slippage lost in token1 (> 0 if swapped token0→token1, otherwise 0)
- *
- * ACCOUNTING MODEL (Approach A - Track ALL tokens separately):
- * ================================================================
- * The accounting invariant is:
- *   amount0 = depositedAmount0 + swapFee0 + slip0 + remain0
- *   amount1 = depositedAmount1 + swapFee1 + slip1 + remain1
- *
- * Key points:
- * - depositedAmount shows how much of each token went into the liquidity position
- * - swapFee shows fee paid in the INPUT token of the swap
- * - slip shows slippage lost in the OUTPUT token of the swap
- * - remain shows what's left after accounting for deposits and costs (can be negative)
- * - actualRemain shows what's physically left (always >= 0)
- * - Only one of (swapFee0, swapFee1) will be > 0 (the input token)
- * - Only one of (slip0, slip1) will be > 0 (the output token)
- * - remain can be negative when costs exceed what's available in that token
- * - actualRemain is always non-negative (physical reality)
- *
- * Example 1: Token0→Token1 swap
- * - Start with: 1000 token0, 0 token1
- * - Swap: 500 token0 → 495 token1 (fee: 5 token0, slippage: 5 token1 expected but not received)
- * - Deposit: 450 token0 + 450 token1 into liquidity
- * - Result:
- *   - depositedAmount0 = 450, depositedAmount1 = 450
- *   - swapFee0 = 5, swapFee1 = 0
- *   - slip0 = 0, slip1 = 5
- *   - remain0 = 1000 - 450 - 5 - 0 = 545
- *   - remain1 = 0 - 450 - 0 - 5 = -455 (negative! we "borrowed" from received swap output)
- *   - actualRemain0 = 50 (physically left: 1000 - 500 - 450)
- *   - actualRemain1 = 45 (physically left: 0 + 495 - 450)
- *
- * Example 2: Token1→Token0 swap
- * - Start with: 0 token0, 6000 token1
- * - Swap: 3000 token1 → 2985 token0 (fee: 3 token1, slippage: 12 token0 expected but not received)
- * - Deposit: 2900 token0 + 2900 token1 into liquidity
- * - Result:
- *   - depositedAmount0 = 2900, depositedAmount1 = 2900
- *   - swapFee0 = 0, swapFee1 = 3
- *   - slip0 = 12, slip1 = 0
- *   - remain0 = 0 - 2900 - 0 - 12 = -2912 (negative! we "borrowed" from received swap output)
- *   - remain1 = 6000 - 2900 - 3 - 0 = 3097
- *   - actualRemain0 = 85 (physically left: 0 + 2985 - 2900)
- *   - actualRemain1 = 100 (physically left: 6000 - 3000 - 2900)
- */
 export type MaxLiquidityResult = {
   liquidity: bigint;
   remain0: bigint;
   remain1: bigint;
-  actualRemain0: bigint;
-  actualRemain1: bigint;
-  swapFee0: bigint;
-  swapFee1: bigint;
-  slip0: bigint;
-  slip1: bigint;
-  depositedAmount0: bigint;
-  depositedAmount1: bigint;
+  swapCost0: bigint;
+  swapCost1: bigint;
+  slippage0: bigint;
+  slippage1: bigint;
 };
 
 /**
@@ -141,21 +68,23 @@ export class LiquidityCalculator {
     lowerTick: number,
     upperTick: number,
     amount0: bigint,
-    amount1: bigint
+    amount1: bigint,
+    tokenConfig: {
+      name0: string;
+      name1: string;
+      decimals0: number;
+      decimals1: number;
+    }
   ): MaxLiquidityResult {
     if (amount0 <= 0n && amount1 <= 0n) {
       return {
         liquidity: 0n,
         remain0: 0n,
         remain1: 0n,
-        actualRemain0: 0n,
-        actualRemain1: 0n,
-        swapFee0: 0n,
-        swapFee1: 0n,
-        slip0: 0n,
-        slip1: 0n,
-        depositedAmount0: 0n,
-        depositedAmount1: 0n,
+        swapCost0: 0n,
+        swapCost1: 0n,
+        slippage0: 0n,
+        slippage1: 0n,
       };
     }
 
@@ -170,290 +99,244 @@ export class LiquidityCalculator {
       );
     }
 
-    // Calculate current price
-    const currentPrice =
-      (Number(sqrtPriceX64) / Number(LiquidityConstants.Q64)) ** 2;
-    const lowerPrice =
-      (Number(sqrtPriceLower) / Number(LiquidityConstants.Q64)) ** 2;
-    const upperPrice =
-      (Number(sqrtPriceUpper) / Number(LiquidityConstants.Q64)) ** 2;
+    // Get current tick for comparison
+    const currentTick = this.sqrtPriceToTick(sqrtPriceX64);
+    const currentPrice = this.sqrtPriceX64ToPrice(sqrtPriceX64);
 
-    // Calculate the optimal ratio of token1 to token0 for maximum liquidity
-    const optimalRatio = this.calculateOptimalRatio(
-      sqrtPriceX64,
-      sqrtPriceLower,
-      sqrtPriceUpper
+    // Determine position relative to range using tick comparison
+    const tickPosition = this.getTickPosition(
+      currentTick,
+      lowerTick,
+      upperTick
     );
 
-    // Calculate total value in terms of token0
-    const totalValueInToken0 =
-      amount0 + BigInt(Math.floor(Number(amount1) / currentPrice));
+    let working0 = amount0;
+    let working1 = amount1;
+    let totalFee0 = 0n;
+    let totalFee1 = 0n;
+    let totalSlippage0 = 0n;
+    let totalSlippage1 = 0n;
 
-    // Calculate optimal amounts based on the ratio
-    const optimalAmount1InToken0 = BigInt(
-      Math.floor(Number(totalValueInToken0) * optimalRatio)
-    );
-    const optimalAmount0 = totalValueInToken0 - optimalAmount1InToken0;
-    const optimalAmount1 = BigInt(
-      Math.floor(Number(optimalAmount1InToken0) * currentPrice)
-    );
-
-    // Strategy 1: No swap - calculate liquidity with current amounts
-    const liquidityNoSwap = this.calculateLiquidityFromAmounts(
-      amount0,
-      amount1,
-      sqrtPriceX64,
-      sqrtPriceLower,
-      sqrtPriceUpper
-    );
-
-    // Strategy 2: Optimal swap to achieve ideal ratio
-    let bestResult: MaxLiquidityResult = {
-      liquidity: liquidityNoSwap,
-      remain0: amount0,
-      remain1: amount1,
-      actualRemain0: amount0,
-      actualRemain1: amount1,
-      swapFee0: 0n,
-      swapFee1: 0n,
-      slip0: 0n,
-      slip1: 0n,
-      depositedAmount0: 0n,
-      depositedAmount1: 0n,
-    };
-
-    // Determine what swap is needed to reach optimal ratio
-    const currentAmount1InToken0 = BigInt(
-      Math.floor(Number(amount1) / currentPrice)
-    );
-    const needMoreToken1 = optimalAmount1InToken0 > currentAmount1InToken0;
-
-    if (needMoreToken1 && amount0 > 0n) {
-      // Need to swap token0 -> token1
-      const swapAmount0 =
-        amount0 > optimalAmount0 ? amount0 - optimalAmount0 : 0n;
-
-      if (swapAmount0 > 0n) {
-        // Get decimal for token0 (input token in this swap: token0 -> token1)
-        const decimal = parseInt(process.env.TOKEN_A_DECIMALS || "8");
-        const swapResult = this.simulateSwap(
-          swapAmount0,
-          true,
+    // Case 1: Only one token
+    if (amount0 === 0n || amount1 === 0n) {
+      // Swap 50% of the single token to the other
+      if (amount0 > 0n) {
+        const swapAmount = amount0 / 2n;
+        const {
+          amountOut,
+          swapFee: fee,
+          slippage,
+        } = this.simulateSwap(
+          swapAmount,
+          true, // token0 -> token1
           currentPrice,
           feeRatePpm,
-          50, // default slippageBps
-          decimal
+          tokenConfig
         );
-
-        const newAmount0 = amount0 - swapAmount0;
-        const newAmount1 = amount1 + swapResult.amountOut;
-
-        const liquidity = this.calculateLiquidityFromAmounts(
-          newAmount0,
-          newAmount1,
-          sqrtPriceX64,
-          sqrtPriceLower,
-          sqrtPriceUpper
-        );
-
-        // Check if this is better (accounting for swap costs)
-        const swapCost = swapResult.fee + swapResult.slippage;
-        const improvement = liquidity - bestResult.liquidity;
-
-        // Force swap if we started with only one token (amount1 was 0)
-        // Otherwise require 2x improvement over swap cost
-        const shouldSwap =
-          amount1 === 0n ||
-          (improvement > 0n && Number(improvement) > Number(swapCost) * 2);
-
-        if (shouldSwap) {
-          // Calculate amounts used for liquidity position (pure liquidity, no fees)
-          const liquidityAmounts = this.calculateAmountsForLiquidity(
-            liquidity,
-            sqrtPriceX64,
-            sqrtPriceLower,
-            sqrtPriceUpper
-          );
-
-          // APPROACH A: Track ALL tokens separately
-          // Accounting invariant for token0→token1 swap:
-          //   amount0 = depositedAmount0 + swapFee0 + remain0
-          //   amount1 = depositedAmount1 + slip1 + remain1
-          //
-          // Physical flow:
-          //   1. Start with: amount0, amount1
-          //   2. Swap: spend swapAmount0 (which includes fee), receive amountOut (reduced by slippage)
-          //      - Fee paid: swapResult.fee (from token0)
-          //      - Slippage lost: swapResult.slippage (from expected token1 output)
-          //   3. After swap: (amount0 - swapAmount0), (amount1 + amountOut)
-          //   4. Deposit into liquidity: liquidityAmounts.amount0, liquidityAmounts.amount1
-          //   5. Remain: what's physically left
-          //
-          // Calculate physical remain:
-          const actualRemain0 =
-            amount0 - swapAmount0 - liquidityAmounts.amount0;
-          const actualRemain1 =
-            amount1 + swapResult.amountOut - liquidityAmounts.amount1;
-
-          // Verify invariant (for debugging):
-          // amount0 = swapAmount0 + actualRemain0 + depositedAmount0
-          //         = (swapResult.fee + amountInAfterFee) + actualRemain0 + depositedAmount0
-          //         = swapResult.fee + <converted> + actualRemain0 + depositedAmount0
-          // We want: amount0 = swapFee0 + depositedAmount0 + remain0
-          // Since swapAmount0 = fee + <what gets converted to token1>
-          // And the <converted part> is not in our final token0 balance,
-          // We have: amount0 = swapAmount0 + actualRemain0 + depositedAmount0
-          //                  = fee + <converted> + actualRemain0 + depositedAmount0
-          // Therefore: remain0 = actualRemain0 + <converted part>
-          // But we want: amount0 = fee + depositedAmount0 + remain0
-          // So: remain0 = amount0 - fee - depositedAmount0
-          const remain0 = amount0 - swapResult.fee - liquidityAmounts.amount0;
-
-          // For token1: amount1 = depositedAmount1 + slip1 + remain1
-          // amount1 + amountOut = depositedAmount1 + remain1 (physically)
-          // But amountOut = expectedOut - slippage
-          // So: amount1 + expectedOut - slippage = depositedAmount1 + remain1
-          // We want: amount1 = depositedAmount1 + slippage + remain1
-          // Therefore: remain1 = amount1 - depositedAmount1 - slippage
-          const remain1 =
-            amount1 - liquidityAmounts.amount1 - swapResult.slippage;
-
-          bestResult = {
-            liquidity,
-            remain0,
-            remain1,
-            actualRemain0,
-            actualRemain1,
-            swapFee0: swapResult.fee, // Fee is paid in input token (token0)
-            swapFee1: 0n,
-            slip0: 0n,
-            slip1: swapResult.slippage, // Slippage is lost in output token (token1)
-            depositedAmount0: liquidityAmounts.amount0,
-            depositedAmount1: liquidityAmounts.amount1,
-          };
-        }
-      }
-    } else if (!needMoreToken1 && amount1 > 0n) {
-      // Need to swap token1 -> token0
-      const swapAmount1 =
-        amount1 > optimalAmount1 ? amount1 - optimalAmount1 : 0n;
-
-      if (swapAmount1 > 0n) {
-        // Get decimal for token1 (input token in this swap: token1 -> token0)
-        const decimal = parseInt(process.env.TOKEN_B_DECIMALS || "8");
-        const swapResult = this.simulateSwap(
-          swapAmount1,
-          false,
+        working0 = amount0 - swapAmount;
+        working1 = amountOut;
+        totalFee0 = fee;
+        totalSlippage1 = slippage;
+      } else {
+        const swapAmount = amount1 / 2n;
+        const {
+          amountOut,
+          swapFee: fee,
+          slippage,
+        } = this.simulateSwap(
+          swapAmount,
+          false, // token1 -> token0
           currentPrice,
           feeRatePpm,
-          50, // default slippageBps
-          decimal
+          tokenConfig
         );
-
-        const newAmount0 = amount0 + swapResult.amountOut;
-        const newAmount1 = amount1 - swapAmount1;
-
-        const liquidity = this.calculateLiquidityFromAmounts(
-          newAmount0,
-          newAmount1,
-          sqrtPriceX64,
-          sqrtPriceLower,
-          sqrtPriceUpper
-        );
-
-        // Check if this is better (accounting for swap costs)
-        const swapCost = swapResult.fee + swapResult.slippage;
-        const improvement = liquidity - bestResult.liquidity;
-
-        // Force swap if we started with only one token (amount0 was 0)
-        // Otherwise require 2x improvement over swap cost
-        const shouldSwap =
-          amount0 === 0n ||
-          (improvement > 0n && Number(improvement) > Number(swapCost) * 2);
-
-        if (shouldSwap) {
-          // Calculate amounts used for liquidity position (pure liquidity, no fees)
-          const liquidityAmounts = this.calculateAmountsForLiquidity(
-            liquidity,
-            sqrtPriceX64,
-            sqrtPriceLower,
-            sqrtPriceUpper
-          );
-
-          // APPROACH A: Track ALL tokens separately
-          // Accounting invariant for token1→token0 swap:
-          //   amount0 = depositedAmount0 + slip0 + remain0
-          //   amount1 = depositedAmount1 + swapFee1 + remain1
-          //
-          // Physical flow:
-          //   1. Start with: amount0, amount1
-          //   2. Swap: spend swapAmount1 (which includes fee), receive amountOut (reduced by slippage)
-          //      - Fee paid: swapResult.fee (from token1)
-          //      - Slippage lost: swapResult.slippage (from expected token0 output)
-          //   3. After swap: (amount0 + amountOut), (amount1 - swapAmount1)
-          //   4. Deposit into liquidity: liquidityAmounts.amount0, liquidityAmounts.amount1
-          //   5. Remain: what's physically left
-          //
-          // Calculate physical remain:
-          const actualRemain0 =
-            amount0 + swapResult.amountOut - liquidityAmounts.amount0;
-          const actualRemain1 =
-            amount1 - swapAmount1 - liquidityAmounts.amount1;
-
-          // For token0: amount0 = depositedAmount0 + slip0 + remain0
-          // amount0 + amountOut = depositedAmount0 + remain0 (physically)
-          // But amountOut = expectedOut - slippage
-          // So: amount0 + expectedOut - slippage = depositedAmount0 + remain0
-          // We want: amount0 = depositedAmount0 + slippage + remain0
-          // Therefore: remain0 = amount0 - depositedAmount0 - slippage
-          const remain0 =
-            amount0 - liquidityAmounts.amount0 - swapResult.slippage;
-
-          // For token1: amount1 = depositedAmount1 + swapFee1 + remain1
-          // Since swapAmount1 = fee + <what gets converted to token0>
-          // We have: amount1 = swapAmount1 + actualRemain1 + depositedAmount1
-          //                  = fee + <converted> + actualRemain1 + depositedAmount1
-          // We want: amount1 = fee + depositedAmount1 + remain1
-          // So: remain1 = amount1 - fee - depositedAmount1
-          const remain1 = amount1 - swapResult.fee - liquidityAmounts.amount1;
-
-          bestResult = {
-            liquidity,
-            remain0,
-            remain1,
-            actualRemain0,
-            actualRemain1,
-            swapFee0: 0n,
-            swapFee1: swapResult.fee, // Fee is paid in input token (token1)
-            slip0: swapResult.slippage, // Slippage is lost in output token (token0)
-            slip1: 0n,
-            depositedAmount0: liquidityAmounts.amount0,
-            depositedAmount1: liquidityAmounts.amount1,
-          };
-        }
+        working1 = amount1 - swapAmount;
+        working0 = amountOut;
+        totalFee1 = fee;
+        totalSlippage0 = slippage;
       }
     }
 
-    // If no swap was beneficial, calculate remaining amounts for no-swap case
-    if (bestResult.swapFee0 === 0n && bestResult.swapFee1 === 0n) {
-      const usedAmounts = this.calculateAmountsForLiquidity(
-        bestResult.liquidity,
-        sqrtPriceX64,
+    // Case 2: Both tokens present - try without swap first
+    let bestLiquidity = this.calculateLiquidityFromAmounts(
+      working0,
+      working1,
+      sqrtPriceX64,
+      sqrtPriceLower,
+      sqrtPriceUpper
+    );
+
+    let bestRemain0 = 0n;
+    let bestRemain1 = 0n;
+
+    // Calculate remainders after using best liquidity
+    if (bestLiquidity > 0n) {
+      const used0 = this.amount0ForLiquidity(
+        bestLiquidity,
         sqrtPriceLower,
         sqrtPriceUpper
       );
+      const used1 = this.amount1ForLiquidity(
+        bestLiquidity,
+        sqrtPriceLower,
+        sqrtPriceUpper
+      );
+      bestRemain0 = working0 - used0;
+      bestRemain1 = working1 - used1;
 
-      bestResult.remain0 =
-        amount0 > usedAmounts.amount0 ? amount0 - usedAmounts.amount0 : 0n;
-      bestResult.remain1 =
-        amount1 > usedAmounts.amount1 ? amount1 - usedAmounts.amount1 : 0n;
-      bestResult.actualRemain0 = bestResult.remain0;
-      bestResult.actualRemain1 = bestResult.remain1;
-      bestResult.depositedAmount0 = usedAmounts.amount0;
-      bestResult.depositedAmount1 = usedAmounts.amount1;
+      // Ensure non-negative remainders
+      if (bestRemain0 < 0n) bestRemain0 = 0n;
+      if (bestRemain1 < 0n) bestRemain1 = 0n;
+    } else {
+      bestRemain0 = working0;
+      bestRemain1 = working1;
     }
 
-    return bestResult;
+    // Case 3: Try swapping if we have a significant remainder (>20% of total value)
+    const totalValue0 =
+      working0 + BigInt(Math.floor(Number(working1) / currentPrice));
+    const remain0Value =
+      bestRemain0 + BigInt(Math.floor(Number(bestRemain1) / currentPrice));
+
+    if (totalValue0 > 0n && remain0Value * 5n > totalValue0) {
+      // >20%
+      // Determine which token has larger remainder
+      const remain0InToken0 = bestRemain0;
+      const remain1InToken0 = BigInt(
+        Math.floor(Number(bestRemain1) / currentPrice)
+      );
+
+      if (remain0InToken0 > remain1InToken0 && bestRemain0 > 0n) {
+        // Swap 80% of token0 remainder to token1
+        const swapAmount = (bestRemain0 * 8n) / 10n;
+        const {
+          amountOut,
+          swapFee: fee,
+          slippage,
+        } = this.simulateSwap(
+          swapAmount,
+          true,
+          currentPrice,
+          feeRatePpm,
+          tokenConfig
+        );
+
+        const test0 = working0 - swapAmount;
+        const test1 = working1 + amountOut;
+        const testLiquidity = this.calculateLiquidityFromAmounts(
+          test0,
+          test1,
+          sqrtPriceX64,
+          sqrtPriceLower,
+          sqrtPriceUpper
+        );
+
+        // Use swap if it improves liquidity
+        if (testLiquidity > bestLiquidity) {
+          working0 = test0;
+          working1 = test1;
+          bestLiquidity = testLiquidity;
+          totalFee0 += fee;
+          totalSlippage1 += slippage;
+
+          const used0 = this.amount0ForLiquidity(
+            bestLiquidity,
+            sqrtPriceLower,
+            sqrtPriceUpper
+          );
+          const used1 = this.amount1ForLiquidity(
+            bestLiquidity,
+            sqrtPriceLower,
+            sqrtPriceUpper
+          );
+          bestRemain0 = working0 - used0;
+          bestRemain1 = working1 - used1;
+          if (bestRemain0 < 0n) bestRemain0 = 0n;
+          if (bestRemain1 < 0n) bestRemain1 = 0n;
+        }
+      } else if (remain1InToken0 > remain0InToken0 && bestRemain1 > 0n) {
+        // Swap 80% of token1 remainder to token0
+        const swapAmount = (bestRemain1 * 8n) / 10n;
+        const {
+          amountOut,
+          swapFee: fee,
+          slippage,
+        } = this.simulateSwap(
+          swapAmount,
+          false,
+          currentPrice,
+          feeRatePpm,
+          tokenConfig
+        );
+
+        const test0 = working0 + amountOut;
+        const test1 = working1 - swapAmount;
+        const testLiquidity = this.calculateLiquidityFromAmounts(
+          test0,
+          test1,
+          sqrtPriceX64,
+          sqrtPriceLower,
+          sqrtPriceUpper
+        );
+
+        // Use swap if it improves liquidity
+        if (testLiquidity > bestLiquidity) {
+          working0 = test0;
+          working1 = test1;
+          bestLiquidity = testLiquidity;
+          totalFee1 += fee;
+          totalSlippage0 += slippage;
+
+          const used0 = this.amount0ForLiquidity(
+            bestLiquidity,
+            sqrtPriceLower,
+            sqrtPriceUpper
+          );
+          const used1 = this.amount1ForLiquidity(
+            bestLiquidity,
+            sqrtPriceLower,
+            sqrtPriceUpper
+          );
+          bestRemain0 = working0 - used0;
+          bestRemain1 = working1 - used1;
+          if (bestRemain0 < 0n) bestRemain0 = 0n;
+          if (bestRemain1 < 0n) bestRemain1 = 0n;
+        }
+      }
+    }
+
+    console.log(
+      `[MaxLiquidity] Tick: ${currentTick} (range: [${lowerTick}, ${upperTick}]), ` +
+        `Position: ${tickPosition}, ` +
+        `Input: [${amount0}, ${amount1}], ` +
+        `Liquidity: ${bestLiquidity}, ` +
+        `Remain: [${bestRemain0}, ${bestRemain1}], ` +
+        `Fees: [${totalFee0}, ${totalFee1}], ` +
+        `Slippage: [${totalSlippage0}, ${totalSlippage1}]`
+    );
+
+    return {
+      liquidity: bestLiquidity,
+      remain0: bestRemain0,
+      remain1: bestRemain1,
+      swapCost0: totalFee0,
+      swapCost1: totalFee1,
+      slippage0: totalSlippage0,
+      slippage1: totalSlippage1,
+    };
+  }
+
+  /**
+   * Helper to determine tick position relative to range
+   */
+  private static getTickPosition(
+    currentTick: number,
+    lowerTick: number,
+    upperTick: number
+  ): "below" | "in" | "above" {
+    if (currentTick < lowerTick) return "below";
+    if (currentTick > upperTick) return "above";
+    return "in";
   }
 
   /**
@@ -582,82 +465,181 @@ export class LiquidityCalculator {
   /**
    * Simulate a swap with fees and slippage
    */
+
+  static PPM = 1_000_000;
+  static DEFAULT_SLIPPAGE_PCT = 0.1; // 0.1%
   private static simulateSwap(
     amountIn: bigint,
     zeroForOne: boolean,
     currentPrice: number,
     feeRatePpm: number,
-    slippageBps: number = 50, // 0.5% default slippage
-    decimal: number = 8
-  ): { amountOut: bigint; fee: bigint; slippage: bigint } {
+    tokenConfig: {
+      name0: string;
+      name1: string;
+      decimals0: number;
+      decimals1: number;
+    }
+  ): { amountOut: bigint; swapFee: bigint; slippage: bigint } {
     if (amountIn <= 0n) {
-      return { amountOut: 0n, fee: 0n, slippage: 0n };
+      return { amountOut: 0n, swapFee: 0n, slippage: 0n };
     }
 
     // Calculate fee
-    const fee = (amountIn * BigInt(feeRatePpm)) / 1000000n;
+    const fee = (amountIn * BigInt(feeRatePpm)) / 1_000_000n;
     const amountInAfterFee = amountIn - fee;
+    console.log(
+      `[simulateSwap] amountIn:${amountIn}, feeRatePpm: ${feeRatePpm}, fee: ${fee}, amountInAfterFee: ${amountInAfterFee}`
+    );
 
     if (amountInAfterFee <= 0n) {
-      return { amountOut: 0n, fee, slippage: 0n };
+      return { amountOut: 0n, swapFee: fee, slippage: 0n };
     }
 
     // Calculate amount out based on current price
-    let amountOut: bigint;
-    if (zeroForOne) {
-      // token0 -> token1: multiply by price
-      amountOut = BigInt(Math.floor(Number(amountInAfterFee) * currentPrice));
-    } else {
-      // token1 -> token0: divide by price
-      amountOut = BigInt(Math.floor(Number(amountInAfterFee) / currentPrice));
-    }
-
-    // Calculate slippage (reduce output)
-    let slippage: bigint;
-    try {
-      const tokenAName = process.env.TOKEN_A_NAME || "TokenA";
-      const tokenBName = process.env.TOKEN_B_NAME || "TokenB";
-      const swapAmount = amountIn / 10n ** BigInt(decimal);
-      const maxSlippage = getMaxSlippage(
-        tokenAName,
-        tokenBName,
-        Number(swapAmount)
-      );
-      if (maxSlippage === null) {
-        throw new Error("Swap amount exceeds max slippage threshold");
-      }
-      // Convert maxSlippage (percentage) to scaled integer for BigInt calculation
-      const slippageScaled = Math.floor(maxSlippage * 1e10); // Scale up by 10 billion
-      slippage = (amountOut * BigInt(slippageScaled)) / 1000000000000n; // Divide by 1e12 (1e10 * 100)
-    } catch (error: any) {
-      slippage = (amountOut * BigInt(slippageBps)) / 10000n;
-    }
-
-    const amountOutBeforeSlippage = amountOut;
-    amountOut = amountOut - slippage;
-
-    if (amountOut < 0n) {
-      amountOut = 0n;
-    }
-
-    // Log detailed swap simulation for analysis
-    const feeRate = (Number(fee) / Number(amountIn)) * 100;
-    const slippageRate =
-      amountOutBeforeSlippage > 0n
-        ? (Number(slippage) / Number(amountOutBeforeSlippage)) * 100
-        : 0;
+    let slippagePct = zeroForOne
+      ? getMaxSlippage(
+          tokenConfig.name0,
+          tokenConfig.name1,
+          Number(amountInAfterFee) / Math.pow(10, tokenConfig.decimals0)
+        )
+      : getMaxSlippage(
+          tokenConfig.name1,
+          tokenConfig.name0,
+          Number(amountInAfterFee) / Math.pow(10, tokenConfig.decimals1)
+        );
 
     console.log(
-      `[SimulateSwap] ${zeroForOne ? "Token0→Token1" : "Token1→Token0"}: ` +
-        `amountIn=${amountIn.toString()}, ` +
-        `fee=${fee.toString()} (${feeRate.toFixed(4)}%), ` +
-        `amountOut=${amountOut.toString()}, ` +
-        `slippage=${slippage.toString()} (${slippageRate.toFixed(4)}%), ` +
-        `price=${currentPrice.toFixed(6)}`
+      `[simulateSwap] slippagePct: ${slippagePct}, name0: ${tokenConfig.name0}, name1: ${tokenConfig.name1}, decimals0: ${tokenConfig.decimals0}, decimals1: ${tokenConfig.decimals1}, amountInAfterFee: ${amountInAfterFee}`
     );
 
-    return { amountOut, fee, slippage };
+    if (slippagePct === null || slippagePct >= 1 || slippagePct < 0) {
+      slippagePct = this.DEFAULT_SLIPPAGE_PCT;
+    }
+
+    // Calculate amount out before slippage
+    let amountOutBeforeSlippage: bigint;
+    if (zeroForOne) {
+      // token0 -> token1: multiply by price
+      amountOutBeforeSlippage = BigInt(
+        Math.floor(Number(amountInAfterFee) * currentPrice)
+      );
+    } else {
+      // token1 -> token0: divide by price
+      amountOutBeforeSlippage = BigInt(
+        Math.floor(Number(amountInAfterFee) / currentPrice)
+      );
+    }
+
+    // Apply slippage to get final amount out
+    const amountOut =
+      (amountOutBeforeSlippage * BigInt(this.PPM - slippagePct * this.PPM)) /
+      BigInt(this.PPM);
+    const slippage = amountOutBeforeSlippage - amountOut;
+
+    return {
+      amountOut,
+      swapFee: fee,
+      slippage,
+    };
   }
+
+  /**
+   * Estimate fee allocation for multiple positions using ACTUAL pool liquidity from swap event
+   * This is MORE ACCURATE than estimateMultiPositionFeesFromSwap which calculates liquidity
+   *
+   * @param poolLiquidity - Actual pool liquidity from the swap event (preferred!)
+   * @param swapTick - Tick after the swap
+   * @param amountIn - Amount of tokens swapped in (before fee deduction)
+   * @param zeroForOne - Direction of swap (token0 -> token1)
+   * @param feeRatePpm - Fee rate in parts per million (e.g., 100 for 0.01%)
+   * @param positions - Array of positions with { liquidity, tickLower, tickUpper }
+   * @returns Array of { fee0, fee1, isActive } for each position
+   */
+  static estimateMultiPositionFeesFromSwapWithPoolLiquidity(
+    poolLiquidity: bigint,
+    swapTick: number,
+    amountIn: bigint,
+    zeroForOne: boolean,
+    feeRatePpm: number,
+    positions: Array<{
+      liquidity: bigint;
+      tickLower: number;
+      tickUpper: number;
+    }>
+  ): Array<{ fee0: bigint; fee1: bigint; isActive: boolean }> {
+    // Calculate total swap fees
+    const totalFeeAmount = (amountIn * BigInt(feeRatePpm)) / 1_000_000n;
+
+    if (poolLiquidity === 0n) {
+      return positions.map(() => ({ fee0: 0n, fee1: 0n, isActive: false }));
+    }
+
+    // Calculate each position's liquidity if active
+    let totalActivePositionLiquidity = 0n;
+    const positionData = positions.map((pos) => {
+      const isActive = swapTick >= pos.tickLower && swapTick < pos.tickUpper;
+      if (isActive && pos.liquidity > 0n) {
+        totalActivePositionLiquidity += pos.liquidity;
+      }
+      return { ...pos, isActive };
+    });
+
+    // If no positions are active, return zeros
+    if (totalActivePositionLiquidity === 0n) {
+      return positionData.map((p) => ({
+        fee0: 0n,
+        fee1: 0n,
+        isActive: p.isActive,
+      }));
+    }
+
+    // Calculate allocation cap to prevent over-allocation
+    // If totalActivePositionLiquidity > poolLiquidity, cap at 100%
+    // Otherwise, use the ratio of position liquidity to pool liquidity
+    const allocationCap =
+      totalActivePositionLiquidity > poolLiquidity
+        ? LiquidityConstants.Q64 // 100% cap
+        : this.mulDiv(
+            totalActivePositionLiquidity,
+            LiquidityConstants.Q64,
+            poolLiquidity
+          );
+
+    // Allocate fees proportionally to each active position
+    return positionData.map((pos) => {
+      if (!pos.isActive || pos.liquidity === 0n) {
+        return { fee0: 0n, fee1: 0n, isActive: false };
+      }
+
+      // Calculate this position's share of active liquidity
+      const positionShare = this.mulDiv(
+        pos.liquidity,
+        LiquidityConstants.Q64,
+        totalActivePositionLiquidity
+      );
+
+      // Apply the allocation cap and calculate final fee
+      const cappedShare = this.mulDiv(
+        positionShare,
+        allocationCap,
+        LiquidityConstants.Q64
+      );
+
+      const allocatedFee = this.mulDiv(
+        totalFeeAmount,
+        cappedShare,
+        LiquidityConstants.Q64
+      );
+
+      // Assign to correct token based on swap direction
+      if (zeroForOne) {
+        return { fee0: allocatedFee, fee1: 0n, isActive: true };
+      } else {
+        return { fee0: 0n, fee1: allocatedFee, isActive: true };
+      }
+    });
+  }
+
   /**
    * Calculate active liquidity from swap event data
    * This estimates the total active liquidity in the pool at the current tick

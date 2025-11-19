@@ -240,6 +240,9 @@ export function strategyFactory(
     const tick = pool.tickCurrent;
     const price = pool.price;
     const totals = manager.getTotals();
+    console.log(
+      `[three-band-option3] getTotals ${totals.amountA} ${totals.amountB} ${totals.cashAmountA} ${totals.cashAmountB} ${totals.feesOwed0} ${totals.feesOwed1} ${totals.collectedFees0} ${totals.collectedFees1}`
+    );
     // Get all positions and sort them by strategy segment order: main -> upper -> lower
     let allPositions = manager.getAllPositions().filter((p) => !p.isClosed);
     const segments = strategy.getSegments();
@@ -363,7 +366,9 @@ export function strategyFactory(
           // Calculate actual current amounts based on position's liquidity and current price
           const { amount0: currentAmountA, amount1: currentAmountB } =
             manager.calculatePositionAmounts(pos.id);
-
+          console.log(
+            `[three-band-option3] calculatePositionAmounts ${pos.id} amount0=${currentAmountA} amount1=${currentAmountB}`
+          );
           // Track accumulated fees across rebalances
           const currentFeesA = BigInt(posFeesA);
           const currentFeesB = BigInt(posFeesB);
@@ -679,8 +684,10 @@ export function strategyFactory(
       );
 
       // Calculate total fees earned (in human-readable decimals)
-      const decimals0 = parseInt(process.env.TOKEN_A_DECIMALS || "6");
-      const decimals1 = parseInt(process.env.TOKEN_B_DECIMALS || "6");
+
+      const decimals0 = env.tokenADecimals;
+      const decimals1 = env.tokenBDecimals;
+
       const totalFeesToken0 =
         Number(totals.collectedFees0 + totals.feesOwed0) /
         Math.pow(10, decimals0);
@@ -690,9 +697,8 @@ export function strategyFactory(
 
       ctx.logger?.log?.(
         `  💰 TOTAL FEES EARNED: ${totalFeesToken0.toFixed(6)} ${
-          process.env.TOKEN_A_NAME || "A"
-        } + ` +
-          `${totalFeesToken1.toFixed(6)} ${process.env.TOKEN_B_NAME || "B"}`
+          process.env.TOKEN_A_NAME
+        } + ` + `${totalFeesToken1.toFixed(6)} ${process.env.TOKEN_B_NAME}`
       );
 
       // Calculate swap costs in human-readable decimals

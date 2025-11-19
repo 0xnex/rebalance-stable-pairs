@@ -256,6 +256,8 @@ function* processTransaction(
         // Convert unsigned to signed: if value > 2^31-1, subtract 2^32
         const tick = tickBits > 0x7fffffff ? tickBits - 0x100000000 : tickBits;
 
+        const liquidity = BigInt(parsedJson.liquidity);
+
         yield {
           timestampMs,
           digest,
@@ -270,6 +272,7 @@ function* processTransaction(
           reserve0,
           reserve1,
           tick,
+          liquidity,
         };
       }
     } catch (error) {

@@ -6,6 +6,8 @@ const Q64 = 1n << 64n;
 const Base = 1.0001;
 
 class Pool {
+  token0Name: string;
+  token1Name: string;
   decimals0: number;
   decimals1: number;
   reserve0: bigint = 0n;
@@ -18,6 +20,8 @@ class Pool {
   feeRatePpm: number; // fee rate expressed in millionths (from on-chain data)
 
   constructor(
+    token0Name: string,
+    token1Name: string,
     decimals0: number,
     decimals1: number,
     feeRatePpm: number = 100,
@@ -27,6 +31,8 @@ class Pool {
     this.decimals1 = decimals1;
     this.tickSpacing = tickSpacing;
     this.feeRatePpm = feeRatePpm;
+    this.token0Name = token0Name;
+    this.token1Name = token1Name;
   }
 
   get priceRaw(): number {
@@ -47,8 +53,10 @@ class Pool {
         event.amountOut,
         event.zeroForOne
       );
-
-    this.liquidity = activeLiquidity;
+    console.log(
+      `[Pool] update activeLiquidity=${activeLiquidity} event.liquidity=${event.liquidity}`
+    );
+    this.liquidity = event.liquidity;
     this.tickCurrent = event.tick;
     this.sqrtPriceX64 = event.sqrtPriceAfterX64;
     this.reserve0 = event.reserve0;

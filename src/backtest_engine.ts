@@ -18,6 +18,7 @@ export type SwapEvent = {
   reserve0: bigint;
   reserve1: bigint;
   tick: number;
+  liquidity: bigint; // Pool's active liquidity at the time of swap
 };
 
 export type BacktestConfig = {
@@ -26,6 +27,8 @@ export type BacktestConfig = {
   endTime: number;
   decimals0: number;
   decimals1: number;
+  token0Name?: string; // optional token name for display
+  token1Name?: string; // optional token name for display
   feeRatePpm: number;
   tickSpacing: number;
   stepMs?: number;
@@ -71,19 +74,9 @@ export class BacktestEngine {
     if (config.endTime <= config.startTime) {
       throw new Error("endTime must be greater than startTime");
     }
-    if (config.decimals0 <= 0) {
-      config.decimals0 = 8;
-    }
-    if (config.decimals1 <= 0) {
-      config.decimals1 = 8;
-    }
 
-    if (config.feeRatePpm <= 0) {
-      config.feeRatePpm = 100;
-    }
-
-    if (config.tickSpacing <= 0) {
-      config.tickSpacing = 2;
+    if (!config.token0Name || !config.token1Name) {
+      throw new Error("token0Name and token1Name are required");
     }
 
     this.stepMs = config.stepMs ?? 1000;
@@ -91,6 +84,8 @@ export class BacktestEngine {
     this.metricsIntervalMs = config.metricsIntervalMs ?? 60_000;
 
     this.pool = new Pool(
+      config.token0Name,
+      config.token1Name,
       config.decimals0,
       config.decimals1,
       config.feeRatePpm,
@@ -100,11 +95,18 @@ export class BacktestEngine {
     if (config.invest0 < 0n || config.invest1 < 0n) {
       throw new Error("no funds provided");
     }
+
+    const tokenConfig = {
+      token0Name: config.token0Name || "Token0",
+      token1Name: config.token1Name || "Token1",
+      token0Decimals: config.decimals0,
+      token1Decimals: config.decimals1,
+    };
+
     this.manager = new VirtualPositionManager(
       config.invest0 || 0n,
       config.invest1 || 0n,
-      this.pool,
-      config.simulateErrors || 0
+      this.pool
     );
 
     this.strategy = this.config.strategyFactory(this.pool, this.manager);
@@ -168,6 +170,7 @@ export class BacktestEngine {
       logger: this.logger,
     };
     this.logger?.log?.(`Snapshot reports saved to ./snapshots/`);
+    this.strategy.onFinish?.(ctx);
   }
 
   async run(): Promise<void> {
