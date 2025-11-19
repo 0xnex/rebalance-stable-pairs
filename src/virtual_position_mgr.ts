@@ -295,10 +295,16 @@ export class VirtualPositionManager {
       (p) => !p.isClosed
     );
 
-    // return summary data because balance updates are done in the closePosition method
-    return activePositions.reduce(
+    const summary = activePositions.reduce(
       (acc, position) => {
         const result = position.close(this.pool.sqrtPriceX64);
+        // Update manager balances for each position closed
+        this.amount0 += result.amount0 + result.fee0;
+        this.amount1 += result.amount1 + result.fee1;
+        this.feeCollected0 += result.fee0;
+        this.feeCollected1 += result.fee1;
+        position.setClosed(true);
+        
         acc.amount0 += result.amount0;
         acc.amount1 += result.amount1;
         acc.fee0 += result.fee0;
@@ -307,6 +313,8 @@ export class VirtualPositionManager {
       },
       { amount0: 0n, amount1: 0n, fee0: 0n, fee1: 0n }
     );
+
+    return summary;
   }
 
   // close a position and update the manager's balances
