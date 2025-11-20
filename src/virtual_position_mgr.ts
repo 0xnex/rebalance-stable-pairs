@@ -1,3 +1,4 @@
+import { timeStamp } from "node:console";
 import type { SwapEvent } from "./backtest_engine";
 import type { MomentumEvent } from "./event_importer";
 import {
@@ -254,8 +255,7 @@ export class VirtualPositionManager {
     this.slippage1 += result.slippage1;
 
     console.log(
-      `[VirtualPositionManager] createPosition ${id} [${tickLower}, ${tickUpper}] liquidity=${
-        result.liquidity
+      `[VirtualPositionManager] createPosition ${id} [${tickLower}, ${tickUpper}] liquidity=${result.liquidity
       } used0=${amount0 - result.remain0} used1=${amount1 - result.remain1}`
     );
 
@@ -285,7 +285,7 @@ export class VirtualPositionManager {
   }
 
   // close all positions and update the manager's balances
-  closeAllPositions(): {
+  closeAllPositions(timestamp: number): {
     amount0: bigint;
     amount1: bigint;
     fee0: bigint;
@@ -297,14 +297,9 @@ export class VirtualPositionManager {
 
     const summary = activePositions.reduce(
       (acc, position) => {
-        const result = position.close(this.pool.sqrtPriceX64);
-        // Update manager balances for each position closed
-        this.amount0 += result.amount0 + result.fee0;
-        this.amount1 += result.amount1 + result.fee1;
-        this.feeCollected0 += result.fee0;
-        this.feeCollected1 += result.fee1;
-        position.setClosed(true);
-        
+        // Use this.closePosition to ensure manager balances are updated!
+        // We use Date.now() as a fallback timestamp since closeAllPositions doesn't take one
+        const result = this.closePosition(position.id, timestamp);
         acc.amount0 += result.amount0;
         acc.amount1 += result.amount1;
         acc.fee0 += result.fee0;
@@ -320,7 +315,7 @@ export class VirtualPositionManager {
   // close a position and update the manager's balances
   closePosition(
     id: string,
-    currentTime: number
+    timestamp: number
   ): {
     amount0: bigint;
     amount1: bigint;
@@ -337,7 +332,9 @@ export class VirtualPositionManager {
     this.feeCollected0 += result.fee0;
     this.feeCollected1 += result.fee1;
     position.setClosed(true);
-
+    console.log(
+      `[VirtualPositionManager] closePosition ${id} amount0=${result.amount0} amount1=${result.amount1} fee0=${result.fee0} fee1=${result.fee1}`
+    );
     return result;
   }
   /**
@@ -425,7 +422,7 @@ export class VirtualPositionManager {
         positionsWithFees++;
         console.log(
           `[VirtualPositionManager] Collected fees from position ${pos.id}: ` +
-            `fee0=${fee0.toString()}, fee1=${fee1.toString()}`
+          `fee0=${fee0.toString()}, fee1=${fee1.toString()}`
         );
       }
       this.feeCollected0 += fee0;
@@ -438,8 +435,8 @@ export class VirtualPositionManager {
 
     console.log(
       `[VirtualPositionManager] Collected fees from ${positionsWithFees} positions: ` +
-        `total fee0=${totalFee0.toString()}, total fee1=${totalFee1.toString()}, ` +
-        `cumulative: fee0=${this.feeCollected0.toString()}, fee1=${this.feeCollected1.toString()}`
+      `total fee0=${totalFee0.toString()}, total fee1=${totalFee1.toString()}, ` +
+      `cumulative: fee0=${this.feeCollected0.toString()}, fee1=${this.feeCollected1.toString()}`
     );
 
     return { fee0: this.feeCollected0, fee1: this.feeCollected1 };
@@ -556,8 +553,8 @@ export class VirtualPositionManager {
     if (actualDistributedFee0 !== fee0 || actualDistributedFee1 !== fee1) {
       console.warn(
         `[VirtualPositionManager] Fee distribution mismatch! ` +
-          `Expected: fee0=${fee0}, fee1=${fee1}, ` +
-          `Distributed: fee0=${actualDistributedFee0}, fee1=${actualDistributedFee1}`
+        `Expected: fee0=${fee0}, fee1=${fee1}, ` +
+        `Distributed: fee0=${actualDistributedFee0}, fee1=${actualDistributedFee1}`
       );
     }
   }

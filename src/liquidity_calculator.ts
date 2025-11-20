@@ -416,6 +416,13 @@ export class LiquidityCalculator {
       return 0n;
     }
 
+    if (sqrtPriceLower >= sqrtPriceUpper) {
+      console.warn(
+        `[calculateLiquidityFromAmounts] Invalid price range: sqrtPriceLower=${sqrtPriceLower}, sqrtPriceUpper=${sqrtPriceUpper}`
+      );
+      return 0n;
+    }
+
     let liquidity0 = 0n;
     let liquidity1 = 0n;
 
@@ -425,16 +432,16 @@ export class LiquidityCalculator {
         sqrtPriceCurrent > sqrtPriceLower ? sqrtPriceCurrent : sqrtPriceLower;
       const sqrtPriceB = sqrtPriceUpper;
 
-      // L = amount0 * (sqrtPriceA * sqrtPriceB) / (sqrtPriceB - sqrtPriceA) / Q64
-      const numerator = this.mulDiv(
-        amount0,
+      // L = amount0 * (sqrtPriceA * sqrtPriceB / Q64) / (sqrtPriceB - sqrtPriceA)
+      const product = this.mulDiv(
         sqrtPriceA,
+        sqrtPriceB,
         LiquidityConstants.Q64
       );
       const denominator = sqrtPriceB - sqrtPriceA;
 
       if (denominator > 0n) {
-        liquidity0 = this.mulDiv(numerator, sqrtPriceB, denominator);
+        liquidity0 = this.mulDiv(amount0, product, denominator);
       }
     }
 
